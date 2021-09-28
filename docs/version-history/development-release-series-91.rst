@@ -4,6 +4,23 @@ Development Release Series 9.1
 This is the development release series of HTCondor. The details of each
 version are described below.
 
+Version 9.4.0
+-------------
+
+Release Notes:
+
+.. HTCondor version 9.4.0 released on Month Date, 2021.
+
+- HTCondor version 9.4.0 not yet released.
+
+New Features:
+
+- None.
+
+Bugs Fixed:
+
+- None.
+
 Version 9.3.0
 -------------
 
@@ -31,6 +48,15 @@ New Features:
 - Added an example template for a custom file transfer plugin, which can be
   used to build new plugins.
   :jira:`728`
+
+- When declining to put a job on hold due to the temporary scratch
+  directory disappearing, verify that the directory is expected to exist
+  and require that the job not be local universe.
+  :jira:`680`
+
+_ Added a new generic knob for setting the slot user for all slots.  Configure
+  ''NOBODY_SLOT_USER`` for all slots, instead of configuring a ``SLOT<N>_USER`` for each slot.
+  :jira:`720`
 
 Bugs Fixed:
 
