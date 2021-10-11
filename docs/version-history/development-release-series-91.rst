@@ -15,9 +15,20 @@ Release Notes:
 
 New Features:
 
-- SINGULARITY_EXTRA_ARGUMENTS can now be a classad expression, so that the extra arguments
-  can depend on the job.
+- SINGULARITY_EXTRA_ARGUMENTS can now be a classad expression, so that the
+  extra arguments can depend on the job.
   :jira:`570`
+
+- The :ref:`classad_eval` tool now supports evaluating ClassAd expressions in
+  the context of a match.  To specify the target ad, use the new
+  ``-target-file`` command-line option.  You may also specify the
+  context ad with ``-my-file``, a synonym for ``-file``.  The `classad_eval`
+  tool also now supports the ``-debug`` and ``-help`` flags.
+  :jira:`707`
+
+- Added an attribute to the job ClassAd ``LastRemoteWallClockTime``.  It holds
+  the wall clock time of the most recent completed job execution.
+  :jira:`751`
 
 Bugs Fixed:
 
