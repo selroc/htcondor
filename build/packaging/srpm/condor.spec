@@ -23,7 +23,7 @@
 %endif
 
 %if %uw_build
-%define devtoolset 0
+%define devtoolset 10
 %define debug 1
 %endif
 
@@ -113,6 +113,9 @@ Source5: condor_config.local.dedicated.resource
 
 Source8: htcondor.pp
 
+# Patch credmon-oauth to use Python 2 on EL7
+Patch1: rhel7-python2.patch
+
 # Patch to use Python 2 for file transfer plugins
 # The use the python-requests library and the one in EPEL is based Python 3.6
 # However, Amazon Linux 2 has Python 3.7
@@ -151,6 +154,7 @@ BuildRequires: redhat-rpm-config
 BuildRequires: sqlite-devel
 BuildRequires: perl(Data::Dumper)
 
+BuildRequires: glibc-static
 %if %uw_build
 BuildRequires: cmake >= 2.8
 BuildRequires: gcc-c++
@@ -212,7 +216,7 @@ Requires: libcgroup
 
 %if 0%{?rhel} == 7 && ! 0%{?amzn} && 0%{?devtoolset}
 BuildRequires: which
-BuildRequires: devtoolset-9-toolchain
+BuildRequires: devtoolset-%{devtoolset}-toolchain
 %endif
 
 %if 0%{?rhel} == 7 && ! 0%{?amzn}
@@ -531,25 +535,32 @@ the ClassAd library and HTCondor from python
 %endif
 
 
-%if 0%{?rhel} == 7
 #######################
 %package credmon-oauth
 Summary: OAuth2 credmon for HTCondor.
 Group: Applications/System
 Requires: %name = %version-%release
+%if 0%{?rhel} == 7
 Requires: python2-condor
 Requires: python2-requests-oauthlib
 Requires: python-six
 Requires: python-flask
 Requires: python2-cryptography
 Requires: python2-scitokens
+%else
+Requires: python3-condor
+Requires: python3-requests-oauthlib
+Requires: python3-six
+Requires: python3-flask
+Requires: python3-cryptography
+Requires: python3-scitokens
+%endif
 Requires: httpd
 Requires: mod_wsgi
 
 %description credmon-oauth
 The OAuth2 credmon allows users to obtain credentials from configured
 OAuth2 endpoints and to use those credentials securely inside running jobs.
-%endif
 
 
 #######################
@@ -558,7 +569,7 @@ Summary: Vault credmon for HTCondor.
 Group: Applications/System
 Requires: %name = %version-%release
 Requires: python3-condor
-Requires: python-six
+Requires: python3-six
 %if 0%{?osg}
 # Although htgettoken is only needed on the submit machine and
 #  condor-credmon-vault is needed on both the submit and credd machines,
@@ -571,7 +582,6 @@ Conflicts: %name-credmon-oauth
 The Vault credmon allows users to obtain credentials from Vault using
 htgettoken and to use those credentials securely inside running jobs.
 
-#######################
 #######################
 %package blahp
 Summary: BLAHP daemon
@@ -678,6 +688,11 @@ exit 0
 %setup -q -n %{name}-%{tarball_version}
 %endif
 
+# Patch credmon-oauth to use Python 2 on EL7
+%if 0%{?rhel} == 7
+%patch1 -p1
+%endif
+
 # Patch to use Python 2 for file transfer plugins
 # The use the python-requests library and the one in EPEL is based Python 3.6
 # However, Amazon Linux 2 has Python 3.7
@@ -696,7 +711,7 @@ find src -perm /a+x -type f -name "*.[Cch]" -exec chmod a-x {} \;
 %build
 
 %if 0%{?rhel} == 7 && ! 0%{?amzn} && 0%{?devtoolset}
-. /opt/rh/devtoolset-9/enable
+. /opt/rh/devtoolset-%{devtoolset}/enable
 export CC=$(which cc)
 export CXX=$(which c++)
 %endif
@@ -875,8 +890,6 @@ rm -f %{buildroot}/%{_bindir}/condor_check_password
 rm -f %{buildroot}/%{_bindir}/condor_check_config
 %endif
 
-# For EL7, move oauth credmon WSGI script out of libexec to /var/www
-%if 0%{?rhel} == 7
 mkdir -p %{buildroot}/%{_var}/www/wsgi-scripts/condor_credmon_oauth
 mv %{buildroot}/%{_libexecdir}/condor/condor_credmon_oauth.wsgi %{buildroot}/%{_var}/www/wsgi-scripts/condor_credmon_oauth/condor_credmon_oauth.wsgi
 
@@ -884,17 +897,9 @@ mv %{buildroot}/%{_libexecdir}/condor/condor_credmon_oauth.wsgi %{buildroot}/%{_
 mv %{buildroot}/usr/share/doc/condor-%{version}/examples/condor_credmon_oauth/config/condor/40-oauth-credmon.conf %{buildroot}/%{_sysconfdir}/condor/config.d/40-oauth-credmon.conf
 mv %{buildroot}/usr/share/doc/condor-%{version}/examples/condor_credmon_oauth/config/condor/40-oauth-tokens.conf %{buildroot}/%{_sysconfdir}/condor/config.d/40-oauth-tokens.conf
 mv %{buildroot}/usr/share/doc/condor-%{version}/examples/condor_credmon_oauth/README.credentials %{buildroot}/%{_var}/lib/condor/oauth_credentials/README.credentials
-%endif
 
 # Move vault credmon config file out of examples and into config.d
 mv %{buildroot}/usr/share/doc/condor-%{version}/examples/condor_credmon_oauth/config/condor/40-vault-credmon.conf %{buildroot}/%{_sysconfdir}/condor/config.d/40-vault-credmon.conf
-
-# For non-EL7, remove oauth credmon from the buildroot
-%if 0%{?rhel} > 7 || 0%{?fedora}
-rm -f %{buildroot}/%{_libexecdir}/condor/condor_credmon_oauth.wsgi
-rm -f %{buildroot}/%{_sbindir}/condor_credmon_oauth
-rm -f %{buildroot}/%{_sbindir}/scitokens_credential_producer
-%endif
 
 ###
 # Backwards compatibility on EL7 with the previous versions and configs of scitokens-credmon
@@ -1133,6 +1138,7 @@ rm -rf %{buildroot}
 %_libexecdir/condor/condor_pid_ns_init
 %_libexecdir/condor/condor_urlfetch
 %_libexecdir/condor/htcondor_docker_test
+%_libexecdir/condor/exit_37.sif
 %if %globus
 %_sbindir/condor_gridshell
 %_sbindir/nordugrid_gahp
@@ -1365,6 +1371,7 @@ rm -rf %{buildroot}
 %_libexecdir/condor/condor_gpu_utilization
 %_sbindir/condor_vm-gahp-vmware
 %_sbindir/condor_vm_vmware
+%_sbindir/exit_37
 %config(noreplace) %_sysconfdir/condor/ganglia.d/00_default_metrics
 %defattr(-,condor,condor,-)
 %dir %_var/lib/condor/
@@ -1552,7 +1559,6 @@ rm -rf %{buildroot}
 %endif
 %endif
 
-%if 0%{?rhel} == 7
 %files credmon-oauth
 %doc examples/condor_credmon_oauth
 %_sbindir/condor_credmon_oauth
@@ -1565,6 +1571,7 @@ rm -rf %{buildroot}
 %ghost %_var/lib/condor/oauth_credentials/wsgi_session_key
 %ghost %_var/lib/condor/oauth_credentials/CREDMON_COMPLETE
 %ghost %_var/lib/condor/oauth_credentials/pid
+%if 0%{?rhel} == 7
 ###
 # Backwards compatibility with the previous versions and configs of scitokens-credmon
 %_bindir/condor_credmon_oauth
@@ -1596,20 +1603,9 @@ rm -rf %{buildroot}
 %config %_sysconfdir/blahp/slurm_local_submit_attributes.sh
 %_bindir/blahpd
 %_sbindir/blah_check_config
-%_sbindir/blah_job_registry_add
-%_sbindir/blah_job_registry_dump
-%_sbindir/blah_job_registry_lkup
-%_sbindir/blah_job_registry_purge
-%_sbindir/blah_job_registry_scan_by_subject
 %_sbindir/blahpd_daemon
 %dir %_libexecdir/blahp
 %_libexecdir/blahp/*
-%_mandir/man1/blah_check_config.1.gz
-%_mandir/man1/blah_job_registry_add.1.gz
-%_mandir/man1/blah_job_registry_dump.1.gz
-%_mandir/man1/blah_job_registry_lkup.1.gz
-%_mandir/man1/blah_job_registry_scan_by_subject.1.gz
-%_mandir/man1/blahpd.1.gz
 
 %files -n minicondor
 %config(noreplace) %_sysconfdir/condor/config.d/00-minicondor

@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -48,7 +49,6 @@ main(int argc, char *argv[])
   char *test_registry_file = JOB_REGISTRY_TEST_FILE;
   job_registry_entry *en;
   job_registry_split_id *spid;
-  int ret;
   int pick;
   int n_read_tests;
   struct timeval tm_start, tm_end;

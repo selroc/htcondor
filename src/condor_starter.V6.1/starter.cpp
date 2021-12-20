@@ -59,6 +59,7 @@
 extern void main_shutdown_fast();
 
 const char* JOB_AD_FILENAME = ".job.ad";
+const char* JOB_EXECUTION_OVERLAY_AD_FILENAME = ".execution_overlay.ad";
 const char* MACHINE_AD_FILENAME = ".machine.ad";
 extern const char* JOB_WRAPPER_FAILURE_FILE;
 
@@ -2435,6 +2436,26 @@ Starter::SpawnJob( void )
 		case CONDOR_UNIVERSE_VANILLA: {
 			bool wantDocker = false;
 			jobAd->LookupBool( ATTR_WANT_DOCKER, wantDocker );
+			bool wantContainer = false;
+			jobAd->LookupBool( ATTR_WANT_CONTAINER, wantContainer );
+
+			bool wantDockerRepo = false;
+			bool wantSandboxImage = false;
+			bool wantSIF = false;
+			jobAd->LookupBool(ATTR_WANT_DOCKER_IMAGE, wantDockerRepo);
+			jobAd->LookupBool(ATTR_WANT_SANDBOX_IMAGE, wantSandboxImage);
+			jobAd->LookupBool(ATTR_WANT_SIF, wantSIF);
+
+			std::string container_image;
+			jobAd->LookupString(ATTR_CONTAINER_IMAGE, container_image);
+			std::string docker_image;
+			jobAd->LookupString(ATTR_DOCKER_IMAGE, docker_image);
+
+			// If they give us a docker repo, use docker universe
+			if (wantContainer && wantDockerRepo) {
+				wantDocker = true;
+			}
+
 			std::string remote_cmd;
 			bool wantRemote = param(remote_cmd, "STARTER_REMOTE_CMD");
 
@@ -3829,6 +3850,30 @@ Starter::WriteAdFiles() const
 	{
 		// If there is no job ad, this is a problem
 		ret_val = false;
+	}
+
+	ad = this->jic->jobExecutionOverlayAd();
+	if (ad && ad->size() > 0)
+	{
+		formatstr(filename, "%s%c%s", dir, DIR_DELIM_CHAR, JOB_EXECUTION_OVERLAY_AD_FILENAME);
+		fp = safe_fopen_wrapper_follow(filename.c_str(), "w");
+		if (!fp)
+		{
+			dprintf(D_ALWAYS, "Failed to open \"%s\" for to write job execution overlay ad: "
+						"%s (errno %d)\n", filename.c_str(),
+						strerror(errno), errno);
+			ret_val = false;
+		}
+		else
+		{
+		#ifdef WIN32
+			if (has_encrypted_working_dir) {
+				DecryptFile(filename.c_str(), 0);
+			}
+		#endif
+			fPrintAd(fp, *ad);
+			fclose(fp);
+		}
 	}
 
 	// Write the machine ad

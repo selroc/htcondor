@@ -4,18 +4,43 @@ Version 9 Feature Releases
 We release new features in these releases of HTCondor. The details of each
 version are described below.
 
+Version 9.6.0
+-------------
+
+Release Notes:
+
+.. HTCondor version 9.6.0 released on Month Date, 2022.
+
+- This version includes all the updates from :ref:`lts-version-history-9010`.
+
+- HTCondor version 9.6.0 not yet released.
+
+New Features:
+
+- None.
+
+Bugs Fixed:
+
+- When the blahp submits a job to HTCondor, it no longer requests
+  email notification about job errors.
+  :jira:`895`
+
 Version 9.5.0
 -------------
 
 Release Notes:
 
-.. HTCondor version 9.5.0 released on Month Date, 2021.
+.. HTCondor version 9.5.0 released on Month Date, 2022.
 
 - This version includes all the updates from :ref:`lts-version-history-909`.
 
 - HTCondor version 9.5.0 not yet released.
 
 New Features:
+
+- Added new Container Universe that allows users to describe container
+  images that can be run in Singularity or Docker or other container runtimes.
+  :jira:`850`
 
 - Docker universe jobs can now be user-level checkpointed by setting
   checkpoint_exit_code in submit files.
@@ -31,6 +56,10 @@ New Features:
   The tool can still be used via the old name, but that will stop working
   in a future release.
   :jira:`733`
+
+- **condor_adstash** can parse and push ClassAds from a file to
+  Elasticsearch by using the ``--ad_file PATH`` option.
+  :jira:`779`
 
 Bugs Fixed:
 
