@@ -15,7 +15,11 @@ Release Notes:
 
 - HTCondor version 9.6.0 not yet released.
 
-New Features:
+- Added list type configuration for periodic job policy configuration.
+  Added ``SYSTEM_PERIODIC_HOLD_NAMES``, ``SYSTEM_PERIODIC_RELEASE_NAMES``
+  and ``SYSTEM_PERIODIC_REMOVE_NAMES`` which each define a list of configuration
+  variables to be evaluated for periodic job policy.
+  :jira:`905`
 
 - None.
 
@@ -94,6 +98,13 @@ New Features:
 - SINGULARITY_EXTRA_ARGUMENTS can now be a ClassAd expression, so that the
   extra arguments can depend on the job.
   :jira:`570`
+
+- The Environment command in a condor submit file can now contain the string
+  $$(CondorScratchDir), which will get expanded to the value of the scratch
+  directory on the execute node.  This is useful, for example, when transferring
+  software packages to the job's scratch dir, when those packages need an environment
+  variable pointing to the root of their install.
+  :jira:`805`
 
 - The :ref:`classad_eval` tool now supports evaluating ClassAd expressions in
   the context of a match.  To specify the target ad, use the new
