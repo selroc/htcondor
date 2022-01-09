@@ -21,13 +21,24 @@ Release Notes:
   variables to be evaluated for periodic job policy.
   :jira:`905`
 
-- None.
+- In most situations, jobs in COMPLETED or REMOVED status will no longer
+  transition to HELD status.
+  Before, these jobs could transition to HELD status due to job policy
+  expressions, the *condor_rm* tool, or errors encountered by the
+  *condor_shadow* or *condor_starter*.
+  Grid universe jobs may still transition to HELD status if the
+  *condor_gridmanager* can not clean up job-related resources on remote
+  systems.
+  :jira:`873`
 
 Bugs Fixed:
 
 - When the blahp submits a job to HTCondor, it no longer requests
   email notification about job errors.
   :jira:`895`
+
+- The view server can now handle very long Accounting Group names
+  :jira:`913`
 
 Version 9.5.0
 -------------
@@ -70,6 +81,26 @@ Bugs Fixed:
 - Fixed a bug where if the submit file set checkpoint_exit_code, and the administrator
   enabled singularity support on the execute node, the job would go on hold at checkpoint time.
   :jira:`837`
+
+Version 9.4.1
+-------------
+
+Release Notes:
+
+- HTCondor version 9.4.1 released on December 21, 2021.
+
+New Features:
+
+- Added activation metrics (``ActivationDuration``,
+  ``ActivationExecutionDuration``, ``ActivationSetupDuration``, and
+  ``ActivationTeardownDuration``).
+  :jira:`861`
+
+Bugs Fixed:
+
+- Fix a bug where the error number could be cleared before
+  being reported when a file transfer plugin fails.
+  :jira:`889`
 
 Version 9.4.0
 -------------
