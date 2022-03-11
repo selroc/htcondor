@@ -7887,7 +7887,7 @@ Scheduler::claimedStartd( DCMsgCallback *cb ) {
 			match->my_match_ad->Assign(ATTR_NAME, last_slot_name);
 		}
 
-			// Need to pass handleMatch a slot name; grab from leftover slot ad
+			// Need to pass handleMatch a slot name; grab from newly split slot ad
 		std::string slot_name_buf;
 		msg->leftover_startd_ad()->LookupString(ATTR_NAME,slot_name_buf);
 		char const *slot_name = slot_name_buf.c_str();
@@ -7924,7 +7924,7 @@ Scheduler::claimedStartd( DCMsgCallback *cb ) {
 			// Tell the schedd about the leftover resources it can go claim.
 			// Note this claiming will happen asynchronously.
 		sn->scheduler_handleMatch(jobid,msg->leftover_claim_id(), "",
-			*(msg->leftover_startd_ad()),slot_name);
+			*(msg->leftover_startd_ad()),last_slot_name.length() > 0 ? last_slot_name.c_str() : slot_name);
 
 		delete sn;
 	} 
@@ -12324,13 +12324,7 @@ Scheduler::jobExitCode( PROC_ID job_id, int exit_code )
 			break;
 
 		case JOB_CKPTED:
-		case JOB_NOT_CKPTED:
-				// no break, fall through and do the action
-		// case JOB_SHOULD_REQUEUE:
-				// we can't have the same value twice in our
-				// switch, so we can't really have a valid case
-				// for this, but it's the same number as
-				// JOB_NOT_CKPTED, so we're safe.
+		case JOB_SHOULD_REQUEUE:
 		case JOB_NOT_STARTED:
 			if( srec != NULL && !srec->removed && srec->match ) {
 				// Don't delete matches we're trying to use for a now job.
@@ -12345,7 +12339,6 @@ Scheduler::jobExitCode( PROC_ID job_id, int exit_code )
                   is_goodput = true;
                   break;
                case JOB_SHOULD_REQUEUE:
-               //case JOB_NOT_CKPTED: for CONDOR_UNIVERSE_STANDARD
                   stats.JobsShouldRequeue += 1;
                   OTHER.JobsShouldRequeue += 1;
                   // for standard universe this is actually case JOB_NOT_CKPTED

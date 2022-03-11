@@ -911,7 +911,7 @@ DedicatedScheduler::deactivateClaim( match_rec* m_rec )
 	DCStartd d( m_rec->peer );
 	if (!d.startCommand(DEACTIVATE_CLAIM, &sock)) {
         	dprintf( D_ALWAYS, "ERROR in deactivateClaim(): "
-				 "Can't start command to startd" );
+				 "Can't start command to startd\n" );
 		return false;
 	}
 
@@ -1036,7 +1036,7 @@ DedicatedScheduler::reaper( int pid, int status )
 		case JOB_EXEC_FAILED:
 			break;
 		case JOB_CKPTED:
-		case JOB_NOT_CKPTED:
+		case JOB_SHOULD_REQUEUE:
 		case JOB_NOT_STARTED:
 			if (!srec->removed) {
 				shutdownMpiJob( srec , true);

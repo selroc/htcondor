@@ -7,6 +7,48 @@ These are Long Term Support (LTS) releases of HTCondor. As usual, only bug fixes
 
 The details of each version are described below.
 
+.. _lts-version-history-9012:
+
+Version 9.0.12
+--------------
+
+Release Notes:
+
+.. HTCondor version 9.0.12 released on Month Date, 2022.
+
+- HTCondor version 9.0.12 not yet released.
+
+New Features:
+
+- None.
+
+Bugs Fixed:
+
+- DAGMan now publishes its status (total number of nodes, nodes done, nodes
+  failed, etc.) to the job ad immediately at startup.
+  :jira:`968`
+
+- Fixed a bug in the parallel universe that caused the *condor_schedd* to crash
+  with partitionable slots.
+  :jira:`986`
+
+- Fixed a bug in the startd drain command in the Python bindings that prevented
+  it from working with zero arguments.
+  :jira:`936`
+
+- Fixed a bug that prevented the High-Availability Daemon (HAD) from
+  working when user-based security is enabled
+  :jira:`891`
+
+- Fixed a bug that prevented administrators from setting certain rare custom
+  linux parameters in the linux_kernel_tuning_script
+  :jira:`990`
+
+- Fixed a bug that could cause a daemon to erase its security session
+  to its family of daemon processes and subsequently crash when trying to
+  connect to one of those daemons.
+  :jira:`937`
+
 .. _lts-version-history-9010:
 
 Version 9.0.10
@@ -20,7 +62,11 @@ Release Notes:
 
 New Features:
 
-- None.
+- The *condor_job_router* can now create an IDTOKEN and send it them along
+  with a routed job for use by the job. This is controlled by a new
+  configuration variable ``JOB_ROUTER_CREATE_IDTOKEN_NAMES`` and a new route
+  option ``SendIDTokens``.
+  :jira:`735`
 
 Bugs Fixed:
 
@@ -52,6 +98,23 @@ Bugs Fixed:
   file.
   This restores the behavior in versions 9.0.1 and prior.
   :jira:`904`
+
+- Fixed a bug in the FileTransfer mechanism where URL transfers caused
+  subsequent failures to report incorrect error messages.
+  :jira:`915`
+
+- Fixed a bug in the *condor_dagman* parser which caused ``SUBMIT-DESCRIPTION``
+  statements to return an error even after parsing correctly.
+  :jira:`928`
+
+- Fix problem where **condor_ssh_to_job** may fail to connect to a job
+  running under an HTCondor tarball installation (glidein) built from an RPM
+  based platform.
+  :jira:`942`
+
+- The Python bindings no longer segfault when the ``htcondor.Submit``
+  constructor is passed a dictionary with an entry whose value is ``None``.
+  :jira:`950`
 
 .. _lts-version-history-909:
 
@@ -104,7 +167,7 @@ Bugs Fixed:
   to be the same if some specific attributes were missing from the
   latest ClassAd. Also **condor_top** now exits early if no stats are
   provided by the queried daemon.
-  :jira`:880
+  :jira:`880`
 
 - Fixed a bug where the user job log could be written in the wrong
   directory when a spooled job's output was retrieved with
