@@ -4,6 +4,36 @@ Version 9 Feature Releases
 We release new features in these releases of HTCondor. The details of each
 version are described below.
 
+Version 9.9.0
+-------------
+
+Release Notes:
+
+.. HTCondor version 9.9.0 released on Month Date, 2022.
+
+- HTCondor version 9.9.0 not yet released.
+
+- This version includes all the updates from :ref:`lts-version-history-9013`.
+
+New Features:
+
+- The ``OWNER`` authorization level has been removed. Commands that used to
+  require this level now require ``ADMINISTRATOR`` authorization.
+  :jira:`1023`
+
+- Singularity jobs can now pull images from docker style repos.
+  :jira:`1059`
+
+Bugs Fixed:
+
+- Fix a rare bug where the starter will fail to start a job, and the job will
+  immediately transition back to the idle state to be run elsewhere.
+  :jira:`1040`
+
+- Fixed a bug in the dedicated scheduler when using partionable slots that would
+  cause the schedd to assert.
+  :jira:`1042`
+
 Version 9.8.0
 -------------
 
@@ -43,20 +73,54 @@ New Features:
   GPU when creating a dynamic slot.
   :jira:`953`
 
+- Added the Reverse GAHP, which allows *condor_remote_cluster* to work with
+  remote clusters that don't allow SSH keys or require Multi-Factor
+  Authentication for all SSH connections.
+  :jira:`1007`
+
+- Added support for a global CM which only schedules fair-share between schedds,
+  with each schedd owning a local CM for fair-share between users.
+  :jira:`1003`
+
+- Added the ``-key`` command-line option to *condor_token_request*, which
+  allows users to ask HTCondor to use a particular signing key when creating
+  the IDTOKEN.  Added the corresponding configuration macro,
+  :macro:`SEC_TOKEN_FETCH_ALLOWED_SIGNING_KEYS`, which defaults to the default key
+  (``POOL``).
+  :jira:`1024`
+
 Bugs Fixed:
 
-- None.
+- Fix for *condor_gpu_discovery* crash when run on Linux for Power (ppc64le) architecture.
+  :jira:`967`
 
-Version 9.6.0
+Version 9.7.1
 -------------
 
 Release Notes:
 
-.. HTCondor version 9.6.0 released on Month Date, 2022.
+- HTCondor version 9.7.1 released on April 5, 2022.
 
-- HTCondor version 9.6.0 not yet released.
+New Features:
 
-- This version includes all the updates from :ref:`lts-version-history-9010`.
+- None.
+
+Bugs Fixed:
+
+- Fixed bug introduced in HTCondor v9.7.0 where job may go on hold without
+  setting a ``HoldReason`` and/or ``HoldReasonCode`` and ``HoldReasonSubCode``
+  attributes in the job classad.  In particular, this could happen when file transfer
+  using a file transfer plugin failed.
+  :jira:`1035`
+
+Version 9.7.0
+-------------
+
+Release Notes:
+
+- HTCondor version 9.7.0 released on March 15, 2022.
+
+- This version includes all the updates from :ref:`lts-version-history-9011`.
 
 New Features:
 
@@ -81,6 +145,9 @@ New Features:
   systems.
   :jira:`873`
 
+- Improved performance of the *condor_schedd* during negotiation
+  :jira:`961`
+  
 - For **arc** grid universe jobs, environment variables specified in
   the job ad are now included in the ADL job description given to the
   ARC CE REST service.
@@ -139,6 +206,30 @@ Bugs Fixed:
   Hold Reason messages and meaningless Hold Reason Subcodes reported in the
   job's classad.
   :jira:`842`
+
+Version 9.6.0
+-------------
+
+Release Notes:
+
+-  HTCondor version 9.6.0 released on March 15, 2022.
+
+New Features:
+
+-  None.
+
+Bugs Fixed:
+
+-  *Security Items*: This release of HTCondor fixes security-related bugs
+   described at
+
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0001 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0001>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0002 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0002>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0003 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0003>`_.
+
+   :jira:`724`
+   :jira:`730`
+   :jira:`985`
 
 Version 9.5.4
 -------------
@@ -702,11 +793,11 @@ New Features:
 
 Bugs Fixed:
 
--  *Security Item*: This release of HTCondor fixes a security-related bug
+-  *Security Items*: This release of HTCondor fixes security-related bugs
    described at
 
-   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003.html <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003.html>`_.
-   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004.html <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004.html>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004>`_.
 
    :jira:`509`
    :jira:`587`

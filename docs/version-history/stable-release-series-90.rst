@@ -7,6 +7,33 @@ These are Long Term Support (LTS) releases of HTCondor. As usual, only bug fixes
 
 The details of each version are described below.
 
+.. _lts-version-history-9013:
+
+Version 9.0.13
+--------------
+
+Release Notes:
+
+.. HTCondor version 9.0.13 released on Month Date, 2022.
+
+- HTCondor version 9.0.13 not yet released.
+
+New Features:
+
+- *condor_config_val* will now print an ``@=end/@end`` pair rather than simply ``=``
+  when printing multi-line configuration values for ``-dump``, ``-summary``, and ``-verbose``
+  mode output.
+  :jira:`1032`
+
+Bugs Fixed:
+
+- The *condor_run* tool now reports job submit errors
+  and warnings rather than writing them into a log file.
+  :jira:`1002`
+
+- Updated the Windows build of HTCondor to use SSL 1.1.1m
+  :jira:`840`
+
 .. _lts-version-history-9012:
 
 Version 9.0.12
@@ -49,16 +76,27 @@ Bugs Fixed:
   connect to one of those daemons.
   :jira:`937`
 
-.. _lts-version-history-9010:
+-  The Job Router no longer sets an incorrect ``User`` job attribute
+   when routing a job between two *condor_schedd* s with different
+   values for configuration parameter ``UID_DOMAIN``.
+   :jira:`1005`
 
-Version 9.0.10
+- Fixed a bug where a credential file with an underscore in its filename could
+  not be used by the curl plugin when doing HTTPS transfers with a bearer token.
+  It can now be accessed by replacing "_" with "." in the URL scheme.
+  :jira:`1011`
+
+- Fixed several unlikely bugs when parsing the time strings in ClassAds.
+  :jira:`814`
+
+.. _lts-version-history-9011:
+
+Version 9.0.11
 --------------
 
 Release Notes:
 
-.. HTCondor version 9.0.10 released on Month Date, 2022.
-
-- HTCondor version 9.0.10 not yet released.
+- HTCondor version 9.0.11 released on March 15, 2022.
 
 New Features:
 
@@ -115,6 +153,32 @@ Bugs Fixed:
 - The Python bindings no longer segfault when the ``htcondor.Submit``
   constructor is passed a dictionary with an entry whose value is ``None``.
   :jira:`950`
+
+.. _lts-version-history-9010:
+
+Version 9.0.10
+--------------
+
+Release Notes:
+
+-  HTCondor version 9.0.10 released on March 15, 2022.
+
+New Features:
+
+-  None.
+
+Bugs Fixed:
+
+-  *Security Items*: This release of HTCondor fixes security-related bugs
+   described at
+
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0001 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0001>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0002 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0002>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0003 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2022-0003>`_.
+
+   :jira:`724`
+   :jira:`730`
+   :jira:`985`
 
 .. _lts-version-history-909:
 
@@ -463,11 +527,11 @@ New Features:
 
 Bugs Fixed:
 
--  *Security Item*: This release of HTCondor fixes a security-related bug
+-  *Security Items*: This release of HTCondor fixes security-related bugs
    described at
 
-   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003/ <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003/>`_.
-   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004/ <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004/>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0003>`_.
+   -  `http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004 <http://htcondor.org/security/vulnerabilities/HTCONDOR-2021-0004>`_.
 
    :jira:`509`
    :jira:`587`
