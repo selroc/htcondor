@@ -59,25 +59,31 @@ if "THE_URL" in os.environ:
 
 IMAGES_BY_CHANNEL = {
     "stable": [
-        "debian:9",
-        "debian:10",
         "debian:11",
         "ubuntu:18.04",
         "ubuntu:20.04",
+        "ubuntu:22.04",
         "centos:7",
-        "rockylinux:8",
-        "amazonlinux:2",
         "scientificlinux/sl:7",
+        "rockylinux:8",
+        "almalinux:8",
+        "arm64v8/almalinux:8",
+        "ppc64le/almalinux:8",
     ],
     "current": [
+        "debian:11",
         "ubuntu:18.04",
         "ubuntu:20.04",
-        "debian:10",
-        "debian:11",
+        "ubuntu:22.04",
         "centos:7",
-        "rockylinux:8",
-        "amazonlinux:2",
         "scientificlinux/sl:7",
+        "rockylinux:8",
+        "rockylinux:9",
+        "almalinux:9",
+        "almalinux:8",
+        "arm64v8/almalinux:8",
+        "arm64v8/almalinux:9",
+        "ppc64le/almalinux:8",
     ],
 }
 
@@ -122,11 +128,10 @@ TESTS = {
 }
 
 PREFICES_BY_IMAGE = {
-    "debian:9" : "apt-get update && apt-get install -y curl",
-    "debian:10" : "apt-get update && apt-get install -y curl",
     "debian:11" : "apt-get update && apt-get install -y curl",
     "ubuntu:18.04": "apt-get update && apt-get install -y curl",
     "ubuntu:20.04": "apt-get update && apt-get install -y curl",
+    "ubuntu:22.04": "apt-get update && apt-get install -y curl",
 }
 
 CHANNELS_BY_IMAGE = {}

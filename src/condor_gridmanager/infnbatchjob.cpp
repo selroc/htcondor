@@ -227,7 +227,7 @@ INFNBatchJob::INFNBatchJob( ClassAd *classad )
 		remoteState = JOB_STATE_UNSUBMITTED;
 	}
 
-	strupr( batchType );
+	strlwr( batchType );
 
 	if ( gahp_args.Count() > 0 ) {
 		gahp_path = param( "REMOTE_GAHP" );
@@ -362,8 +362,15 @@ void INFNBatchJob::doEvaluateState()
 			"(%d.%d) doEvaluateState called: gmState %s, remoteState %d\n",
 			procID.cluster,procID.proc,GMStateNames[gmState],remoteState);
 
-	if ( gahp ) {
-		gahp->setMode( GahpClient::normal );
+	GahpClient::mode gahp_mode = GahpClient::normal;
+	if ( !resourceStateKnown || resourcePingPending || resourceDown ) {
+		gahp_mode = GahpClient::results_only;
+	}
+	if (gahp) {
+		gahp->setMode(gahp_mode);
+	}
+	if (m_xfer_gahp) {
+		m_xfer_gahp->setMode(gahp_mode);
 	}
 
 	do {
@@ -379,55 +386,12 @@ void INFNBatchJob::doEvaluateState()
 			// is first created. Here, we do things that we didn't want to
 			// do in the constructor because they could block (the
 			// constructor is called while we're connected to the schedd).
-			if ( gahp->Startup() == false ) {
-				dprintf( D_ALWAYS, "(%d.%d) Error starting GAHP\n",
-						 procID.cluster, procID.proc );
-				std::string error_string = "Failed to start GAHP: ";
-				error_string += gahp->getGahpStderr();
 
-				jobAd->Assign( ATTR_HOLD_REASON, error_string );
-				gmState = GM_HOLD;
+			// We let the Resource object do the spawning of the gahp
+			// servers in the ping code. This allows us to treat an ssh
+			// failure for a remote gahp as a failed ping of the resource.
+			if (!myResource->didFirstPing()) {
 				break;
-			}
-			if ( myResource->GahpIsRemote() ) {
-				// This job requires a transfer gahp
-				ASSERT( m_xfer_gahp );
-				bool already_started = m_xfer_gahp->isStarted();
-				if ( m_xfer_gahp->Startup() == false ) {
-					dprintf( D_ALWAYS, "(%d.%d) Error starting transfer GAHP\n",
-							 procID.cluster, procID.proc );
-
-					std::string error_string = "Failed to start transfer GAHP: ";
-					error_string += gahp->getGahpStderr();
-
-					jobAd->Assign( ATTR_HOLD_REASON, error_string );
-					gmState = GM_HOLD;
-					break;
-				}
-				// Try creating the security session only when we first
-				// start up the FT GAHP.
-				// For now, failure to create the security session is
-				// not fatal. FT GAHPs older than 8.1.1 didn't have a
-				// CEDAR security session command and BOSCO had another
-				// way to authenticate FileTransfer connections.
-				if ( !already_started &&
-					 m_xfer_gahp->CreateSecuritySession() == false ) {
-					dprintf( D_ALWAYS, "(%d.%d) Error creating security session with transfer GAHP\n",
-							 procID.cluster, procID.proc );
-				}
-			}
-			if ( jobProxy ) {
-				if ( gahp->Initialize( jobProxy ) == false ) {
-					dprintf( D_ALWAYS, "(%d.%d) Error initializing GAHP\n",
-							 procID.cluster, procID.proc );
-
-					jobAd->Assign( ATTR_HOLD_REASON,
-								   "Failed to initialize GAHP" );
-					gmState = GM_HOLD;
-					break;
-				}
-
-				gahp->setDelegProxy( jobProxy );
 			}
 
 			gmState = GM_START;
@@ -438,12 +402,16 @@ void INFNBatchJob::doEvaluateState()
 			errorString = "";
 			if ( condorState == COMPLETED ) {
 				gmState = GM_DONE_COMMIT;
+			} else if (remoteJobId == nullptr && remoteSandboxId == nullptr) {
+				gmState = GM_CLEAR_REQUEST;
+			} else if (!gahp->isStarted() || (m_xfer_gahp && !m_xfer_gahp->isStarted())) {
+				// Wait to see if remote gahps can be started on retry
+				// We do not want to try issuing any gahp commands if the
+				// gahp(s) aren't running.
 			} else if ( remoteJobId != NULL ) {
 				gmState = GM_SUBMITTED;
 			} else if ( remoteSandboxId != NULL ) {
 				gmState = GM_TRANSFER_INPUT;
-			} else {
-				gmState = GM_CLEAR_REQUEST;
 			}
 			} break;
 		case GM_UNSUBMITTED: {
@@ -456,7 +424,7 @@ void INFNBatchJob::doEvaluateState()
 				break;
 			} else if ( condorState == COMPLETED ) {
 				gmState = GM_DELETE;
-			} else {
+			} else if (!resourceDown) {
 				gmState = GM_SAVE_SANDBOX_ID;
 			}
 			} break;
@@ -608,13 +576,13 @@ void INFNBatchJob::doEvaluateState()
 			}
 
 			rc = gahp->blah_job_submit( gahpAd, &job_id_string );
-			if ( rc == GAHPCLIENT_COMMAND_NOT_SUBMITTED ||
-				 rc == GAHPCLIENT_COMMAND_PENDING ) {
-				break;
-			}
 			lastSubmitAttempt = time(NULL);
 			if ( !myResource->GahpIsRemote() ) {
 				numSubmitAttempts++;
+			}
+			if ( rc == GAHPCLIENT_COMMAND_NOT_SUBMITTED ||
+				 rc == GAHPCLIENT_COMMAND_PENDING ) {
+				break;
 			}
 			if ( rc == GAHP_SUCCESS ) {
 				SetRemoteJobId( job_id_string );
@@ -627,6 +595,10 @@ void INFNBatchJob::doEvaluateState()
 				gmState = GM_SUBMIT_SAVE;
 			} else {
 				// unhandled error
+				// TODO Only request ping if failure doesn't look job-specific
+				// TODO Wait and retry command if resource is down and
+				//   eventually comes back up
+				myResource->RequestPing(nullptr);
 				dprintf( D_ALWAYS,
 						 "(%d.%d) blah_job_submit() failed: %s\n",
 						 procID.cluster, procID.proc,
@@ -705,6 +677,10 @@ void INFNBatchJob::doEvaluateState()
 					gmState = GM_SUBMITTED;
 					break;
 				} else {
+					// TODO Only request ping if failure doesn't look job-specific
+					// TODO Wait and retry command if resource is down and
+					//   eventually comes back up
+					myResource->RequestPing(nullptr);
 					dprintf( D_ALWAYS,
 							"(%d.%d) blah_job_status() failed: %s\n",
 							procID.cluster, procID.proc, gahp->getErrorString() );
@@ -786,7 +762,7 @@ void INFNBatchJob::doEvaluateState()
 							 "(%d.%d) blah_download_proxy() failed: %s\n",
 							 procID.cluster, procID.proc, m_xfer_gahp->getErrorString() );
 					errorString = m_xfer_gahp->getErrorString();
-					gmState = GM_CANCEL;
+					gmState = GM_HOLD;
 					break;
 				}
 				gmState = GM_REFRESH_PROXY;
@@ -816,11 +792,15 @@ void INFNBatchJob::doEvaluateState()
 				}
 				if ( rc != GAHP_SUCCESS ) {
 					// unhandled error
+					// TODO Only request ping if failure doesn't look job-specific
+					// TODO Wait and retry command if resource is down and
+					//   eventually comes back up
+					myResource->RequestPing(nullptr);
 					dprintf( D_ALWAYS,
 							 "(%d.%d) blah_job_refresh_proxy() failed: %s\n",
 							 procID.cluster, procID.proc, gahp->getErrorString() );
 					errorString = gahp->getErrorString();
-					gmState = GM_CANCEL;
+					gmState = GM_HOLD;
 					break;
 				}
 				remoteProxyExpireTime = jobProxy->expiration_time;
@@ -952,6 +932,10 @@ void INFNBatchJob::doEvaluateState()
 				}
 				if ( rc != GAHP_SUCCESS ) {
 					// unhandled error
+					// TODO Only request ping if failure doesn't look job-specific
+					// TODO Wait and retry command if resource is down and
+					//   eventually comes back up
+					myResource->RequestPing(nullptr);
 					dprintf( D_ALWAYS,
 							 "(%d.%d) blah_job_cancel() failed: %s\n",
 							 procID.cluster, procID.proc, gahp->getErrorString() );
@@ -959,7 +943,9 @@ void INFNBatchJob::doEvaluateState()
 					gmState = GM_CLEAR_REQUEST;
 					break;
 				}
-				SetRemoteJobId( NULL );
+				if ( condorState != COMPLETED && condorState != REMOVED ) {
+					SetRemoteJobId( NULL );
+				}
 				myResource->CancelSubmit( this );
 			}
 			gmState = GM_DELETE_SANDBOX;
@@ -1077,14 +1063,14 @@ void INFNBatchJob::doEvaluateState()
 			// a remote blahp, when file transfer may send back the
 			// .lmt file.
 			if ( jobProxy ) {
-				std::string proxy;
-				formatstr( proxy, "%s.lmt", jobProxy->proxy_filename );
+				std::string limited_proxy;
+				formatstr( limited_proxy, "%s.lmt", jobProxy->proxy_filename );
 				struct stat statbuf;
-				int rc = lstat( jobProxy->proxy_filename, &statbuf );
+				int rc = lstat( limited_proxy.c_str(), &statbuf );
 				if ( rc == 0 ) {
 					char *spooldir = param("SPOOL");
-					if ( !strncmp( spooldir, jobProxy->proxy_filename, strlen( spooldir ) ) ) {
-						unlink( jobProxy->proxy_filename );
+					if ( !strncmp( spooldir, limited_proxy.c_str(), strlen( spooldir ) ) ) {
+						unlink( limited_proxy.c_str() );
 					}
 					free( spooldir );
 				}
@@ -1220,6 +1206,7 @@ void INFNBatchJob::doEvaluateState()
 				FetchProxyList.erase( m_xferId );
 				m_xferId.clear();
 			}
+			resourcePingComplete = false;
 		}
 
 	} while ( reevaluate_state );
@@ -1283,6 +1270,9 @@ void INFNBatchJob::ProcessRemoteAd( ClassAd *remote_ad )
 		ATTR_JOB_REMOTE_USER_CPU,
 		ATTR_NUM_RESTARTS,
 		ATTR_JOB_REMOTE_WALL_CLOCK,
+		"CpusProvisioned",
+		"DiskProvisioned",
+		"MemoryProvisioned",
 		NULL };		// list must end with a NULL
 
 	if ( remote_ad == NULL ) {
@@ -1357,9 +1347,9 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 	const char *attrs_to_copy[] = {
 		ATTR_JOB_ARGUMENTS1,
 		ATTR_JOB_ARGUMENTS2,
-		ATTR_JOB_ENVIRONMENT1,
-		ATTR_JOB_ENVIRONMENT1_DELIM,
-		ATTR_JOB_ENVIRONMENT2,
+		ATTR_JOB_ENV_V1,
+		ATTR_JOB_ENV_V1_DELIM,
+		ATTR_JOB_ENVIRONMENT,
 		ATTR_JOB_INPUT,
 		ATTR_JOB_OUTPUT,
 		ATTR_JOB_ERROR,
@@ -1409,15 +1399,14 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 			// CERequirements is a nested ad. Build the goofy blahp
 			// expression from the names and values of the nested ad.
 			ExprTree *new_cereq = NULL;
-			for ( classad::ClassAd::iterator next_attr = cereq_ad->begin();
-				  next_attr != cereq_ad->end(); next_attr++ ) {
+			for (auto & next_attr : *cereq_ad) {
 				classad::Value val;
-				next_attr->second->Evaluate( val );
+				next_attr.second->Evaluate( val );
 				classad::Literal *new_literal = classad::Literal::MakeLiteral( val );
 				if ( new_literal == NULL ) {
 					continue;
 				}
-				classad::AttributeReference *new_ref = classad::AttributeReference::MakeAttributeReference( NULL, next_attr->first, false );
+				classad::AttributeReference *new_ref = classad::AttributeReference::MakeAttributeReference( NULL, next_attr.first, false );
 				classad::Operation *new_op = classad::Operation::MakeOperation( classad::Operation::EQUAL_OP, new_ref, new_literal );
 				if ( new_cereq == NULL ) {
 					new_cereq = new_op;
@@ -1529,16 +1518,16 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 	}
 
 	const char *next_name;
-	for ( auto itr = jobAd->begin(); itr != jobAd->end(); itr++ ) {
-		next_name = itr->first.c_str();
+	for (auto & itr : *jobAd) {
+		next_name = itr.first.c_str();
 		if ( strncasecmp( next_name, "REMOTE_", 7 ) == 0 &&
 			 strlen( next_name ) > 7 ) {
 
 			char const *attr_name = &(next_name[7]);
 
-			if(strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT1) == 0 ||
-			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT1_DELIM) == 0 ||
-			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT2) == 0)
+			if(strcasecmp(attr_name,ATTR_JOB_ENV_V1) == 0 ||
+			   strcasecmp(attr_name,ATTR_JOB_ENV_V1_DELIM) == 0 ||
+			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT) == 0)
 			{
 				//Any remote environment settings indicate that we
 				//should clear whatever environment was already copied
@@ -1546,9 +1535,9 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 				//settings can never trump the remote settings.
 				if(!cleared_environment) {
 					cleared_environment = true;
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT1);
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT1_DELIM);
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT2);
+					submit_ad->Delete(ATTR_JOB_ENV_V1);
+					submit_ad->Delete(ATTR_JOB_ENV_V1_DELIM);
+					submit_ad->Delete(ATTR_JOB_ENVIRONMENT);
 				}
 			}
 
@@ -1566,7 +1555,7 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 				}
 			}
 
-			ExprTree * pTree = itr->second->Copy();
+			ExprTree * pTree = itr.second->Copy();
 			submit_ad->Insert( attr_name, pTree );
 		}
 	}
@@ -1711,14 +1700,14 @@ ClassAd *INFNBatchJob::buildTransferAd()
 		}
 	}
 
-	for ( auto itr = jobAd->begin(); itr != jobAd->end(); itr++ ) {
-		next_name = itr->first.c_str();
+	for (auto & itr : *jobAd) {
+		next_name = itr.first.c_str();
 		if ( strncasecmp( next_name, "REMOTE_", 7 ) == 0 &&
 			 strlen( next_name ) > 7 ) {
 
 			char const *attr_name = &(next_name[7]);
 
-			ExprTree * pTree = itr->second->Copy();
+			ExprTree * pTree = itr.second->Copy();
 			xfer_ad->Insert( attr_name, pTree );
 		}
 	}

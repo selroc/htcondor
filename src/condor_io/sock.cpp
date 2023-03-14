@@ -25,7 +25,6 @@
 #endif
 
 #include "sock.h"
-#include "condor_constants.h"
 #include "condor_io.h"
 #include "condor_uid.h"
 #include "internet.h"
@@ -316,7 +315,7 @@ Sock::getPolicyAd(classad::ClassAd &ad) const
 
 
 bool
-Sock::isAuthorizationInBoundingSet(const std::string &authz)
+Sock::isAuthorizationInBoundingSet(const std::string &authz) const
 {
 		// Short-circuit: ALLOW is implicitly in the bounding set.
 	if (authz == "ALLOW") {
@@ -335,7 +334,7 @@ Sock::isAuthorizationInBoundingSet(const std::string &authz)
 				const char *authz_name;
 				while ( (authz_name = authz_policy_list.next()) ) {
 					if (authz_name[0]) {
-						m_authz_bound.insert(authz_name);
+						const_cast<Sock*>(this)->m_authz_bound.insert(authz_name);
 					}
 				}
 			}
@@ -343,7 +342,7 @@ Sock::isAuthorizationInBoundingSet(const std::string &authz)
 		if (m_authz_bound.empty()) {
 				// Put in a nonsense authz level to prevent re-parsing;
 				// an empty bounding set is interpretted as no bounding set at all.
-			m_authz_bound.insert("ALL_PERMISSIONS");
+			const_cast<Sock*>(this)->m_authz_bound.insert("ALL_PERMISSIONS");
 		}
 	}
 	return (m_authz_bound.find(authz) != m_authz_bound.end()) ||
@@ -1185,7 +1184,7 @@ bool preferOutboundIPv4 = false;
 bool acceptIPv4 = false;
 bool acceptIPv6 = false;
 
-bool Sock::chooseAddrFromAddrs( char const * host, std::string & addr ) {
+bool Sock::chooseAddrFromAddrs( char const * host, std::string & addr_str, condor_sockaddr* saddr ) {
 	if(! routingParametersInitialized) {
 		ignoreTargetProtocolPreference = param_boolean( "IGNORE_TARGET_PROTOCOL_PREFERENCE", false );
 		preferOutboundIPv4 = param_boolean( "PREFER_OUTBOUND_IPV4", false );
@@ -1290,11 +1289,11 @@ bool Sock::chooseAddrFromAddrs( char const * host, std::string & addr ) {
 	// Change the "primary" address.
 	s.setHost( candidate.to_ip_string().c_str() );
 	s.setPort( candidate.get_port() );
-	addr = s.getSinful();
+	addr_str = s.getSinful();
 
-	set_connect_addr( addr.c_str() );
-	_who = candidate;
-	addr_changed();
+	if (saddr) {
+		*saddr = candidate;
+	}
 
 	return true;
 }
@@ -1308,8 +1307,9 @@ int Sock::do_connect(
 	if (!host || port < 0) return FALSE;
 
 	std::string addr;
-	if( chooseAddrFromAddrs( host, addr ) ) {
+	if( chooseAddrFromAddrs( host, addr, &_who ) ) {
 		host = addr.c_str();
+		set_connect_addr(addr.c_str());
 	} else {
 		_who.clear();
 		if (!guess_address_string(host, port, _who)) {
@@ -1324,8 +1324,8 @@ int Sock::do_connect(
 		else { // otherwise, just use ip string.
 			set_connect_addr(_who.to_ip_string().c_str());
 		}
-    	addr_changed();
     }
+	addr_changed();
 
 	// now that we have set _who (useful for getting informative
 	// peer_description), see if we should do a reverse connect
@@ -2094,7 +2094,7 @@ char * Sock::serializeCryptoInfo() const
 	}
         outbuf = new char[buflen];
 
-        sprintf(outbuf,"%d*%d*%d*", len*2, (int)get_crypto_key().getProtocol(),
+        snprintf(outbuf, buflen, "%d*%d*%d*", len*2, (int)get_crypto_key().getProtocol(),
                 (int)get_encryption());
 
 	// if protocol is 3 (AES) then we need to send the StreamCryptoState
@@ -2126,7 +2126,7 @@ char * Sock::serializeCryptoInfo() const
     else {
         outbuf = new char[2];
         memset(outbuf, 0, 2);
-        sprintf(outbuf,"%d",0);
+        snprintf(outbuf, 2, "%d", 0);
     }
     return( outbuf );
 }
@@ -2146,7 +2146,7 @@ char * Sock::serializeMdInfo() const
     if (len > 0) {
         int buflen = len*2+32;
         outbuf = new char[buflen];
-        sprintf(outbuf,"%d*", len*2);
+        snprintf(outbuf, buflen, "%d*", len*2);
 
         // Hex encode the binary key
         char * ptr = outbuf + strlen(outbuf);
@@ -2867,11 +2867,9 @@ Sock::wrap(const unsigned char* d_in,int l_in,
                     unsigned char*& d_out,int& l_out)
 {    
     bool coded = false;
-#ifdef HAVE_EXT_OPENSSL
     if (get_encryption()) {
         coded = crypto_->encrypt(crypto_state_, d_in, l_in, d_out, l_out);
     }
-#endif
     return coded;
 }
 
@@ -2880,24 +2878,20 @@ Sock::unwrap(const unsigned char* d_in,int l_in,
                       unsigned char*& d_out, int& l_out)
 {
     bool coded = false;
-#ifdef HAVE_EXT_OPENSSL
     if (get_encryption()) {
         coded = crypto_->decrypt(crypto_state_, d_in, l_in, d_out, l_out);
     }
-#endif
     return coded;
 }
 
 void Sock::resetCrypto()
 {
-#ifdef HAVE_EXT_OPENSSL
   if (crypto_state_) {
     crypto_state_->reset();
     if (crypto_state_->getkey().getProtocol() == CONDOR_AESGCM) {
         Condor_Crypt_AESGCM::initState(&(crypto_state_->m_stream_crypto_state));
     }
   }
-#endif
 }
 
 bool 
@@ -2973,11 +2967,9 @@ const KeyInfo& Sock :: get_crypto_key() const
 
 const KeyInfo& Sock :: get_md_key() const
 {
-#ifdef HAVE_EXT_OPENSSL
     if (mdKey_) {
         return *mdKey_;
     }
-#endif
     ASSERT(0);
     return *mdKey_;
 }
@@ -2987,7 +2979,6 @@ bool
 Sock::set_crypto_key(bool enable, KeyInfo * key, const char * keyId)
 {
     bool inited = true;
-#ifdef HAVE_EXT_OPENSSL
 
     if (key != 0) {
         inited = initialize_crypto(key);
@@ -3029,8 +3020,6 @@ Sock::set_crypto_key(bool enable, KeyInfo * key, const char * keyId)
 		}
 		set_crypto_mode(enable);
     }
-
-#endif /* HAVE_EXT_OPENSSL */
 
     return inited;
 }

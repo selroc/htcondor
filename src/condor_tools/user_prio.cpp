@@ -83,26 +83,26 @@ enum {
 
 struct LineRec {
   std::string Name;
-  float Priority;
+  double Priority;
   int Res;
-  float wtRes;
-  float AccUsage;
-  float Requested;
-  float Factor;
+  double wtRes;
+  double AccUsage;
+  double Requested;
+  double Factor;
   int BeginUsage;
   int LastUsage;
   std::string AcctGroup;
   bool IsAcctGroup;
   int   HasDetail;      // one or more of Detailxxx flags indicating the that data exists.
-  float EffectiveQuota;
-  float ConfigQuota;
-  float SubtreeQuota;
-  float Ceiling;
-  float SortKey;
+  double EffectiveQuota;
+  double ConfigQuota;
+  double SubtreeQuota;
+  double Ceiling;
+  double SortKey;
   int   Surplus;       // 0 is no, 1 = regroup (by prio), 2 = accept_surplus (by quota)
   int   index;
   int   GroupId;
-  float DisplayOrder;  // used to flexibly control sort order in Hier sort mode.
+  double DisplayOrder;  // used to flexibly control sort order in Hier sort mode.
 };
 
 //-----------------------------------------------------------------
@@ -366,6 +366,7 @@ main(int argc, const char* argv[])
   int DeleteUser=0;
   int SetFactor=0;
   int SetPrio=0;
+  int SetFloor=0;
   int SetCeiling=0;
   int SetAccum=0;
   int SetBegin=0;
@@ -383,7 +384,6 @@ main(int argc, const char* argv[])
   bool GroupRollup = false;
   const char * pcolon = NULL; // used to parse -arg:opt arguments
 
-  myDistro->Init( argc, argv );
   set_priv_initialize(); // allow uid switching if root
   config();
 
@@ -398,6 +398,11 @@ main(int argc, const char* argv[])
     else if (IsArg(argv[i],"setfactor")) {
       if (i+2>=argc) usage(argv[0]);
       SetFactor=i;
+      i+=2;
+    }
+    else if (IsArg(argv[i],"setfloor")) {
+      if (i+2>=argc) usage(argv[0]);
+      SetFloor=i;
       i+=2;
     }
     else if (IsArg(argv[i],"setceiling")) {
@@ -475,12 +480,7 @@ main(int argc, const char* argv[])
         customFormat = true;
     }
     else if (IsArgColon(argv[i],"debug",&pcolon,1)) {
-      if (pcolon && pcolon[1]) {
-        set_debug_flags( ++pcolon, 0 );
-        // for now we also need to do this because dprintf_set_tool_debug reset global debug flags based on it
-        param_insert("TOOL_DEBUG", pcolon);
-      }
-      dprintf_set_tool_debug("TOOL", 0);
+      dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
     }
     else if (IsArg(argv[i],"hierarchical",2) || IsArg(argv[i],"heir")) {
       HierFlag=true;
@@ -597,7 +597,7 @@ main(int argc, const char* argv[])
 
 	  // Get info on our negotiator
   Daemon negotiator(DT_NEGOTIATOR, neg_name, pool_name);
-  if (!negotiator.locate(Daemon::LOCATE_FOR_LOOKUP)) {
+  if (!negotiator.locate(Daemon::LOCATE_FOR_ADMIN)) {
 	  fprintf(stderr, "%s: Can't locate negotiator in %s\n", 
               argv[0], pool_name ? pool_name : "local pool");
 	  exit(1);
@@ -631,7 +631,7 @@ main(int argc, const char* argv[])
 				 "user@uid.domain", "user@full.host.name" );
 		exit(1);
 	}
-    float Priority=atof(argv[SetPrio+2]);
+    double Priority=atof(argv[SetPrio+2]);
 
     // send request
     Sock* sock;
@@ -662,7 +662,7 @@ main(int argc, const char* argv[])
 				 "user@uid.domain", "user@full.host.name" );
 		exit(1);
 	}
-    float Factor=atof(argv[SetFactor+2]);
+    double Factor=atof(argv[SetFactor+2]);
 	if (Factor<1) {
 		fprintf( stderr, "Priority factors must be greater than or equal to "
 				 "1.\n");
@@ -711,40 +711,56 @@ main(int argc, const char* argv[])
 
   }
 
-  else if (SetCeiling) { // set ceiling
+  else if (SetFloor || SetCeiling) { // set ceiling
 
+
+	int argIndex;
+	long minValue;
+	const char *name;
+	int command;
+
+	if (SetFloor) {
+		argIndex = SetFloor;
+		name = "floor";
+		command = SET_FLOOR;
+		minValue = 0;
+	} else {
+		argIndex = SetCeiling;
+		name = "ceiling";
+		command = SET_CEILING;
+		minValue = -1;
+	}
 	const char* tmp;
-	if( ! (tmp = strchr(argv[SetCeiling+1], '@')) ) {
+	if( ! (tmp = strchr(argv[argIndex+1], '@')) ) {
 		fprintf( stderr, 
 				 "%s: You must specify the full name of the submittor you wish\n",
 				 argv[0] );
-		fprintf( stderr, "\tto update the ceiling of (%s or %s)\n", 
-				 "user@uid.domain", "user@full.host.name" );
+		fprintf( stderr, "\tto update the %s of (%s or %s) (not %s)\n", 
+				 name, "user@uid.domain", "user@full.host.name", argv[argIndex+1] );
 		exit(1);
 	}
-    long ceiling = strtol(argv[SetCeiling+2], nullptr, 10);
-	if (ceiling < -1) {
-		fprintf( stderr, "Ceiling must be greater than or equal to "
-				 "-1.\n");
+    long value = strtol(argv[argIndex+2], nullptr, 10);
+	if (value < minValue) {
+		fprintf( stderr, "%s must be greater than or equal to "
+				 "%ld.\n", name, minValue);
 		exit(1);
 	}
 
     // send request
     Sock* sock;
-    if( !(sock = negotiator.startCommand(SET_CEILING,
+    if( !(sock = negotiator.startCommand(command,
 										 Stream::reli_sock, 0) ) ||
-        !sock->put(argv[SetCeiling+1]) ||
-        !sock->put(ceiling) ||
+        !sock->put(argv[argIndex+1]) ||
+        !sock->put(value) ||
         !sock->end_of_message()) {
-      fprintf( stderr, "failed to send SET_CEILING command to negotiator\n" );
+      fprintf( stderr, "failed to send SET_%s command to negotiator\n", name);
       exit(1);
     }
 
     sock->close();
     delete sock;
 
-    printf("The ceiling of %s was set to %ld\n",argv[SetCeiling+1],ceiling);
-
+    printf("The %s of %s was set to %ld\n",name, argv[argIndex+1],value);
   }
 
   else if (SetAccum) { // set accumulated usage
@@ -758,7 +774,7 @@ main(int argc, const char* argv[])
 				 "user@uid.domain", "user@full.host.name" );
 		exit(1);
 	}
-    float accumUsage=atof(argv[SetAccum+2]);
+    double accumUsage=atof(argv[SetAccum+2]);
 	if (accumUsage<0.0) {
 		fprintf( stderr, "Usage must be greater than 0 seconds\n");
 		exit(1);
@@ -1218,13 +1234,13 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
   std::string attrIsAcctGroup;
   std::string attrCeiling;
   char  name[128], policy[32];
-  float priority = 0, Factor = 0, AccUsage = -1, ceiling = -1;
+  double priority = 0, Factor = 0, AccUsage = -1, ceiling = -1;
   int   resUsed = 0, BeginUsage = 0;
   int   LastUsage = 0;
-  float wtResUsed, requested = 0;
+  double wtResUsed, requested = 0;
   std::string AcctGroup;
   bool IsAcctGroup;
-  float effective_quota = 0, config_quota = 0, subtree_quota = 0;
+  double effective_quota = 0, config_quota = 0, subtree_quota = 0;
   bool fNeedGroupIdFixup = false;
 
   for( int i=1; i<=numElem; i++) {
@@ -1243,22 +1259,22 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
 
 		// The old format, one big ad
 	if (accountingAds.size() == 0) {
-		sprintf(strI, "%d", i);
+		snprintf(strI, sizeof(strI), "%d", i);
 	} else {
 		// The new format, all ads in the vector
 		strI[0] = '\0';
 		ad = & accountingAds[i - 1];
 	}
 
-    sprintf( attrName , "Name%s", strI );
-    sprintf( attrPrio , "Priority%s", strI );
-    sprintf( attrResUsed , "ResourcesUsed%s", strI );
-    sprintf( attrRequested , "Requested%s", strI );
-    sprintf( attrWtResUsed , "WeightedResourcesUsed%s", strI );
-    sprintf( attrFactor , "PriorityFactor%s", strI );
-    sprintf( attrBeginUsage , "BeginUsageTime%s", strI );
-    sprintf( attrLastUsage , "LastUsageTime%s", strI );
-    sprintf( attrAccUsage , "WeightedAccumulatedUsage%s", strI );
+	snprintf(attrName, sizeof(attrName), "Name%s", strI);
+	snprintf(attrPrio, sizeof(attrPrio), "Priority%s", strI);
+	snprintf(attrResUsed, sizeof(attrResUsed), "ResourcesUsed%s", strI);
+	snprintf(attrRequested, sizeof(attrRequested), "Requested%s", strI);
+	snprintf(attrWtResUsed, sizeof(attrWtResUsed), "WeightedResourcesUsed%s", strI);
+	snprintf(attrFactor, sizeof(attrFactor), "PriorityFactor%s", strI);
+	snprintf(attrBeginUsage, sizeof(attrBeginUsage), "BeginUsageTime%s", strI);
+	snprintf(attrLastUsage, sizeof(attrLastUsage), "LastUsageTime%s", strI);
+	snprintf(attrAccUsage, sizeof(attrAccUsage), "WeightedAccumulatedUsage%s", strI);
     formatstr(attrAcctGroup, "AccountingGroup%s", strI);
     formatstr(attrIsAcctGroup, "IsAccountingGroup%s", strI);
     formatstr(attrCeiling, "Ceiling%s", strI);
@@ -1295,9 +1311,9 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
     }
 
     char attr[64];
-    sprintf( attr, "EffectiveQuota%s", strI );
+    snprintf( attr, sizeof(attr), "EffectiveQuota%s", strI );
     if (ad->LookupFloat(attr, effective_quota)) LR[i-1].HasDetail |= DetailEffQuota;
-    sprintf( attr, "ConfigQuota%s", strI );
+    snprintf( attr, sizeof(attr), "ConfigQuota%s", strI );
     if (ad->LookupFloat(attr, config_quota)) LR[i-1].HasDetail |= DetailCfgQuota;
 
     if (IsAcctGroup) {
@@ -1305,14 +1321,14 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
         if (!strcmp(name,"<none>") || !strcmp(name,"."))
            LR[i-1].GroupId = 0;
 
-        sprintf( attr, "GroupAutoRegroup%s", strI );
+        snprintf( attr, sizeof(attr), "GroupAutoRegroup%s", strI );
         bool regroup = false;
         if (ad->LookupBool(attr, regroup)) LR[i-1].HasDetail |= DetailSurplus;
         LR[i-1].Surplus = regroup ? SurplusRegroup : SurplusNone;
         if (regroup)
            GlobalSurplusPolicy = SurplusRegroup;
 
-        sprintf( attr, "SurplusPolicy%s", strI );
+        snprintf( attr, sizeof(attr), "SurplusPolicy%s", strI );
         if (ad->LookupString(attr, policy, COUNTOF(policy) )) {
            LR[i-1].HasDetail |= DetailSurplus;
            if (MATCH == strcasecmp(policy, "regroup")) {
@@ -1328,12 +1344,12 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
            }
         }
 
-        float sort_key = LR[i-1].SortKey;
-        sprintf( attr, "GroupSortKey%s", strI );
+        double sort_key = LR[i-1].SortKey;
+        snprintf( attr, sizeof(attr), "GroupSortKey%s", strI );
         if (ad->LookupFloat(attr, sort_key)) LR[i-1].HasDetail |= DetailSortKey;
         LR[i-1].SortKey = sort_key;
 
-        sprintf( attr, "SubtreeQuota%s", strI );
+        snprintf( attr, sizeof(attr), "SubtreeQuota%s", strI );
         if (ad->LookupFloat(attr, subtree_quota)) LR[i-1].HasDetail |= DetailTreeQuota;
         if (GroupRollup && !(LR[i-1].HasDetail & DetailEffQuota)) {
            LR[i-1].HasDetail &= ~DetailPrios;
@@ -1521,17 +1537,17 @@ static char * FormatDeltaTime(char * pszDest, int cchDest, int tmDelta, const ch
    return pszDest;
 }
 
-static char * FormatFloat(char * pszDest, int width, int decimal, float value)
+static char * FormatFloat(char * pszDest, int width, int decimal, double value)
 {
    char sz[60];
-   char fmt[16] = "%";
-   sprintf(fmt+1, "%d.%df", width, decimal);
-   sprintf(sz, fmt, value);
+   char fmt[16];
+   snprintf(fmt, sizeof(fmt), "%%%d.%df", width, decimal);
+   snprintf(sz, sizeof(sz), fmt, value);
    int cch = strlen(sz);
    if (cch > width)
       {
-      sprintf(fmt+1,".%dg", width-6);
-      sprintf(sz, fmt, value);
+      snprintf(fmt, sizeof(fmt), "%%.%dg", width-6);
+      snprintf(sz, sizeof(sz), fmt, value);
       cch = strlen(sz);
       }
    CopyAndPadToWidth(pszDest, sz, width+1, ' ', PAD_LEFT);
@@ -1607,7 +1623,7 @@ static void PrintInfo(int tmLast, LineRec* LR, int NumElem, bool HierFlag)
 
    char UserCountStr[30];
    const char * UserCountFmt = "Number of users: %d";
-   sprintf(UserCountStr, UserCountFmt, NumElem);
+   snprintf(UserCountStr, sizeof(UserCountStr), UserCountFmt, NumElem);
    const int min_name = strlen(UserCountStr);
 
    if (max_name > MAX_NAME_COLUMN_WIDTH) max_name = MAX_NAME_COLUMN_WIDTH;
@@ -1818,7 +1834,7 @@ static void PrintInfo(int tmLast, LineRec* LR, int NumElem, bool HierFlag)
 
    // print summary/footer
    // 
-   sprintf(UserCountStr, UserCountFmt, UserCount);
+   snprintf(UserCountStr, sizeof(UserCountStr), UserCountFmt, UserCount);
    CopyAndPadToWidth(Line,UserCountStr,max_name+1,' ');
    ix = max_name;
    for (int ii = 0; ii < (int)COUNTOF(aCols); ++ii)
@@ -1873,6 +1889,7 @@ static void usage(const char* name) {
      "\t-delete <user>\t\tRemove a user record from the accountant\n"
      "\t-setprio <user> <val>\tSet priority for <user>\n"
      "\t-setfactor <user> <val>\tSet priority factor for <user>\n"
+     "\t-setfloor <user> <val>\tSet floor for <user>\n"
      "\t-setceiling <user> <val>\tSet ceiling for <user>\n"
      "\t-setaccum <user> <val>\tSet Accumulated usage for <user>\n"
      "\t-setbegin <user> <val>\tset last first date for <user>\n"
@@ -1936,8 +1953,8 @@ static void PrintResList(ClassAd* ad)
   int i;
 
   for (i=1;;i++) {
-    sprintf( attrName , "Name%d", i );
-    sprintf( attrStartTime , "StartTime%d", i );
+    snprintf( attrName, sizeof(attrName), "Name%d", i );
+    snprintf( attrStartTime, sizeof(attrStartTime), "StartTime%d", i );
 
     if( !ad->LookupString   ( attrName, name, COUNTOF(name) ) ||
 		!ad->LookupInteger  ( attrStartTime, StartTime))

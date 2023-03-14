@@ -128,6 +128,7 @@ int DestroyProc(int cluster_id, int proc_id);
 int DestroyCluster(int cluster_id, const char *reason = NULL);
 
 // add schedd capabilities into the given ad, based on the mask. (mask is for future use)
+#define GetsScheddCapabilities_F_HELPTEXT      0x01
 bool GetScheddCapabilites(int mask, ClassAd & ad);
 
 // either factory filename or factory text may be null, but not both.
@@ -141,6 +142,9 @@ int SendMaterializeData(int cluster_id, int flags, int (*next)(void* pv, std::st
 // since the chained parent attributes should be sent only once, and using a different key.
 // To use this function to sent the cluster ad, pass a key with -1 as the proc id, and pass the cluster ad as the ad argument.
 int SendJobAttributes(const JOB_ID_KEY & key, const classad::ClassAd & ad, SetAttributeFlags_t saflags, CondorError *errstack=NULL, const char * who=NULL);
+
+// send the jobset ad during submission of the given cluster_id.
+int SendJobsetAd(int cluster_id, const classad::ClassAd & ad, unsigned int flags);
 
 /** For all jobs in the queue for which constraint evaluates to true, set
 	attr = value.  The value should be a valid ClassAd value (strings
@@ -194,7 +198,7 @@ int SetAttributeInt(int cluster, int proc, const char *attr, int value, SetAttri
 	will be a ClassAd floating-point literal.
 	@return -1 on failure; 0 on success
 */
-int SetAttributeFloat(int cluster, int proc, const char *attr, float value, SetAttributeFlags_t flags = 0);
+int SetAttributeFloat(int cluster, int proc, const char *attr, double value, SetAttributeFlags_t flags = 0);
 /** Set attr = value for job with specified cluster and proc.  The value
 	will be a ClassAd string literal.
 	@return -1 on failure; 0 on success
@@ -225,12 +229,6 @@ int SetSecureAttributeString(int cluster_id, int proc_id,
 	@return -1 on failure; 0 on success
 */
 int SetTimerAttribute(int cluster, int proc, const char *attr_name, int dur);
-
-/** Set the password to the MyProxy server for specified cluster/proc. The
-	value should be a null-terminated string.
-	@return -1 on failure; 0 on success
-*/
-int SetMyProxyPassword (int cluster, int proc, const char * pwd);
 
 
 /** populate the scheduler capabilities ad
@@ -276,7 +274,7 @@ void AbortTransactionAndRecomputeClusters();
 /** Get value of attr for job with specified cluster and proc.
 	@return -1 on failure; 0 on success
 */
-int GetAttributeFloat(int cluster, int proc, const char *attr, float *value);
+int GetAttributeFloat(int cluster, int proc, const char *attr, double *value);
 /** Get value of attr for job with specified cluster and proc.
 	@return -1 on failure; 0 on success
 */

@@ -7,6 +7,197 @@ These are Long Term Support (LTS) releases of HTCondor. As usual, only bug fixes
 
 The details of each version are described below.
 
+.. _lts-version-history-9017:
+
+Version 9.0.17
+--------------
+
+Release Notes:
+
+- HTCondor version 9.0.17 released on September 29, 2022.
+
+New Features:
+
+- Increased the length of the password generated for Windows default
+  slot user accounts from 14 characters to 32 characters, and added
+  some code to ensure that complexity measures that look at
+  character set and not length will still be satisfied.
+  :jira:`1232`
+
+- Added ``-debug`` option to *condor_drain* tool.
+  :jira:`1236`
+
+- Removed support from the *condor_startd* for querying keyboard and mouse idle time,
+  on legacy x86 Linux machines that used an 8042 keyboard controller.
+  This caused significant performance degradation in the *condor_startd*
+  on machines with many CPUs.
+  :jira:`1297`
+
+Bugs Fixed:
+
+- Fixed a bug that would cause the *condor_schedd* to leak 
+  file descriptors, eventually run out, and crash, when
+  unable to launch the scheduler universe job for any reason.
+  :jira:`1261`
+
+- When a failure occurs with a grid universe job of type ``batch``,
+  the local job is now always put on hold, instead of the remote job
+  being canceled and automatically resubmitted.
+  :jira:`1226`
+
+- Job attribute ``GridJobId`` is no longer altered for **batch** grid
+  universe jobs when the job enters ``Removed`` status.
+  :jira:`1224`
+
+- Fixed a bug where forwarding a refreshed X.509 proxy for a **batch**
+  grid universe job would fail.
+  :jira:`1222`
+  
+- Fixed a bug where DAGMan would fail when the keyword **DONE** was added
+  to the **JOB** line in a **DAG input file**.
+  :jira:`1267` 
+
+- Fixed a bug where the FS and MUNGE authentication methods would
+  treat local user accounts with very large UID values (greater than
+  2^31) as the ``condor`` user.
+  :jira:`1229`
+
+- Fixed a bug with the *condor_credmon_oauth* where scope and audience
+  claims were dropped from OAuth refresh tokens on their first renewal.
+  :jira:`1270`
+
+- Added the appropriate Python cryptography package as a dependency to
+  the *condor-credmon-oauth* RPM package.
+  :jira:`1279`
+
+- Fixed bugs with creation of a job manifest; see the ``manifest``
+  job submit command in the :ref:`man-pages/condor_submit:*condor_submit*`
+  man page.
+  :jira:`1350`
+
+- If "Singularity" is really the "Apptainer" runtime, HTCondor now
+  sets environment variables to be passed to the job appropriately, which
+  prevents Apptainer from displaying ugly warnings about how this won't
+  work in the future.
+  :jira:`1137`
+
+
+.. _lts-version-history-9016:
+
+Version 9.0.16
+--------------
+
+Release Notes:
+
+- HTCondor version 9.0.16 released on August 16, 2022.
+
+New Features:
+
+- Singularity jobs now mount /tmp and /var/tmp under the scratch
+  directory, not in tmpfs.
+  :jira:`1193`
+
+Bugs Fixed:
+
+- Fixed a bug where if the submit file set ``checkpoint_exit_code``, and the administrator
+  enabled Singularity support on the execute node, the job would go on hold at checkpoint time.
+  :jira:`837`
+
+- Fixed a bug where the *condor_gridmanager* would delete the job's
+  X.509 proxy file when it meant to delete a temporary copy of the
+  proxy file.
+  :jira:`1223`
+
+- Fixed a file descriptor leak when using SciTokens for authentication.
+  :jira:`1188`
+
+- Fixed a bug on Windows that caused a misleading error message about
+  the SharedPortEndpoint when a daemon exits.
+  :jira:`1178`
+
+- Fixed a bug where the *condor_check_config* tool raised an UnboundLocalError
+  due to an undefined variable.
+  :jira:`1186`
+
+- Fixed a bug in *condor_gpu_discovery* which would cause the tool to crash
+  when OpenCL devices were detected and ``GPU_DEVICE_ORDINAL`` was set in the environment.
+  :jira:`1191`
+
+- Fix a bug that could cause daemons to crash if their log rotates
+  during shutdown.
+  :jira:`1200`
+
+- Fixed a bug where the *condor_starter* would wait forever for a
+  reconnect from the *condor_shadow* if a network failure occurred
+  during cleanup after the job completed.
+  :jira:`1213`
+
+- The ``condor-credmon-oath`` package now properly pulls in ``python3-mod_wsgi``
+  on Enterprise Linux 8.
+  :jira:`1217`
+  
+.. _lts-version-history-9015:
+
+Version 9.0.15
+--------------
+
+Release Notes:
+
+- HTCondor version 9.0.15 released on July 21, 2022.
+
+New Features:
+
+- For **batch** grid universe jobs, report resources provisioned by the batch
+  scheduler when available.
+  :jira:`1199`
+
+Bugs Fixed:
+
+- None.
+
+.. _lts-version-history-9014:
+
+Version 9.0.14
+--------------
+
+Release Notes:
+
+- HTCondor version 9.0.14 released on July 12, 2022.
+
+New Features:
+
+- Made SciTokens mapping failures more prominent in the daemon logs.
+  :jira:`1072`
+
+- The manual page, usage and logging of the *condor_set_shutdown* tool
+  has been improved to clarify what this tool does and how to use it.
+  :jira:`1102`
+
+Bugs Fixed:
+
+- Fixed a bug where if a job's output and error were directed to the same
+  file, no other output files would be transferred.
+  :jira:`1101`
+
+- Ensure that the matching set of Python bindings is installed when HTCondor
+  is upgraded on RPM based platforms.
+  :jira:`1127`
+
+- Fixed a bug that caused ``$(OPSYSANDVER)`` to expand to nothing in a JOB_TRANSFORM.
+  :jira:`1121`
+
+- Fixed a bug in the Python bindings that prevented context managed
+  ``htcondor.SecMan`` sessions from working.
+  :jira:`924`
+  
+- Fixed a bug where ``RemoteUserCpu`` and ``RemoteSysCpu`` attributes are occasionally
+  set to ``0`` for successfully completed jobs.
+  :jira:`1162`
+
+- Make ``condor-externals`` package dependency less strict to ease transition
+  between CHTC and OSG RPM repositories.
+  :jira:`1177`
+
 .. _lts-version-history-9013:
 
 Version 9.0.13
@@ -14,24 +205,44 @@ Version 9.0.13
 
 Release Notes:
 
-.. HTCondor version 9.0.13 released on Month Date, 2022.
-
-- HTCondor version 9.0.13 not yet released.
+- HTCondor version 9.0.13 released on May 26, 2022.
 
 New Features:
+
+- If the configuration macro ``[SCHEDD|STARTD]_CRON_LOG_NON_ZERO_EXIT`` is
+  set to true, the corresponding daemon will write the cron job's non-zero
+  exit code to the log, followed by the cron job's output.
+  :jira:`971`
 
 - *condor_config_val* will now print an ``@=end/@end`` pair rather than simply ``=``
   when printing multi-line configuration values for ``-dump``, ``-summary``, and ``-verbose``
   mode output.
   :jira:`1032`
 
+- Add a ``SEC_CREDENTIAL_STORECRED_OPTS`` variable to *condor_vault_storer*
+  to enable sending additional options to every *condor_store_cred* command.
+  :jira:`1091`
+
+- Recognize the new format of vault tokens, beginning with ``hvs.`` in addition
+  to the old format beginning with ``s.`` .
+  :jira:`1091`
+
 Bugs Fixed:
 
 - The *condor_run* tool now reports job submit errors
-  and warnings rather than writing them into a log file.
+  and warnings to the terminal rather than writing them into a log file.
   :jira:`1002`
 
-- Updated the Windows build of HTCondor to use SSL 1.1.1m
+- Fixed a bug where Kerberos Authentication would fail for DAGMan.
+  :jira:`1060`
+
+- Fix problem that can cause HTCondor to not start up when the network
+  configuration is complex.
+  Long hostnames, multiple CCB addresses, having both IPv4 and IPv6 addresses,
+  and long private network names all contribute to complexity.
+  :jira:`1070`
+
+- Updated the Windows build of HTCondor to use SSL 1.1.1m.
   :jira:`840`
 
 .. _lts-version-history-9012:
@@ -41,9 +252,7 @@ Version 9.0.12
 
 Release Notes:
 
-.. HTCondor version 9.0.12 released on Month Date, 2022.
-
-- HTCondor version 9.0.12 not yet released.
+- HTCondor version 9.0.12 released on April 19, 2022.
 
 New Features:
 
@@ -51,35 +260,40 @@ New Features:
 
 Bugs Fixed:
 
-- DAGMan now publishes its status (total number of nodes, nodes done, nodes
-  failed, etc.) to the job ad immediately at startup.
-  :jira:`968`
-
 - Fixed a bug in the parallel universe that caused the *condor_schedd* to crash
   with partitionable slots.
   :jira:`986`
-
-- Fixed a bug in the startd drain command in the Python bindings that prevented
-  it from working with zero arguments.
-  :jira:`936`
-
-- Fixed a bug that prevented the High-Availability Daemon (HAD) from
-  working when user-based security is enabled
-  :jira:`891`
-
-- Fixed a bug that prevented administrators from setting certain rare custom
-  linux parameters in the linux_kernel_tuning_script
-  :jira:`990`
 
 - Fixed a bug that could cause a daemon to erase its security session
   to its family of daemon processes and subsequently crash when trying to
   connect to one of those daemons.
   :jira:`937`
 
--  The Job Router no longer sets an incorrect ``User`` job attribute
-   when routing a job between two *condor_schedd* s with different
-   values for configuration parameter ``UID_DOMAIN``.
-   :jira:`1005`
+- Fixed a bug that prevented the High-Availability Daemon (HAD) from
+  working when user-based security is enabled.
+  :jira:`891`
+
+- In a HAD configuration, the negotiator is now more robust when trying
+  to update to collectors that may have failed.  It will no longer block
+  and timeout for an extended period of time should this happen.
+  :jira:`816`
+
+- The Job Router no longer sets an incorrect ``User`` job attribute
+  when routing a job between two *condor_schedd* s with different
+  values for configuration parameter ``UID_DOMAIN``.
+  :jira:`1005`
+
+- Fixed a bug in the *condor_startd* drain command in the Python bindings that prevented
+  it from working with zero arguments.
+  :jira:`936`
+
+- Fixed a bug that prevented administrators from setting certain rare custom
+  Linux parameters in the linux_kernel_tuning_script.
+  :jira:`990`
+
+- DAGMan now publishes its status (total number of nodes, nodes done, nodes
+  failed, etc.) to the job ad immediately at startup.
+  :jira:`968`
 
 - Fixed a bug where a credential file with an underscore in its filename could
   not be used by the curl plugin when doing HTTPS transfers with a bearer token.
@@ -87,7 +301,10 @@ Bugs Fixed:
   :jira:`1011`
 
 - Fixed several unlikely bugs when parsing the time strings in ClassAds.
-  :jira:`814`
+  :jira:`998`
+
+- *condor_version* now reports the build ID on Debian and Ubuntu platforms.
+  :jira:`749`
 
 .. _lts-version-history-9011:
 
@@ -211,7 +428,7 @@ Bugs Fixed:
   status when the job policy indicated it should be held.
   :jira:`869`
 
-- Fixed a bug running jobs in a Singularity container where 
+- Fixed a bug running jobs in a Singularity container where
   the environment variables added by HTCondor could include incorrect
   pathnames to the location of the job's scratch directory.
   This occurred when setting the ``SINGULARITY_TARGET_DIR`` configuration option.
@@ -394,7 +611,7 @@ Bugs Fixed:
   when the ``-opencl`` argument was used.
   :jira:`729`
 
-- Fixed a bug that prevented Singularity jobs from running when the singularity
+- Fixed a bug that prevented Singularity jobs from running when the Singularity
   binary emitted many warning messages to stderr.
   :jira:`698`
 
@@ -712,7 +929,7 @@ Known Issues:
 
 New Features:
 
-- The Windows MSI installer now sets up user-based authentication and creates 
+- The Windows MSI installer now sets up user-based authentication and creates
   an IDTOKEN for local administration.
   :jira:`407`
 

@@ -12,12 +12,11 @@ usage () {
   echo "Environment:"
   echo "  VERBOSE=1                         Show all commands run by script"
   echo
-  exit $1
+  exit 1
 }
 
 fail () { echo "$@" >&2; exit 1; }
 
-top_dir=$PWD
 [[ $dest_dir ]] || dest_dir=$PWD
 
 check_version_string () {
@@ -38,95 +37,69 @@ trap 'rm -rf "$tmpd"' EXIT
 cd "$tmpd"
 
 # Unpack the official tarball
-mv ../condor-${condor_version}.tgz ./condor_${condor_version}.orig.tar.gz
-tar xfpz condor_${condor_version}.orig.tar.gz
-cd condor-${condor_version}
+mv "../condor-${condor_version}.tgz" "./condor_${condor_version}.orig.tar.gz"
+tar xfpz "condor_${condor_version}.orig.tar.gz"
+cd "condor-${condor_version}"
 
-# copy srpm files from condor sources into the SOURCES directory
-cp -pr build/packaging/new-debian debian
-
-if $(grep -qi buster /etc/os-release); then
-    suffix=''
-elif $(grep -qi bullseye /etc/os-release); then
-    suffix='n1'
-    mv debian/control.focal debian/control
-    mv debian/htcondor.install.focal debian/htcondor.install
-    mv debian/rules.focal debian/rules
-    mv debian/patches/series.focal debian/patches/series
-elif $(grep -qi bookworm /etc/os-release); then
-    suffix='n3'
-    mv debian/control.focal debian/control
-    mv debian/htcondor.install.focal debian/htcondor.install
-    mv debian/rules.focal debian/rules
-    mv debian/patches/series.focal debian/patches/series
-elif $(grep -qi bionic /etc/os-release); then
-    suffix=''
-elif $(grep -qi focal /etc/os-release); then
-    suffix='n1'
-    mv debian/control.focal debian/control
-    mv debian/htcondor.install.focal debian/htcondor.install
-    mv debian/rules.focal debian/rules
-    mv debian/patches/series.focal debian/patches/series
-else
-    suffix=''
-fi
+# copy debian files into place
+cp -pr build/packaging/debian debian
+(cd debian; ./prepare-build-files.sh)
 
 # set default email address for build
 export DEBEMAIL=${DEBEMAIL-htcondor-admin@cs.wisc.edu}
 # if running in a condor slot, set parallelism to slot size
 export DEB_BUILD_OPTIONS="parallel=${OMP_NUM_THREADS-1}"
 
+# Extract prerelease value from top level CMake file
+PRE_RELEASE=$(grep '^set(PRE_RELEASE' CMakeLists.txt)
+PRE_RELEASE=${PRE_RELEASE#* } # Trim up to and including space
+PRE_RELEASE=${PRE_RELEASE%\)*} # Trim off the closing parenthesis
+
 # Distribution should be one of experimental, unstable, testing, stable, oldstable, oldoldstable
 # unstable -> daily repo
 # testing -> rc repo
 # stable -> release repo
 
-dist='unstable'
-#dist='testing'
-#dist='stable'
-echo "Distribution is $dist"
-echo "Suffix is '$suffix'"
-
-# Nightly build changelog
-dch --distribution $dist --newversion "$condor_version-0.$condor_build_id" "Nightly build"
-
-# Final release changelog
-#dch --release --distribution $dist ignored
-
-if [ "$suffix" = '' ]; then
-    build='full'
-    dpkg-buildpackage -uc -us
-elif [ "$suffix" = 'b1' ]; then
-    build='binary'
-    dch --distribution $dist --bin-nmu 'place holder entry'
-    dpkg-buildpackage --build=$build -uc -us
-elif [ "$suffix" = 'b2' ]; then
-    build='binary'
-    dch --distribution $dist --bin-nmu 'place holder entry'
-    dch --distribution $dist --bin-nmu 'place holder entry'
-    dpkg-buildpackage --build=$build -uc -us
-elif [ "$suffix" = 'n1' ]; then
-    build='full'
-    dch --distribution $dist --nmu 'place holder entry'
-    dpkg-buildpackage --build=$build -uc -us
-elif [ "$suffix" = 'n2' ]; then
-    build='full'
-    dch --distribution $dist --nmu 'place holder entry'
-    dch --distribution $dist --nmu 'place holder entry'
-    dpkg-buildpackage --build=$build -uc -us
-elif [ "$suffix" = 'n3' ]; then
-    build='full'
-    dch --distribution $dist --nmu 'place holder entry'
-    dch --distribution $dist --nmu 'place holder entry'
-    dch --distribution $dist --nmu 'place holder entry'
-    dpkg-buildpackage --build=$build -uc -us
+if [ "$PRE_RELEASE" = 'OFF' ]; then
+    dist='stable'
+elif [ "$PRE_RELEASE" = '"RC"' ]; then
+    dist='testing'
+else
+    dist='unstable'
 fi
+
+echo "Distribution is $dist"
+
+if [ "$PRE_RELEASE" = 'OFF' ]; then
+    # Changelog entry is present for final release build
+    dch --release --distribution $dist ignored
+else
+    # Generate a changelog entry
+    dch --distribution $dist --newversion "$condor_version-0.$condor_build_id" "Automated build"
+fi
+
+. /etc/os-release
+if [ "$VERSION_CODENAME" = 'bullseye' ]; then
+    true
+elif [ "$VERSION_CODENAME" = 'bookworm' ]; then
+    dch --distribution $dist --nmu 'place holder entry'
+elif [ "$VERSION_CODENAME" = 'bionic' ]; then
+    true
+elif [ "$VERSION_CODENAME" = 'focal' ]; then
+    dch --distribution $dist --nmu 'place holder entry'
+elif [ "$VERSION_CODENAME" = 'jammy' ]; then
+    dch --distribution $dist --nmu 'place holder entry'
+    dch --distribution $dist --nmu 'place holder entry'
+else
+    echo ERROR: Unknown codename
+    exit 1
+fi
+
+dpkg-buildpackage -uc -us
 
 cd ..
 
-if [ "$build" = 'full' ]; then
-    mv *.dsc *.debian.tar.xz *.orig.tar.gz "$dest_dir"
-fi
-mv *.changes *.deb "$dest_dir"
+mv ./*.dsc ./*.debian.tar.xz ./*.orig.tar.gz "$dest_dir"
+mv ./*.changes ./*.deb "$dest_dir"
 ls -lh "$dest_dir"
 

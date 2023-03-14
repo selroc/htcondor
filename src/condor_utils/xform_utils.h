@@ -140,7 +140,7 @@ protected:
 	int   row;
 	int   proc;
 	bool  close_fp_when_done;
-	char  iterate_init_state;
+	int   iterate_init_state;
 	SubmitForeachArgs oa;
 	auto_free_ptr iterate_args; // copy of the arguments from the ITERATE line, set by load()
 	auto_free_ptr curr_item; // so we can destructively edit the current item from the items list
@@ -162,11 +162,12 @@ public:
 		ParamTable,  // use config defaults as defaults for LocalMacroSet (WARNING! ignores config files!)
 	};
 
-	XFormHash(Flavor _flavor=Iterating);
+	XFormHash(Flavor _flavor=Basic);
 	~XFormHash();
 
 	void init();
 	void clear(); // clear, but do not deallocate
+	void set_flavor(Flavor _flavor); // clear and set new flavor
 
 	char * local_param(const char* name, const char* alt_name, MACRO_EVAL_CONTEXT & ctx);
 	char * local_param(const char* name, MACRO_EVAL_CONTEXT & ctx) { return local_param(name, NULL, ctx); }
@@ -194,6 +195,7 @@ public:
 	void set_live_variable(const char* name, const char* live_value, MACRO_EVAL_CONTEXT & ctx);
 	void set_iterate_step(int step, int proc);
 	void set_iterate_row(int row, bool iterating);
+	void set_factory_vars(int isCluster, bool lateMat);
 	void clear_live_variables() const;
 
 	const char * get_RulesFilename();

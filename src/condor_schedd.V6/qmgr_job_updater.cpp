@@ -31,6 +31,7 @@
 #include "qmgr_job_updater.h"
 #include "condor_qmgr.h"
 #include "dc_schedd.h"
+#include "condor_holdcodes.h"
 
 
 QmgrJobUpdater::QmgrJobUpdater( ClassAd* job, const char* schedd_address )
@@ -171,19 +172,21 @@ QmgrJobUpdater::initJobQueueAttrLists( void )
 	common_job_queue_attrs->insert( ATTR_TRANSFERRING_INPUT );
 	common_job_queue_attrs->insert( ATTR_TRANSFERRING_OUTPUT );
 	common_job_queue_attrs->insert( ATTR_TRANSFER_QUEUED );
-	common_job_queue_attrs->insert( ATTR_JOB_TRANSFERRING_OUTPUT );
-	common_job_queue_attrs->insert( ATTR_JOB_TRANSFERRING_OUTPUT_TIME );
 	common_job_queue_attrs->insert( ATTR_NUM_JOB_COMPLETIONS );
 	common_job_queue_attrs->insert( ATTR_IO_WAIT);
 
 	// FIXME: What I'd actually like is a way to queue all attributes
 	// not in any whitelist for delivery with the last update.
+	//
+	// (Why _do_ we filter the last job update?)
 	common_job_queue_attrs->insert( "PreExitCode" );
 	common_job_queue_attrs->insert( "PreExitSignal" );
 	common_job_queue_attrs->insert( "PreExitBySignal" );
 	common_job_queue_attrs->insert( "PostExitCode" );
 	common_job_queue_attrs->insert( "PostExitSignal" );
 	common_job_queue_attrs->insert( "PostExitBySignal" );
+
+	common_job_queue_attrs->insert( ATTR_JOB_CHECKPOINT_NUMBER );
 
 	hold_job_queue_attrs = new StringList();
 	hold_job_queue_attrs->insert( ATTR_HOLD_REASON );
@@ -343,7 +346,7 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 	const char* name;
 	char *value = NULL;
 	std::list< std::string > undirty_attrs;
-	
+
 	StringList* job_queue_attrs = NULL;
 	switch( type ) {
 	case U_HOLD:
@@ -379,6 +382,20 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 		EXCEPT( "QmgrJobUpdater::updateJob: Unknown update type (%d)!", type );
 	}
 
+	if (type == U_HOLD) {
+		if (!ConnectQ(m_schedd_obj, SHADOW_QMGMT_TIMEOUT, false, NULL, m_owner.c_str()) ) {
+			return false;
+		}
+		is_connected = true;
+
+		int job_status = 0;
+		GetAttributeInt(cluster, proc, ATTR_JOB_STATUS, &job_status);
+		if (job_status == HELD) {
+			dprintf(D_FULLDEBUG, "Job already held, not updating hold reason code\n");
+			job_queue_attrs = nullptr;
+		}
+	}
+
 	for ( auto itr = job_ad->dirtyBegin(); itr != job_ad->dirtyEnd(); itr++ ) {
 		name = itr->c_str();
 		tree = job_ad->LookupExpr(name);
@@ -395,7 +412,7 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 			// aren't defined, we're careful here to not dereference a
 			// NULL pointer...
 		if( (common_job_queue_attrs &&
-			 common_job_queue_attrs->contains_anycase(name)) || 
+			 common_job_queue_attrs->contains_anycase(name)) ||
 			(job_queue_attrs &&
 			 job_queue_attrs->contains_anycase(name)) ) {
 

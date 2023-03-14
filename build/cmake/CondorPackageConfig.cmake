@@ -72,7 +72,7 @@ set(CPACK_DEBIAN_DESCRIPTION_SUMMARY "a workload management system for compute-i
  to run the jobs based upon a policy, carefully monitors their progress,
  and ultimately informs the user upon completion.")
 
-set(CPACK_RESOURCE_FILE_LICENSE "${CONDOR_SOURCE_DIR}/LICENSE-2.0.txt")
+set(CPACK_RESOURCE_FILE_LICENSE "${CONDOR_SOURCE_DIR}/LICENSE")
 #set(CPACK_RESOURCE_FILE_README "${CONDOR_SOURCE_DIR}/build/backstage/release_notes/README")
 #set(CPACK_RESOURCE_FILE_WELCOME "${CONDOR_SOURCE_DIR}/build/backstage/release_notes/DOC") # this should be more of a Hiya welcome.
 
@@ -163,7 +163,7 @@ set ( CPACK_GENERATOR "TGZ" )
 # include both paths, as we build the externals once for both types. The
 # settings for EXTERNALS_RPATH must be kept in synch with the C_LIB
 # settings made below for package builds.
-if ( ${OS_NAME} STREQUAL "LINUX" )
+if ( "${OS_NAME}" STREQUAL "LINUX" )
 	set( EXTERNALS_LIB "${C_LIB}/condor" )
 	if (${BIT_MODE} MATCHES "32" OR ${SYS_ARCH} MATCHES "IA64" )
 		set( CONDOR_RPATH "$ORIGIN/../lib:/lib:/usr/lib:$ORIGIN/../lib/condor:/usr/lib/condor" )
@@ -178,7 +178,7 @@ if ( ${OS_NAME} STREQUAL "LINUX" )
             set( PYTHON_RPATH "$ORIGIN/../../:/lib64:/usr/lib64:$ORIGIN/../../condor" )
         endif()
 	endif()
-elseif( ${OS_NAME} STREQUAL "DARWIN" )
+elseif( APPLE )
 	set( EXTERNALS_LIB "${C_LIB}/condor" )
 endif()
 
@@ -197,13 +197,7 @@ if ( CONDOR_RPMBUILD )
 	endif ()
 endif()
 
-#this needs to be evaluated in order due to WIN collision.
-if(${OS_NAME} STREQUAL "DARWIN")
-	# enable if we desire native packaging.
-	# set ( CPACK_GENERATOR "${CPACK_GENERATOR};PackageMaker" ) ;
-	# set (CPACK_OSX_PACKAGE_VERSION)
-
-elseif ( ${OS_NAME} STREQUAL "FREEBSD" )
+if ( "${OS_NAME}" STREQUAL "FREEBSD" )
 
 	# Condor installs nothing useful to FreeBSD in C_INIT, so
 	# just tuck it out of the way.  FreeBSD RC scripts come from
@@ -219,7 +213,7 @@ elseif ( ${OS_NAME} STREQUAL "FREEBSD" )
 	set( C_SHARE_EXAMPLES	share/examples/condor )
 	set( C_DOC		share/doc/condor )
 	
-elseif ( ${OS_NAME} MATCHES "WIN" )
+elseif ( ${OS_NAME} MATCHES "^WIN" )
 
 	# override for windows.
 	set( C_BIN bin )
@@ -282,13 +276,43 @@ elseif ( ${OS_NAME} MATCHES "WIN" )
 		set (MSVCVER vc110)
 		set (MSVCVERNUM 11.0)
 	elseif(MSVC14)
-		if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-			set (VC_CRT_MSM Microsoft_VC140_CRT_x64.msm)
-		else()
-			set (VC_CRT_MSM Microsoft_VC140_CRT_x86.msm)
+		if (MSVC_VERSION LESS 1910)
+			# 14.0 toolset 140 (vs 2015)
+			if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+				set (VC_CRT_MSM Microsoft_VC140_CRT_x64.msm)
+			else()
+				set (VC_CRT_MSM Microsoft_VC140_CRT_x86.msm)
+			endif()
+			set (MSVCVER vc140)
+			set (MSVCVERNUM 14.0)
+		elseif (MSVC_VERSION LESS 1920)
+			# 15.0 toolset 141 (vs 2017)
+			if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+				set (VC_CRT_MSM Microsoft_VC141_CRT_x64.msm)
+			else()
+				set (VC_CRT_MSM Microsoft_VC141_CRT_x86.msm)
+			endif()
+			set (MSVCVER vc141)
+			set (MSVCVERNUM 14.1)
+		elseif (MSVC_VERSION LESS 1930)
+			# 16.0 toolset 142 (vs 2019)
+			if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+				set (VC_CRT_MSM Microsoft_VC142_CRT_x64.msm)
+			else()
+				set (VC_CRT_MSM Microsoft_VC142_CRT_x86.msm)
+			endif()
+			set (MSVCVER vc142)
+			set (MSVCVERNUM 14.2)
+		else ()
+			# 17 toolset 143 (vs 2022)
+			if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+				set (VC_CRT_MSM Microsoft_VC143_CRT_x64.msm)
+			else()
+				set (VC_CRT_MSM Microsoft_VC143_CRT_x86.msm)
+			endif()
+			set (MSVCVER vc143)
+			set (MSVCVERNUM 14.3)
 		endif()
-		set (MSVCVER vc140)
-		set (MSVCVERNUM 14.0)
 	else()
 		message(FATAL_ERROR "unsupported compiler version")
 	endif()
@@ -297,9 +321,31 @@ elseif ( ${OS_NAME} MATCHES "WIN" )
 	find_file( CPACK_VC_MERGE_MODULE 
 		${VC_CRT_MSM}
 		"C:/Program Files/Common Files/Merge Modules" "C:/Program Files (x86)/Common Files/Merge Modules" )
+	if (CPACK_VC_MERGE_MODULE MATCHES "-NOTFOUND")
+		# VC tools after 2015 put the merge modules next to the tools
+		find_file( CPACK_VC_MERGE_MODULE
+			${VC_CRT_MSM}
+			"$ENV{VS170COMNTOOLS}../../VC/Redist/MSVC/v143/MergeModules"
+			"$ENV{SV170COMNTOOLS}../../VC/Redist/MSVC/14.16.27012/MergeModules"
+		)
+		## Starting with Visual C++ 2019, merge modules are deprecated and MS makes them hard to get a hold of
+		## Instead, they want you to redistribute a separate installer for the vc runtime
+		## so if we don't find the merge modules, just build the Condor installer without them
+		if (CPACK_VC_MERGE_MODULE MATCHES "-NOTFOUND")
+			set (VC_CRT_MSM off)
+		endif ()
+	endif ()
 
-	set (WIX_MERGE_MODLES "<Merge Id=\"VCCRT\" Language=\"1033\" DiskId=\"1\" SourceFile=\"${CPACK_VC_MERGE_MODULE}\"/>\n${WIX_MERGE_MODLES}")
-	set (WIX_MERGE_REFS "<MergeRef Id=\"VCCRT\"/>\n${WIX_MERGE_REFS}")
+	if (VC_CRT_MSM)
+		message(STATUS "CPACK_VC_MERGE_MODULE = ${CPACK_VC_MERGE_MODULE}")
+
+		set (WIX_MERGE_MODLES "<Merge Id=\"VCCRT\" Language=\"1033\" DiskId=\"1\" SourceFile=\"${CPACK_VC_MERGE_MODULE}\"/>\n${WIX_MERGE_MODLES}")
+		set (WIX_MERGE_REFS "<MergeRef Id=\"VCCRT\"/>\n${WIX_MERGE_REFS}")
+	else(VC_CRT_MSM)
+		message(STATUS "CRT MergeModules not found, building installer without them.")
+		set (WIX_MERGE_MODLES "")
+		set (WIX_MERGE_REFS "")
+	endif ()
     		   
 	configure_file(${CONDOR_WIX_LOC}/xml/win.xsl.in ${CONDOR_BINARY_DIR}/msconfig/WiX/xml/condor.xsl @ONLY)
 	    
@@ -320,7 +366,7 @@ elseif ( ${OS_NAME} MATCHES "WIN" )
 	#file( APPEND ${WINVER} "#define CONDOR_BLAH \"${YOUR_VAR}\"\n")
 
 	# below are options an overrides to enable packge generation for rpm & deb
-elseif( ${OS_NAME} STREQUAL "LINUX" AND CONDOR_PACKAGE_BUILD )
+elseif( "${OS_NAME}" STREQUAL "LINUX" AND CONDOR_PACKAGE_BUILD )
 
 	execute_process( COMMAND python2 -c "import distutils.sysconfig; import sys; sys.stdout.write(distutils.sysconfig.get_python_lib(1)[1:])" OUTPUT_VARIABLE C_PYTHONARCHLIB)
 	execute_process( COMMAND python3 -c "import distutils.sysconfig; import sys; sys.stdout.write(distutils.sysconfig.get_python_lib(1)[1:])" OUTPUT_VARIABLE C_PYTHON3ARCHLIB)

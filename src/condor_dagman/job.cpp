@@ -52,7 +52,8 @@ const char * Job::status_t_names[] = {
     "STATUS_SUBMITTED",
     "STATUS_POSTRUN  ",
     "STATUS_DONE     ",
-    "STATUS_ERROR    "
+    "STATUS_ERROR    ",
+    "STATUS_FUTILE   "
 };
 
 //---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ Job::Job( const char* jobName, const char *directory, const char* cmdFile )
 	, have_retry_abort_val(false)
 	, have_abort_dag_val(false)
 	, have_abort_dag_return_val(false)
-	, is_cluster(false)
+	, is_factory(false)
 	, countedAsDone(false)
 	, _noop(false)
 	, _hold(false)
@@ -120,6 +121,7 @@ Job::Job( const char* jobName, const char *directory, const char* cmdFile )
 	, _multiple_children(false)
 	, _parents_done(false)
 	, _spare(false)
+	, _preDone(false)
 	, _jobID(-1)
 	, _jobstateSeqNum(0)
 	, _preskip(PRE_SKIP_INVALID)
@@ -486,6 +488,51 @@ int Job::NotifyChildren(Dag& dag, bool(*pfn)(Dag& dag, Job* child))
 	return count;
 }
 
+//Recursively visit all descendant nodes and set to status FUTILE
+//Return the number of jobs set to FUTILE
+int Job::SetDescendantsToFutile(Dag& dag)
+{
+	int count = 0;
+	if (_child != NO_ID) {
+		if (_multiple_children) {
+			Edge * edge = Edge::ById(_child);
+			ASSERT(edge);
+			if (!edge->_ary.empty()) {
+				for (int & it : edge->_ary) {
+					Job * child = dag.FindNodeByNodeID(it);
+					ASSERT(child != NULL);
+					//If Status is already futile or the node is preDone don't try
+					//to set status and update counts
+					if (child->GetStatus() != Job::STATUS_FUTILE && !child->IsPreDone()) {
+						ASSERT(!child->CanSubmit());
+						if (child->SetStatus(Job::STATUS_FUTILE)) { count++; }
+						else {
+							debug_printf(DEBUG_NORMAL,"Error: Failed to set node %s to status %s\n",
+										 child->GetJobName(), status_t_names[Job::STATUS_FUTILE]);
+						}
+					}
+					count += child->SetDescendantsToFutile(dag);
+				}
+			}
+		} else {
+			Job* child = dag.FindNodeByNodeID(_child);
+			ASSERT(child != NULL);
+			//If Status is already futile or the node is preDone don't try
+			//to set status and update counts
+			if (child->GetStatus() != Job::STATUS_FUTILE && !child->IsPreDone()) {
+				ASSERT(!child->CanSubmit());
+				if (child->SetStatus(Job::STATUS_FUTILE)) { count++; }
+				else {
+					debug_printf(DEBUG_NORMAL,"Error: Failed to set node %s to status %s\n",
+								 child->GetJobName(), status_t_names[Job::STATUS_FUTILE]);
+				}
+			}
+			count += child->SetDescendantsToFutile(dag);
+		}
+	}
+	return count;
+}
+
 // visit all of the children, either marking them, or checking for cycles
 int Job::VisitChildren(Dag& dag, int(*pfn)(Dag& dag, Job* parent, Job* child, void* args), void* args)
 {
@@ -565,7 +612,7 @@ bool Job::CanAddChildren(std::forward_list<Job*> & children, std::string &whynot
 	return true;
 }
 
-bool Job::AddVar(const char *name, const char *value, const char * filename, int lineno)
+bool Job::AddVar(const char *name, const char *value, const char * filename, int lineno, bool prepend)
 {
 	name = dedup_str(name);
 	value = dedup_str(value);
@@ -584,7 +631,7 @@ bool Job::AddVar(const char *name, const char *value, const char * filename, int
 				return true;
 		}
 	}
-	varsFromDag.emplace_after(last_var, name, value);
+	varsFromDag.emplace_after(last_var, name, value, prepend);
 	return true;
 }
 

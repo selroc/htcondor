@@ -49,7 +49,8 @@
 #define SUBMIT_KEY_Description "description"
 #define SUBMIT_KEY_Arguments1 "arguments"
 #define SUBMIT_KEY_Arguments2 "arguments2"
-#define SUBMIT_KEY_Environment1 "environment"
+#define SUBMIT_KEY_Environment "environment"
+#define SUBMIT_KEY_Env "env"
 #define SUBMIT_KEY_Environment2 "environment2"
 #define SUBMIT_KEY_Input "input"
 #define SUBMIT_KEY_Stdin "stdin"
@@ -57,9 +58,6 @@
 #define SUBMIT_KEY_Stdout "stdout"
 #define SUBMIT_KEY_Error "error"
 #define SUBMIT_KEY_Stderr "stderr"
-#if !defined(WIN32)
-#define SUBMIT_KEY_RootDir "rootdir"
-#endif
 #define SUBMIT_KEY_InitialDir "initialdir"
 #define SUBMIT_KEY_InitialDirAlt "initial_dir"
 #define SUBMIT_KEY_JobIwd "job_iwd"
@@ -104,8 +102,6 @@
 #define SUBMIT_KEY_UseScitokensAlt "use_scitoken"
 #define SUBMIT_KEY_ScitokensFile "scitokens_file"
 #define SUBMIT_KEY_DelegateJobGSICredentialsLifetime "delegate_job_gsi_credentials_lifetime"
-#define SUBMIT_KEY_NordugridRSL "nordugrid_rsl"
-#define SUBMIT_KEY_ArcRSL "arc_rsl"
 #define SUBMIT_KEY_ArcRte "arc_rte"
 #define SUBMIT_KEY_ArcApplication "arc_application"
 #define SUBMIT_KEY_ArcResources "arc_resources"
@@ -161,6 +157,8 @@
 #define SUBMIT_KEY_UseOAuthServices "use_oauth_services"
 #define SUBMIT_KEY_UseOAuthServicesAlt "UseOAuthServices"
 
+#define SUBMIT_KEY_JobSet "jobset"
+
 #ifdef HAVE_HTTP_PUBLIC_FILES
     #define SUBMIT_KEY_PublicInputFiles "public_input_files"
 #endif
@@ -191,9 +189,6 @@
 #define SUBMIT_KEY_Noop "noop_job"
 #define SUBMIT_KEY_NoopExitSignal "noop_job_exit_signal"
 #define SUBMIT_KEY_NoopExitCode "noop_job_exit_code"
-
-#define SUBMIT_KEY_GlobusResubmit "globus_resubmit"
-#define SUBMIT_KEY_GlobusRematch "globus_rematch"
 
 #define SUBMIT_KEY_LastMatchListLength "match_list_length"
 
@@ -260,10 +255,12 @@
 //
 #define SUBMIT_KEY_DockerImage "docker_image"
 #define SUBMIT_KEY_DockerNetworkType "docker_network_type"
+#define SUBMIT_KEY_DockerPullPolicy "docker_pull_policy"
 
 #define SUBMIT_KEY_ContainerImage "container_image"
 #define SUBMIT_KEY_ContainerServiceNames "container_service_names"
 #define SUBMIT_KEY_ContainerPortSuffix "_container_port"
+#define SUBMIT_KEY_ContainerTargetDir "container_target_dir"
 
 //
 // VM universe Parameters
@@ -282,9 +279,6 @@
 #define SUBMIT_KEY_VM_XEN_INITRD "xen_initrd"
 #define SUBMIT_KEY_VM_XEN_ROOT   "xen_root"
 #define SUBMIT_KEY_VM_XEN_KERNEL_PARAMS "xen_kernel_params"
-#define SUBMIT_KEY_VM_VMWARE_SHOULD_TRANSFER_FILES "vmware_should_transfer_files"
-#define SUBMIT_KEY_VM_VMWARE_SNAPSHOT_DISK "vmware_snapshot_disk"
-#define SUBMIT_KEY_VM_VMWARE_DIR "vmware_dir"
 
 //
 // EC2 Query Parameters
@@ -322,8 +316,6 @@
 #define SUBMIT_KEY_EC2ParamPrefix "ec2_parameter_"
 #define SUBMIT_KEY_EC2IamProfileArn "ec2_iam_profile_arn"
 #define SUBMIT_KEY_EC2IamProfileName "ec2_iam_profile_name"
-
-#define SUBMIT_KEY_BoincAuthenticatorFile "boinc_authenticator_file"
 
 //
 // GCE Parameters
@@ -491,7 +483,6 @@ public:
 	void init(int value=-1);
 	void clear(); // clear, but do not deallocate
 	void setScheddVersion(const char * version) { ScheddVersion = version; }
-	void setMyProxyPassword(const char * pass) { MyProxyPassword = pass; }
 	bool setDisableFileChecks(bool value) { bool old = DisableFileChecks; DisableFileChecks = value; return old; }
 	bool setFakeFileCreationChecks(bool value) { bool old = FakeFileCreationChecks; FakeFileCreationChecks = value; return old; }
 	bool addExtendedCommands(const classad::ClassAd & cmds) { return extendedCmds.Update(cmds); }
@@ -503,7 +494,7 @@ public:
 	bool submit_param_long_exists(const char* name, const char * alt_name, long long & value, bool int_range=false) const;
 	int submit_param_int(const char* name, const char * alt_name, int def_value) const;
 	int submit_param_bool(const char* name, const char * alt_name, bool def_value, bool * pexists=NULL) const;
-	MyString submit_param_mystring( const char * name, const char * alt_name ) const;
+	std::string submit_param_string( const char * name, const char * alt_name ) const;
 	char * expand_macro(const char* value) const { return ::expand_macro(value, const_cast<MACRO_SET&>(SubmitMacroSet), const_cast<MACRO_EVAL_CONTEXT&>(mctx)); }
 	const char * lookup(const char* name) const { return lookup_macro(name, const_cast<MACRO_SET&>(SubmitMacroSet), const_cast<MACRO_EVAL_CONTEXT&>(mctx)); }
 
@@ -640,6 +631,10 @@ public:
 	bool AssignJobVal(const char * attr, long val) { return AssignJobVal(attr, (long long)val); }
 	//bool AssignJobVal(const char * attr, time_t val)  { return AssignJobVal(attr, (long long)val); }
 
+	int AssignJOBSETExpr(const char *attr, const char * expr, const char * source_label=NULL);
+	bool AssignJOBSETString(const char * name, const char * sval);
+	const ClassAd * getJOBSET() { return jobsetAd; }
+
 	//Set job submit method to enum equal to passed value if value is in range
 	void setSubmitMethod(int value) { s_method = value; }
 	int getSubmitMethod(){ return s_method; }//Return job submit method value given s_method enum
@@ -649,6 +644,7 @@ public:
 
 	void optimize() { if (SubmitMacroSet.sorted < SubmitMacroSet.size) optimize_macros(SubmitMacroSet); }
 	void dump(FILE* out, int flags); // print the hash to the given FILE*
+	void dump_templates(FILE* out, const char * category, int flags); // print the templates to the given FILE*
 	const char* to_string(std::string & buf, int flags); // print (append) the hash to the supplied buffer
 	const char* make_digest(std::string & buf, int cluster_id, StringList & vars, int options);
 	void setup_macro_defaults(); // setup live defaults table
@@ -673,7 +669,7 @@ public:
 	const char * getScheddVersion() { return ScheddVersion.c_str(); }
 	const char * getIWD();
 	const char * full_path(const char *name, bool use_iwd=true);
-	int check_and_universalize_path(MyString &path);
+	int check_and_universalize_path(std::string &path);
 
 	enum class ContainerImageType {
 		DockerRepo,
@@ -688,6 +684,7 @@ protected:
 	ClassAd baseJob; // defaults for job attributes, set by init_cluster_ad
 	ClassAd * clusterAd; // use instead of baseJob if non-null. THIS POINTER IS NOT OWNED BY THE submit_utils class. It points back to the JobQueueJob that 
 	ClassAd * procAd;
+	ClassAd * jobsetAd;
 	DeltaClassAd * job; // this wraps the procAd or baseJob and tracks changes to the underlying ad.
 	JOB_ID_KEY jid; // id of the current job being built
 	time_t     submit_time;
@@ -739,14 +736,10 @@ protected:
 	bool UseDefaultResourceParams;
 	auto_free_ptr RunAsOwnerCredD;
 	std::string JobIwd;
-	#if !defined(WIN32)
-	MyString JobRootdir;
-	#endif
-	MyString JobGridType;  // set from "GridResource" for globus or grid universe jobs.
+	std::string JobGridType;  // set from "GridResource" for grid universe jobs.
 	std::string VMType;
-	MyString TempPathname; // temporary path used by full_path
+	std::string TempPathname; // temporary path used by full_path
 	MyString ScheddVersion; // target version of schedd, influences how jobad is filled in.
-	MyString MyProxyPassword; // set by command line or by submit file. command line wins
 	classad::References stringReqRes; // names of request_xxx submit variables that are string valued
 	classad::References forcedSubmitAttrs; // + and MY. attribute names from SUBMIT_ATTRS/EXPRS
 
@@ -764,11 +757,6 @@ protected:
 
 	int SetUniverse();  /* run once */
 
-#if !defined(WIN32)
-	int ComputeRootDir();
-	int SetRootDir();
-	int check_root_dir_access();
-#endif
 	int ComputeIWD();
 	int SetIWD();		  /* factory:ok */
 
@@ -824,6 +812,8 @@ protected:
 	int SetForcedSubmitAttrs(); // set +Attrib (MY.Attrib) values from SUBMIT_ATTRS directly into the job ad. this should be called second to last
 	int SetForcedAttributes();	// set +Attrib (MY.Attrib) hashtable keys directly into the job ad.  this should be called last.
 
+	int ProcessJobsetAttributes();
+
 	// construct the Requirements expression for a VM uinverse job.
 	int AppendVMRequirements(MyString & vmanswer, bool VMCheckpoint, bool VMNetworking, const MyString &VMNetworkType, bool VMHardwareVT, bool vm_need_fsdomain);
 
@@ -836,7 +826,7 @@ protected:
 		_submit_file_role role,
 		const char * value, // in: filename to use, may be NULL
 		int access,         // in: desired access if checking for file accessiblity
-		MyString & file,    // out: filename, possibly fixed up.
+		std::string & file, // out: filename, possibly fixed up.
 		bool & transfer_it, // in,out: whether we expect to transfer it or not
 		bool & stream_it);  // in,out: whether we expect to stream it or not
 
@@ -844,7 +834,7 @@ protected:
 	int do_simple_commands(const struct SimpleSubmitKeyword * cmdtable);
 	int build_oauth_service_ads(classad::References & services, ClassAdList & ads, std::string & error) const;
 	void fixup_rhs_for_digest(const char * key, std::string & rhs);
-	int query_universe(MyString & sub_type); // figure out universe, but DON'T modify the cached members
+	int query_universe(std::string & sub_type); // figure out universe, but DON'T modify the cached members
 	bool key_is_prunable(const char * key); // return true if key can be pruned from submit digest
 	void push_error(FILE * fh, const char* format, ... ) const CHECK_PRINTF_FORMAT(3,4);
 	void push_warning(FILE * fh, const char* format, ... ) const CHECK_PRINTF_FORMAT(3,4);
@@ -867,7 +857,6 @@ private:
 	  const char * sp, const char * jp,
 	  const YourStringNoCase & gt );      /* used by SetGridParams */
 
-	int process_vm_input_files(StringList & input_files, long long * accumulate_size_kb); // call after building the input files list to find .vmx and .vmdk files in that list
 	int process_container_input_files(StringList & input_files, long long * accumulate_size_kb); // call after building the input files list to find .vmx and .vmdk files in that list
 
 	ContainerImageType image_type_from_string(const std::string &image) const;

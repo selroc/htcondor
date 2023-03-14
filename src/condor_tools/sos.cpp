@@ -47,22 +47,18 @@ version()
 int main( int argc, char *argv[] )
 {
 	int i;
+	const char* pcolon = nullptr;
 	const char* timeout_multiplier = "1";
-	std::string condor_prefix;
 
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 
-	// Set prefix to be "condor_" 
-	formatstr(condor_prefix,"%s_",myDistro->Get());
-
 	for( i=1; i<argc; i++ ) {
-		if(is_arg_prefix(argv[i],"-help")) {
+		if(is_dash_arg_prefix(argv[i],"help")) {
 			usage(argv[0]);
 			exit(0);
 		} else
-		if (is_arg_prefix(argv[i],"-pool") || is_arg_prefix(argv[i],"-name"))
+		if (is_dash_arg_prefix(argv[i],"pool") || is_dash_arg_prefix(argv[i],"name"))
 		{
 			fprintf(stderr,
 				"Neither -pool nor -name arguments are allowed, because"
@@ -71,14 +67,14 @@ int main( int argc, char *argv[] )
 			usage(argv[0]);
 			exit(1);
 		} else
-		if (is_arg_prefix(argv[i],"-version")) {
+		if (is_dash_arg_prefix(argv[i],"version")) {
 			version();
 			exit(0);
 		} else
-		if (is_arg_prefix(argv[i],"-debug")) {
-            dprintf_set_tool_debug("TOOL", 0);
+		if (is_dash_arg_colon_prefix(argv[i],"debug",&pcolon)) {
+			dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
 		} else 
-		if (is_arg_prefix(argv[i],"-timeoutmult")) {
+		if (is_dash_arg_prefix(argv[i],"timeoutmult")) {
 			i++;
 			if ( str_isint(argv[i]) ) {
 				timeout_multiplier = argv[i];
@@ -88,8 +84,9 @@ int main( int argc, char *argv[] )
 				exit(1);
 			}
 		} else
-		if (match_prefix(argv[i],condor_prefix.c_str())) { 		
-			// here we have a command line arg that matches condor_*
+		if (match_prefix(argv[i],MY_condor_NAME)) {
+			// here we have a command line arg that matches condor*
+			// we will assume that this is the start of the command line to SOS
 			int result, save_errno;
 			// Set env to always use super port, and a nice long timeout
 			SetEnv("_condor_USE_SUPER_PORT","true");

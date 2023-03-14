@@ -23,9 +23,6 @@ azurejob.cpp
 azureresource.cpp
 basejob.cpp
 baseresource.cpp
-boinc-client.cpp
-boincjob.cpp
-boincresource.cpp
 condorjob.cpp
 condorresource.cpp
 ec2-gahp-client.cpp
@@ -39,8 +36,6 @@ gridmanager.cpp
 gridmanager_main.cpp
 infnbatchjob.cpp
 infnbatchresource.cpp
-nordugridjob.cpp
-nordugridresource.cpp
 proxymanager.cpp
 )
 

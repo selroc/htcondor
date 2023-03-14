@@ -222,8 +222,8 @@ void CondorResource::CondorRegisterJob( CondorJob *job, const char *submitter_id
 {
 	BaseResource::RegisterJob( job );
 
-	if ( submitter_ids.contains( submitter_id ) == false ) {
-		submitter_ids.append( submitter_id );
+	if (contains(submitter_ids, submitter_id) == false) {
+		submitter_ids.emplace_back(submitter_id);
 		if ( submitter_constraint.empty() ) {
 			formatstr( submitter_constraint, "(%s=?=\"%s\")",
 										  ATTR_SUBMITTER_ID,
@@ -381,9 +381,7 @@ void CondorResource::DoScheddPoll()
 		if ( rc == 0 ) {
 			for ( int i = 0; i < num_status_ads; i++ ) {
 				int cluster, proc;
-				int rc2;
 				std::string job_id_string;
-				BaseJob *base_job = NULL;
 				CondorJob *job;
 
 				if( status_ads[i] == NULL ) {
@@ -397,9 +395,9 @@ void CondorResource::DoScheddPoll()
 				formatstr( job_id_string, "condor %s %s %d.%d", scheddName,
 									   poolName, cluster, proc );
 
-				rc2 = BaseJob::JobsByRemoteId.lookup( job_id_string, base_job );
-				job = dynamic_cast<CondorJob*>( base_job );
-				if ( rc2 == 0 ) {
+				auto itr = BaseJob::JobsByRemoteId.find(job_id_string);
+				if ( itr != BaseJob::JobsByRemoteId.end() ) {
+					job = dynamic_cast<CondorJob*>(itr->second);
 					job->NotifyNewRemoteStatus( status_ads[i] );
 					poll_info->m_submittedJobs.Delete( job );
 				} else {
@@ -477,14 +475,13 @@ dprintf(D_FULLDEBUG,"*** DoPing called\n");
 }
 
 void CondorResource::DoUpdateLeases( unsigned& update_delay,
-									 bool& update_complete,
-									 SimpleList<PROC_ID>& update_succeeded )
+                                     bool& update_complete,
+                                     std::vector<PROC_ID>& update_succeeded )
 {
 	int rc;
-	BaseJob *curr_job;
-	SimpleList<PROC_ID> jobs;
-	SimpleList<int> expirations;
-	SimpleList<PROC_ID> updated;
+	std::vector<PROC_ID> jobs;
+	std::vector<int> expirations;
+	std::vector<PROC_ID> updated;
 
 dprintf(D_FULLDEBUG,"*** DoUpdateLeases called\n");
 	if ( lease_gahp->isStarted() == false ) {
@@ -495,21 +492,20 @@ dprintf(D_FULLDEBUG,"*** DoUpdateLeases called\n");
 
 	update_delay = 0;
 
-	if ( leaseUpdates.IsEmpty() ) {
+	if (leaseUpdates.empty()) {
 		dprintf( D_FULLDEBUG, "*** Job lease list empty, returning success immediately\n" );
 		update_complete = true;
 		return;
 	}
 
 	if ( updateLeasesCmdActive == false ) {
-		leaseUpdates.Rewind();
-		while ( leaseUpdates.Next( curr_job ) ) {
+		for (auto& curr_job: leaseUpdates) {
 				// TODO When remote-job-id is homogenized and stored in 
 				//   BaseJob, BaseResource can skip jobs that don't have a
 				//   a remote-job-id yet
 			if ( ((CondorJob*)curr_job)->remoteJobId.cluster != 0 ) {
-				jobs.Append( ((CondorJob*)curr_job)->remoteJobId );
-				expirations.Append( m_sharedLeaseExpiration );
+				jobs.emplace_back(((CondorJob*)curr_job)->remoteJobId);
+				expirations.emplace_back(m_sharedLeaseExpiration);
 			}
 		}
 	}
@@ -528,12 +524,12 @@ dprintf( D_FULLDEBUG, "*** Lease udpate succeeded!\n" );
 
 		PROC_ID curr_id;
 		std::string id_str;
-		updated.Rewind();
-		while ( updated.Next( curr_id ) ) {
+		for (auto& curr_id: updated) {
 			formatstr( id_str, "condor %s %s %d.%d", scheddName, poolName,
 							curr_id.cluster, curr_id.proc );
-			if ( BaseJob::JobsByRemoteId.lookup( id_str, curr_job ) == 0 ) {
-				update_succeeded.Append( curr_job->procID );
+			auto itr = BaseJob::JobsByRemoteId.find(id_str);
+			if ( itr != BaseJob::JobsByRemoteId.end() ) {
+				update_succeeded.emplace_back(itr->second->procID);
 			}
 		}
 	}

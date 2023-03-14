@@ -12,7 +12,7 @@ GenericGahpClient::callGahpFunction(
 	PrioLevel priority
 ) {
 	// check if this command is supported
-	if( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if( contains_anycase(server->m_commands_supported, command) == false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -23,8 +23,8 @@ GenericGahpClient::callGahpFunction(
 	std::string reqline( 1024, '\0' );
 	// if this causes a reallocation I will be very upset.
 	reqline.clear();
-	for( unsigned i = 0; i < arguments.size(); ++i ) {
-		const char * ptr = arguments[i].ptr();
+	for(const auto & argument : arguments) {
+		const char * ptr = argument.ptr();
 		// Arguably, we should EXCEPT() on a NULL ptr.
 		if( ptr == NULL || ptr[0] == '\0' ) {
 			reqline += NULLSTRING;

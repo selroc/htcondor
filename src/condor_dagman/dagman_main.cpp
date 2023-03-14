@@ -38,14 +38,6 @@
 
 void ExitSuccess();
 
-	// From condor_utils/condor_config.C
-	// Note: these functions are declared 'extern "C"' where they're
-	// implemented; if we don't do that here we get a link failure
-	// (I think because of the name mangling).  wenger 2007-02-09.
-//extern "C" void process_config_source( char* file, const char* name,
-//			char* host, int required );
-bool is_piped_command(const char* filename);
-
 static std::string lockFileName;
 
 static Dagman dagman;
@@ -62,7 +54,7 @@ static void Usage() {
 			"\t\t-CsdVersion <version string>\n"
 			"\t\t[-Help]\n"
 			"\t\t[-Version]\n"
-		"\t\t[-Debug <level>]\n"
+			"\t\t[-Debug <level>]\n"
 			"\t\t[-MaxIdle <int N>]\n"
 			"\t\t[-MaxJobs <int N>]\n"
 			"\t\t[-MaxPre <int N>]\n"
@@ -87,6 +79,8 @@ static void Usage() {
 			"\t\t[-Outfile_dir <directory>]\n"
 			"\t\t[-Update_submit]\n"
 			"\t\t[-Import_env]\n"
+			"\t\t[-Include_env <Variables>]\n"
+			"\t\t[-Insert_env <Key=Value>]\n"
 			"\t\t[-Priority <int N>]\n"
 			"\t\t[-dont_use_default_node_log] (no longer allowed)\n"
 			"\t\t[-DoRecov]\n"
@@ -131,6 +125,8 @@ Dagman::Dagman() :
 	submitDepthFirst (false), // so Coverity is happy
 	abortOnScarySubmit (true), // so Coverity is happy
 	useDirectSubmit (true), // so Coverity is happy
+	doAppendVars (false),
+	jobInsertRetry (false),
 	pendingReportInterval (10 * 60), // 10 minutes
 	_dagmanConfigFile (NULL), // so Coverity is happy
 	autoRescue(true),
@@ -385,6 +381,28 @@ Dagman::Config()
 	if( !condorRmExe ) {
 		condorRmExe = strdup( "condor_rm" );
 		ASSERT( condorRmExe );
+	}
+
+	doAppendVars = param_boolean("DAGMAN_DEFAULT_APPEND_VARS", false);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEFAULT_APPEND_VARS setting: %s\n",
+		doAppendVars ? "True" : "False" );
+
+	//DAGMan information to be added to node jobs job ads (expects comma seperated list)
+	//Note: If more keywords/options added please update the config knob description accordingly
+	//-Cole Bollig 2023-03-09
+	auto_free_ptr adInjectInfo(param("DAGMAN_NODE_RECORD_INFO"));
+	if (adInjectInfo) {
+		debug_printf(DEBUG_NORMAL, "DAGMAN_NODE_RECORD_INFO recording:\n");
+		StringTokenIterator list(adInjectInfo);
+		for (auto& info : list) {
+			trim(info);
+			lower_case(info);
+			//TODO: If adding more keywords consider using an unsigned int and bit mask
+			if (info.compare("retry") == MATCH) {
+				jobInsertRetry = true;
+				debug_printf(DEBUG_NORMAL, "\t-NODE Retries\n");
+			}
+		}
 	}
 
 	abortDuplicates = param_boolean( "DAGMAN_ABORT_DUPLICATES",
@@ -698,7 +716,7 @@ void main_init (int argc, char ** const argv) {
 
 		// get dagman job id from environment, if it's there
 		// (otherwise it will be set to "-1.-1.-1")
-	dagman.DAGManJobId.SetFromString( getenv( EnvGetName( ENV_ID ) ) );
+	dagman.DAGManJobId.SetFromString( getenv( ENV_CONDOR_ID ) );
 
 	dagman._dagmanClassad = new DagmanClassad( dagman.DAGManJobId, dagman._schedd );
 
@@ -917,6 +935,23 @@ void main_init (int argc, char ** const argv) {
 
 		} else if( !strcasecmp( "-import_env", argv[i] ) ) {
 			dagman._submitDagDeepOpts.importEnv = true;
+
+		} else if( !strcasecmp( "-include_env", argv[i] ) ) {
+			if (argc <= i+1 || argv[++i][0] == '-') {
+				debug_printf(DEBUG_SILENT, "No environment variables passed for -include_env\n");
+				Usage();
+			}
+			if (!dagman._submitDagDeepOpts.getFromEnv.empty()) {
+				dagman._submitDagDeepOpts.getFromEnv += ",";
+			}
+			dagman._submitDagDeepOpts.getFromEnv += argv[i];
+
+		} else if( !strcasecmp( "-insert_env", argv[i] ) ) {
+			if (argc <= i+1 || argv[++i][0] == '-') {
+				debug_printf(DEBUG_SILENT, "No key=value pairs passed for -insert_env\n");
+				Usage();
+			}
+			dagman._submitDagDeepOpts.addToEnv.push_back(argv[i]);
 
 		} else if( !strcasecmp( "-priority", argv[i] ) ) {
 			++i;
@@ -1249,7 +1284,7 @@ void main_init (int argc, char ** const argv) {
 	for (auto & it : sl) {
 		debug_printf( DEBUG_VERBOSE, "Parsing %s ...\n", it.c_str() );
 
-		if( !parse( dagman.dag, it.c_str(), dagman.useDagDir, dagman._schedd ) ) {
+		if( !parse( dagman.dag, it.c_str(), dagman.useDagDir, dagman._schedd, dagman.doAppendVars )) {
 			if ( dagman.dumpRescueDag ) {
 					// Dump the rescue DAG so we can see what we got
 					// in the failed parse attempt.
@@ -1289,6 +1324,9 @@ void main_init (int argc, char ** const argv) {
 	// adjust the parent/child edges removing duplicates and setting up for processing
 	debug_printf(DEBUG_VERBOSE, "Adjusting edges\n");
 	dagman.dag->AdjustEdges();
+	
+	// Set nodes marked as DONE in dag file to STATUS_DONE
+	dagman.dag->SetPreDoneNodes();
 
 		//
 		// Actually parse the "new-new" style (partial DAG info only)
@@ -1314,7 +1352,7 @@ void main_init (int argc, char ** const argv) {
 		parseSetDoNameMunge( false );
 
 		if( !parse( dagman.dag, dagman.rescueFileToRun.c_str(),
-					dagman.useDagDir, dagman._schedd ) ) {
+					dagman.useDagDir, dagman._schedd, dagman.doAppendVars ) ) {
 			if ( dagman.dumpRescueDag ) {
 					// Dump the rescue DAG so we can see what we got
 					// in the failed parse attempt.
@@ -1517,7 +1555,7 @@ Dagman::ResolveDefaultLog()
 
 	replace_str( _defaultNodeLog, "@(DAG_DIR)", dagDir );
 	replace_str( _defaultNodeLog, "@(DAG_FILE)", dagFile );
-	string cluster( std::to_string( DAGManJobId._cluster ) );
+	std::string cluster( std::to_string( DAGManJobId._cluster ) );
 	replace_str( _defaultNodeLog, "@(CLUSTER)", cluster.c_str() );
 	free( dagDir );
 	replace_str( _defaultNodeLog, "@(OWNER)", owner.c_str() );
@@ -1603,16 +1641,17 @@ print_status( bool forceScheddUpdate ) {
 	int post = dagman.dag->PostRunNodeCount();
 	int ready =  dagman.dag->NumNodesReady();
 	int failed = dagman.dag->NumNodesFailed();
+	int futile = dagman.dag->NumNodesFutile();
 	int unready = dagman.dag->NumNodesUnready( true );
 
 	debug_printf( DEBUG_VERBOSE, "Of %d nodes total:\n", total );
 
-	debug_printf( DEBUG_VERBOSE, " Done     Pre   Queued    Post   Ready   Un-Ready   Failed\n" );
+	debug_printf( DEBUG_VERBOSE, " Done     Pre   Queued    Post   Ready   Un-Ready   Failed   Futile\n" );
 
-	debug_printf( DEBUG_VERBOSE, "  ===     ===      ===     ===     ===        ===      ===\n" );
+	debug_printf( DEBUG_VERBOSE, "  ===     ===      ===     ===     ===        ===      ===      ===\n" );
 
-	debug_printf( DEBUG_VERBOSE, "%5d   %5d    %5d   %5d   %5d      %5d    %5d\n",
-				  done, pre, submitted, post, ready, unready, failed );
+	debug_printf( DEBUG_VERBOSE, "%5d   %5d    %5d   %5d   %5d      %5d    %5d    %5d\n",
+				  done, pre, submitted, post, ready, unready, failed, futile);
 	debug_printf( DEBUG_VERBOSE, "%d job proc(s) currently held\n",
 				dagman.dag->NumHeldJobProcs() );
 	dagman.dag->PrintDeferrals( DEBUG_VERBOSE, false );
@@ -1633,31 +1672,7 @@ print_status( bool forceScheddUpdate ) {
 void
 jobad_update() {
 
-	int total = dagman.dag->NumNodes( true );
-	int done = dagman.dag->NumNodesDone( true );
-	int pre = dagman.dag->PreRunNodeCount();
-	int submitted = dagman.dag->NumJobsSubmitted();
-	int post = dagman.dag->PostRunNodeCount();
-	int hold = dagman.dag->HoldRunNodeCount();
-	int ready =  dagman.dag->NumNodesReady();
-	int failed = dagman.dag->NumNodesFailed();
-	int unready = dagman.dag->NumNodesUnready( true );
-
-	if ( dagman._dagmanClassad ) {
-		dagman._dagmanClassad->Update( total, done, pre, submitted, post,
-					hold, ready, failed, unready, dagman.dag->_dagStatus,
-					dagman.dag->Recovery(), dagman._dagmanStats,
-					dagman.maxJobs, dagman.maxIdle, dagman.maxPreScripts,
-					dagman.maxPostScripts, dagman.maxHoldScripts );
-
-		// It's possible that certain DAGMan attributes were changed in the job ad.
-		// If this happened, update the internal values in our dagman data structure.
-		dagman.dag->SetMaxIdleJobProcs(dagman.maxIdle);
-		dagman.dag->SetMaxJobsSubmitted(dagman.maxJobs);
-		dagman.dag->SetMaxPreScripts(dagman.maxPreScripts);
-		dagman.dag->SetMaxPostScripts(dagman.maxPostScripts);
-		dagman.dag->SetMaxHoldScripts(dagman.maxHoldScripts);
-	}
+	if ( dagman._dagmanClassad ) { dagman._dagmanClassad->Update( dagman ); }
 
 }
 
@@ -1745,6 +1760,7 @@ void condor_event_timer () {
 		dagman._dagmanStats.LogProcessCycleTime.Add(logProcessCycleEndTime - logProcessCycleStartTime);
 	}
 
+	int currJobsHeld = dagman.dag->NumHeldJobProcs();
 	// print status if anything's changed (or we're in a high debug level)
 	if( prevJobsDone != dagman.dag->NumNodesDone( true )
 		|| prevJobs != dagman.dag->NumNodes( true )
@@ -1752,7 +1768,7 @@ void condor_event_timer () {
 		|| prevJobsSubmitted != dagman.dag->NumJobsSubmitted()
 		|| prevJobsReady != dagman.dag->NumNodesReady()
 		|| prevScriptRunNodes != dagman.dag->ScriptRunNodeCount()
-		|| prevJobsHeld != dagman.dag->NumHeldJobProcs()
+		|| prevJobsHeld != currJobsHeld
 		|| DEBUG_LEVEL( DEBUG_DEBUG_4 ) ) {
 		print_status();
 
@@ -1762,7 +1778,7 @@ void condor_event_timer () {
 		prevJobsSubmitted = dagman.dag->NumJobsSubmitted();
 		prevJobsReady = dagman.dag->NumNodesReady();
 		prevScriptRunNodes = dagman.dag->ScriptRunNodeCount();
-		prevJobsHeld = dagman.dag->NumHeldJobProcs();
+		prevJobsHeld = currJobsHeld;
 		
 		if( dagman.dag->GetDotFileUpdate() ) {
 			dagman.dag->DumpDotFile();
@@ -1890,7 +1906,6 @@ void condor_event_timer () {
 void
 main_pre_dc_init ( int, char*[] )
 {
-	DC_Skip_Auth_Init();
 	DC_Skip_Core_Init();
 #ifdef WIN32
 	_setmaxstdio(2048);
@@ -1932,7 +1947,7 @@ int
 main( int argc, char **argv )
 {
 
-	set_mySubSystem( "DAGMAN", SUBSYSTEM_TYPE_DAGMAN );
+	set_mySubSystem( "DAGMAN", false, SUBSYSTEM_TYPE_DAGMAN );
 
 		// Record the workingDir before invoking daemoncore (which hijacks it)
 	condor_getcwd( dagman.workingDir );

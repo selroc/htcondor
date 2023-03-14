@@ -33,6 +33,10 @@
 #include "authentication.h"
 #include "globus_utils.h"
 #include "limit_directory_access.h"
+#include "manifest.h"
+
+#include <fstream>
+#include "spooled_job_files.h"
 
 extern const char* public_schedd_addr;	// in shadow_v61_main.C
 
@@ -141,7 +145,7 @@ RemoteResource::~RemoteResource()
 	}
 
 
-	if( param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) ) {
+	if( param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION", true) ) {
 		if( m_claim_session.secSessionId() ) {
 			daemonCore->getSecMan()->invalidateKey( m_claim_session.secSessionId() );
 		}
@@ -179,49 +183,6 @@ RemoteResource::activateClaim( int starterVersion )
 		dprintf( D_ALWAYS, "JobAd not defined in RemoteResource\n" );
 		setExitReason(JOB_SHADOW_USAGE);  // no better exit reason available
 		return false;
-	}
-
-	// as part of the initial hack at glexec integration, we need
-	// to provide the startd with our user proxy before it
-	// executes the starter (since glexec takes the proxy as input
-	// in order to determine the UID and GID to use).
-	char* proxy;
-	if( param_boolean( "GLEXEC_STARTER", false ) &&
-	    (jobAd->LookupString( ATTR_X509_USER_PROXY, &proxy ) == 1) ) {
-		dprintf( D_FULLDEBUG,
-	                 "trying early delegation (for glexec) of proxy: %s\n", proxy );
-		time_t expiration_time = GetDesiredDelegatedJobCredentialExpiration(jobAd);
-		int dReply = dc_startd->delegateX509Proxy( proxy, expiration_time, NULL );
-		if( dReply == OK ) {
-			// early delegation was successful. this means the startd
-			// is going to launch the starter using glexec, so we need
-			// to add the user to our ALLOW_DAEMON list. for now, we'll
-			// just pull the user name from the job ad. if we wanted to be
-			// airtight here, we'd run the proxy subject through our mapfile,
-			// since its possible it could result in a different user
-
-			// TODO: we don't actually need to do the above, since we
-			// already open up ALLOW_DAEMON to */<execute_host> (!?!?)
-			// in initStartdInfo(). that needs to be fixed, in which case
-			// the previous comment will apply and we'll need to open
-			// ALLOW_DAEMON here
-
-			dprintf( D_FULLDEBUG,
-			         "successfully delegated user proxy to the startd\n" );
-		}
-		else if( dReply == NOT_OK ) {
-			dprintf( D_FULLDEBUG,
-			         "proxy delegation waived by startd\n" );
-		}
-		else {
-			// delegation did not work. we log a message and just keep
-			// going since it may just be that the startd is old and
-			// doesn't know the DELETGATE_GSI_CRED_STARTD command
-			dprintf( D_FULLDEBUG,
-			         "error delegating credential to startd: %s\n    ",
-			         dc_startd->error() );
-		}
-		free(proxy);
 	}
 
 		// we'll eventually return out of this loop...
@@ -654,6 +615,8 @@ RemoteResource::disconnectClaimSock(const char *err_msg)
 	          (err_msg ? err_msg : "Disconnecting from starter"),
 	          claim_sock->get_sinful_peer());
 
+	if (!thisRemoteResource) return;
+
 	thisRemoteResource->closeClaimSock();
 
 	if( Shadow->supportsReconnect() ) {
@@ -776,7 +739,7 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 	}
 
 	m_claim_session = ClaimIdParser(claim_id);
-	if( param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) ) {
+	if( param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION", true) ) {
 		if( m_claim_session.secSessionId() == NULL ) {
 			dprintf(D_ALWAYS,"SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION: warning - failed to create security session from claim id %s because claim has no session information, likely because the matched startd has SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION set to False\n",m_claim_session.publicClaimId());
 		}
@@ -790,7 +753,7 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 				EXECUTE_SIDE_MATCHSESSION_FQU,
 				dc_startd->addr(),
 				0 /*don't expire*/,
-				nullptr );
+				nullptr, false );
 
 			if( !rc ) {
 				dprintf(D_ALWAYS,"SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION: failed to create security session for %s, so will fall back on security negotiation\n",m_claim_session.publicClaimId());
@@ -1184,10 +1147,13 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 			double prevTotalUsage = 0.0;
 			jobAd->LookupFloat(ATTR_JOB_CUMULATIVE_REMOTE_SYS_CPU, prevTotalUsage);
 			jobAd->Assign(ATTR_JOB_CUMULATIVE_REMOTE_SYS_CPU, prevTotalUsage + (real_value - prevUsage));
+
+			// Also, do not reset remote cpu unless there was an increase, to guard
+			// against the case starter sending a zero value (perhaps right when the
+			// job terminates).
+			remote_rusage.ru_stime.tv_sec = (time_t)real_value;
+			jobAd->Assign(ATTR_JOB_REMOTE_SYS_CPU, real_value);
 		}
-		
-		remote_rusage.ru_stime.tv_sec = (time_t) real_value;
-		jobAd->Assign(ATTR_JOB_REMOTE_SYS_CPU, real_value);
 	}
 
 	if( update_ad->LookupFloat(ATTR_JOB_REMOTE_USER_CPU, real_value) ) {
@@ -1201,10 +1167,14 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 			double prevTotalUsage = 0.0;
 			jobAd->LookupFloat(ATTR_JOB_CUMULATIVE_REMOTE_USER_CPU, prevTotalUsage);
 			jobAd->Assign(ATTR_JOB_CUMULATIVE_REMOTE_USER_CPU, prevTotalUsage + (real_value - prevUsage));
+
+			// Also, do not reset remote cpu unless there was an increase, to guard
+			// against the case starter sending a zero value (perhaps right when the
+			// job terminates).
+			remote_rusage.ru_utime.tv_sec = (time_t)real_value;
+			jobAd->Assign(ATTR_JOB_REMOTE_USER_CPU, real_value);
+
 		}
-		
-		remote_rusage.ru_utime.tv_sec = (time_t) real_value;
-		jobAd->Assign(ATTR_JOB_REMOTE_USER_CPU, real_value);
 	}
 
 	if( update_ad->LookupInteger(ATTR_IMAGE_SIZE, long_value) ) {
@@ -1275,7 +1245,6 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
     CopyAttribute("Recent" ATTR_BLOCK_READS, *jobAd, *update_ad);
     CopyAttribute("Recent" ATTR_BLOCK_WRITES, *jobAd, *update_ad);
 
-
     CopyAttribute(ATTR_IO_WAIT, *jobAd, *update_ad);
     CopyAttribute(ATTR_JOB_CPU_INSTRUCTIONS, *jobAd, *update_ad);
 
@@ -1297,6 +1266,16 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 		// Required to actually update the schedd's copy.  (sigh)
 		shadow->watchJobAttr(ATTR_JOB_TOE);
 	}
+
+    // You MUST NOT use CopyAttribute() here, because the starter doesn't
+    // send this on every update: CopyAttribute() deletes the target's
+    // attribute if it doesn't exist in the source, which means the schedd
+    // may never see this update (because update the schedd on a timer
+    // instead of after receiving an update).
+    int checkpointNumber = -1;
+    if( update_ad->LookupInteger( ATTR_JOB_CHECKPOINT_NUMBER, checkpointNumber )) {
+        jobAd->Assign( ATTR_JOB_CHECKPOINT_NUMBER, checkpointNumber );
+    }
 
     // these are headed for job ads in the scheduler, so rename them
     // to prevent these from colliding with similar attributes from schedd statistics
@@ -1626,9 +1605,9 @@ RemoteResource::recordCheckpointEvent( ClassAd* update_ad )
 		job_committed_time += now - int_value;
 		jobAd->Assign(ATTR_JOB_COMMITTED_TIME, job_committed_time);
 
-		float slot_weight = 1;
+		double slot_weight = 1;
 		jobAd->LookupFloat(ATTR_JOB_MACHINE_ATTR_SLOT_WEIGHT0, slot_weight);
-		float slot_time = 0;
+		double slot_time = 0;
 		jobAd->LookupFloat(ATTR_COMMITTED_SLOT_TIME, slot_time);
 		slot_time += slot_weight * (now - int_value);
 		jobAd->Assign(ATTR_COMMITTED_SLOT_TIME, slot_time);
@@ -1864,10 +1843,6 @@ RemoteResource::beginExecution( void )
 	//
 	time_t now = time(NULL);
 	activation.StartExecutionTime = now;
-	time_t ActivationSetUpDuration = activation.StartExecutionTime - activation.StartTime;
-    // Where would this attribute get rotated?  Here?
-	jobAd->InsertAttr( ATTR_JOB_ACTIVATION_SETUP_DURATION, ActivationSetUpDuration );
-	shadow->updateJobInQueue(U_STATUS);
 
 	if( began_execution ) {
 		return;
@@ -1878,6 +1853,14 @@ RemoteResource::beginExecution( void )
 
 	// add the execution start time into the job ad.
 	jobAd->Assign( ATTR_JOB_CURRENT_START_EXECUTING_DATE, now);
+
+	// add ActivationSetupDuration into the job ad.
+	// note: we do this just once after the the first exectution, we do not
+	// want to update after every exectuion (if the job checkpoints).
+	time_t ActivationSetUpDuration = activation.StartExecutionTime - activation.StartTime;
+    // Where would this attribute get rotated?  Here?
+	jobAd->InsertAttr( ATTR_JOB_ACTIVATION_SETUP_DURATION, ActivationSetUpDuration );
+	shadow->updateJobInQueue(U_STATUS);
 
 	startCheckingProxy();
 
@@ -1905,7 +1888,7 @@ RemoteResource::supportsReconnect( void )
 		return false;
 	}
 	int tmp;
-	if( ! jobAd->LookupInteger(ATTR_JOB_LEASE_DURATION, tmp) ) {
+	if( ! jobAd->LookupInteger(ATTR_JOB_LEASE_DURATION, tmp) || tmp <= 0 ) {
 		return false;
 	}
 
@@ -2208,6 +2191,96 @@ RemoteResource::initFileTransfer()
 
 		filetrans.AddDownloadFilenameRemap( StderrRemapName, file.c_str() );
 	}
+
+	//
+	// Check this job's SPOOL directory for MANIFEST files and pick the
+	// highest-numbered valid one.  That MANIFEST file must be transferred
+	// to the starter (so it can validate the checkpoint) and the files
+	// therein converted to URLs and added to the transfer list for the
+	// starter to fetch.
+	//
+
+	std::string checkpointDestination;
+	if(! jobAd->LookupString( "CheckpointDestination", checkpointDestination )) {
+		return;
+	}
+
+	std::string spoolPath;
+	SpooledJobFiles::getJobSpoolPath(jobAd, spoolPath);
+
+	// Find the largest manifest number.
+	int largestManifestNumber = -1;
+	const char * currentFile = NULL;
+	Directory spoolDirectory( spoolPath.c_str() );
+	while( (currentFile = spoolDirectory.Next()) ) {
+		int manifestNumber = manifest::getNumberFromFileName( currentFile );
+		if( manifestNumber > largestManifestNumber ) {
+			largestManifestNumber = manifestNumber;
+		}
+	}
+	if( largestManifestNumber == -1 ) {
+		return;
+	}
+
+	// Validate the candidate manifests in reverse ordinal order.
+	int manifestNumber = -1;
+	std::string manifestFileName;
+	if( largestManifestNumber != -1 ) {
+		for( int i = largestManifestNumber; i >= 0; --i ) {
+			formatstr( manifestFileName, "%s/_condor_checkpoint_MANIFEST.%.4d", spoolPath.c_str(), i );
+			if( manifest::validateManifestFile( manifestFileName ) ) {
+				manifestNumber = i;
+				break;
+			} else {
+				dprintf( D_VERBOSE, "Manifest file '%s' failed validation.\n", manifestFileName.c_str() );
+			}
+		}
+	}
+	if( manifestNumber == -1 ) {
+		// This should alarm the administrator, but is not job-fatal.
+		dprintf( D_ALWAYS, "No manifest file validated.\n" );
+		return;
+	}
+
+	std::set< std::string > pathsAlreadyPreserved;
+
+	// Transfer the MANIFEST file.  We can't use AddDownloadFilenameRemap()
+	// because those are applied on the starter side and aren't transferred
+	// from the shadow (except as part of the job ad, which we've already
+	// sent).
+	filetrans.addInputFile( manifestFileName, ".MANIFEST", pathsAlreadyPreserved );
+
+	//
+	// Transfer every file listed in the MANIFEST file.  It could be quite
+	// large, so process it line-by-line, ignoring the last one (which is
+	// always itself).
+	//
+
+	std::ifstream ifs( manifestFileName.c_str() );
+	if(! ifs.good()) {
+		dprintf( D_ALWAYS, "Failed to open MANIFEST file (%s), aborting.\n", manifestFileName.c_str() );
+		return; // FIMXE
+	}
+
+	std::string globalJobID;
+	jobAd->LookupString( ATTR_GLOBAL_JOB_ID, globalJobID );
+	ASSERT(! globalJobID.empty());
+
+	std::string manifestLine;
+	std::string nextManifestLine;
+	std::getline( ifs, manifestLine );
+	std::getline( ifs, nextManifestLine );
+	for( ; ifs.good(); ) {
+		std::string checkpointURL;
+		std::string checkpointFile = manifest::FileFromLine( manifestLine );
+		formatstr( checkpointURL, "%s/%s/%.4d/%s", checkpointDestination.c_str(),
+		  globalJobID.c_str(), manifestNumber, checkpointFile.c_str() );
+		filetrans.addCheckpointFile( checkpointURL, checkpointFile, pathsAlreadyPreserved );
+
+		manifestLine = nextManifestLine;
+		std::getline( ifs, nextManifestLine );
+	}
+
 }
 
 void
@@ -2513,8 +2586,12 @@ RemoteResource::getSecSessionInfo(
 	std::string &filetrans_session_info,
 	std::string &filetrans_session_key)
 {
-	if( !param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) ) {
+	if( !param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION", true) ) {
 		dprintf(D_ALWAYS,"Request for security session info from starter, but SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION is not True, so ignoring.\n");
+		return false;
+	}
+	if (!m_claim_session.secSessionId() || !m_filetrans_session.secSessionId()) {
+		dprintf(D_ALWAYS,"Request for security session info from starter, but claim id has no security session, so ignoring.\n");
 		return false;
 	}
 

@@ -27,7 +27,17 @@
 #include <assert.h>
 #include "classad_functional_tester.h"
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+using std::map;
+using std::cin;
+using std::cout;
+using std::cerr;
+using std::ifstream;
+using std::ofstream;
+using std::endl;
+
 using namespace classad;
 
 typedef map<string, Variable *> VariableMap;
@@ -465,14 +475,14 @@ bool replace_variables(
     good_line = true;
     error = "";
     for (;;) {
-        int      dollar, current_position;
+        size_t      dollar, current_position;
         string   variable_name;
         string   variable_value;
         Variable *var;
 
         current_position = 0;
         dollar = line.find('$', current_position);
-        if (dollar == -1) {
+        if (dollar == std::string::npos) {
             break;
         }
         current_position = dollar + 1;
@@ -503,7 +513,7 @@ bool replace_variables(
         // We have to be careful with substr() because with gcc 2.96, it likes to 
         // assert/except if you give it values that are too large.
         string end;
-        if (current_position < (int) line.size()) {
+        if (current_position < line.size()) {
             end = line.substr(current_position);
         } else {
             end = "";
@@ -539,7 +549,7 @@ Command get_command(
     Command  command;
    
     current_position = 0;
-    length           = line.size();
+    length           = (int)line.size();
     command_name     = "";
     command          = cmd_NoCommand;
 
@@ -1134,7 +1144,7 @@ bool get_variable_name(
     bool     have_good_name;
 
     current_position = 0;
-    length           = line.size();
+    length           = (int)line.size();
     variable_name    = "";
     have_good_name   = false;
 
@@ -1199,7 +1209,7 @@ bool get_file_name(
     bool     have_good_name;
 
     current_position = 0;
-    length           = line.size();
+    length           = (int)line.size();
     variable_name    = "";
     have_good_name   = false;
 

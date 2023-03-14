@@ -32,6 +32,7 @@
 #include "condor_adtypes.h"
 #include "condor_io.h"
 #include "condor_distribution.h"
+#include "condor_environ.h"
 #include "condor_ver_info.h"
 #if !defined(WIN32)
 #include <pwd.h>
@@ -60,10 +61,7 @@
 #include "directory.h"
 #include "filename_tools.h"
 #include "fs_util.h"
-#include "dc_transferd.h"
-#include "condor_ftp.h"
 #include "condor_crontab.h"
-#include <scheduler.h>
 #include "condor_holdcodes.h"
 #include "condor_url.h"
 #include "condor_version.h"
@@ -114,7 +112,6 @@ char	*My_fs_domain;
 int		ExtraLineNo;
 int		GotQueueCommand = 0;
 int		GotNonEmptyQueueCommand = 0;
-SandboxTransferMethod	STMethod = STM_USE_SCHEDD_ONLY;
 
 
 const char	*MyName;
@@ -129,12 +126,15 @@ bool	NoCmdFileNeeded = false; // set if there is no need for a commmand file (i.
 bool	GotCmdlineKeys = false; // key=value or -append specifed on the command line
 int		WarnOnUnusedMacros = 1;
 int		DisableFileChecks = 0;
+int     DashQueryCapabilities = 0; // get capabilites from schedd and print the
 int		DashDryRun = 0;
 int		DashMaxJobs = 0;	 // maximum number of jobs to create before generating an error
 int		DashMaxClusters = 0; // maximum number of clusters to create before generating an error.
 const char * DashDryRunOutName = NULL;
+int     DashDryRunFullAds = 0;
 int		DumpSubmitHash = 0;
 int		DumpSubmitDigest = 0;
+int		DumpJOBSETClassad = 0;
 int		MaxProcsPerCluster;
 int	  ClusterId = -1;
 int	  ProcId = -1;
@@ -206,9 +206,11 @@ bool		DumpClassAdToFile = false;
 FILE		*DumpFile = NULL;
 bool		DumpFileIsStdout = 0;
 
-void usage();
-// this is in submit_help.cpp
+void usage(FILE * out);
+// these are in submit_help.cpp
 void help_info(FILE* out, int num_topics, const char ** topics);
+void schedd_capabilities_help(FILE * out, const ClassAd &ad, const std::string &helpex, DCSchedd* schedd, int options);
+
 void init_params();
 void reschedule();
 int submit_jobs (
@@ -232,7 +234,6 @@ static int MySendJobAttributes(const JOB_ID_KEY & key, const classad::ClassAd & 
 int  DoUnitTests(int options);
 
 char *username = NULL;
-char *myproxy_password = NULL;
 
 int process_job_credentials();
 
@@ -251,10 +252,10 @@ void ReportSubmitException(const char * msg, int /*src_line*/, const char * /*sr
 {
 	char loc[100];
 	switch (ErrContext.phase) {
-	case PHASE_READ_SUBMIT: sprintf(loc, " on Line %d of submit file", FileMacroSource.line); break;
-	case PHASE_DASH_APPEND: sprintf(loc, " with -a argument #%d", ExtraLineNo); break;
-	case PHASE_QUEUE:       sprintf(loc, " at Queue statement on Line %d", FileMacroSource.line); break;
-	case PHASE_QUEUE_ARG:   sprintf(loc, " with -queue argument"); break;
+	case PHASE_READ_SUBMIT: snprintf(loc, sizeof(loc), " on Line %d of submit file", FileMacroSource.line); break;
+	case PHASE_DASH_APPEND: snprintf(loc, sizeof(loc), " with -a argument #%d", ExtraLineNo); break;
+	case PHASE_QUEUE:       snprintf(loc, sizeof(loc), " at Queue statement on Line %d", FileMacroSource.line); break;
+	case PHASE_QUEUE_ARG:   snprintf(loc, sizeof(loc), " with -queue argument"); break;
 	default: loc[0] = 0; break;
 	}
 
@@ -523,10 +524,9 @@ main( int argc, const char *argv[] )
 
 	setbuf( stdout, NULL );
 
-	set_mySubSystem( "SUBMIT", SUBSYSTEM_TYPE_SUBMIT );
+	set_mySubSystem( "SUBMIT", false, SUBSYSTEM_TYPE_SUBMIT );
 
 	MyName = condor_basename(argv[0]);
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 	classad::ClassAdSetExpressionCaching(false);
@@ -549,8 +549,6 @@ main( int argc, const char *argv[] )
 		// condor.
 	check_umask();
 
-	set_debug_flags(NULL, D_EXPR);
-
 #if !defined(WIN32)
 	install_sig_handler(SIGPIPE, (SIG_HANDLER)SIG_IGN );
 #endif
@@ -567,9 +565,9 @@ main( int argc, const char *argv[] )
 				terse = true; verbose = false;
 			} else if (is_dash_arg_prefix(ptr[0], "disable", 1)) {
 				DisableFileChecks = 1;
-			} else if (is_dash_arg_prefix(ptr[0], "debug", 2)) {
+			} else if (is_dash_arg_colon_prefix(ptr[0], "debug", &pcolon, 2)) {
 				// dprintf to console
-				dprintf_set_tool_debug("TOOL", 0);
+				dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
 				debug = true;
 			} else if (is_dash_arg_colon_prefix(ptr[0], "dry-run", &pcolon, 3)) {
 				DashDryRun = 1;
@@ -581,8 +579,14 @@ main( int argc, const char *argv[] )
 							DumpSubmitHash |= 0x100 | HASHITER_NO_DEFAULTS;
 						} else if (YourString(opt) == "def") {
 							DumpSubmitHash &= ~HASHITER_NO_DEFAULTS;
+						} else if (YourString(opt) == "full") {
+							DashDryRunFullAds = 1;
 						} else if (YourString(opt) == "digest") {
 							DumpSubmitDigest = 1;
+						} else if (YourString(opt) == "jobset") {
+							DumpJOBSETClassad = 1;
+						} else if (YourString(opt) == "tpl" || starts_with(opt, "template")) {
+							DumpSubmitHash |= 0x80;
 						} else if (starts_with(opt, "cluster=")) {
 							sim_current_condor_version = true;
 							sim_starting_cluster = atoi(strchr(opt, '=') + 1);
@@ -778,12 +782,6 @@ main( int argc, const char *argv[] )
 				}
 			} else if (is_dash_arg_prefix (ptr[0], "single-cluster", 3)) {
 				DashMaxClusters = 1;
-			} else if (is_dash_arg_prefix( ptr[0], "password", 1)) {
-				if( !(--argc) || !(*(++ptr)) ) {
-					fprintf( stderr, "%s: -password requires another argument\n",
-							 MyName );
-				}
-				myproxy_password = strdup (*ptr);
 			} else if (is_dash_arg_prefix(ptr[0], "pool", 2)) {
 				if( !(--argc) || !(*(++ptr)) ) {
 					fprintf( stderr, "%s: -pool requires another argument\n",
@@ -798,14 +796,6 @@ main( int argc, const char *argv[] )
 					//   seeing ":<port>" at the end, which is valid for a
 					//   collector name.
 				PoolName = strdup( *ptr );
-			} else if (is_dash_arg_prefix(ptr[0], "stm", 1)) {
-				if( !(--argc) || !(*(++ptr)) ) {
-					fprintf( stderr, "%s: -stm requires another argument\n",
-							 MyName );
-					exit(1);
-				}
-				method = *ptr;
-				string_to_stm(method, STMethod);
 			} else if (is_dash_arg_prefix(ptr[0], "unused", 1)) {
 				WarnOnUnusedMacros = WarnOnUnusedMacros == 1 ? 0 : 1;
 				// TOGGLE? 
@@ -835,17 +825,20 @@ main( int argc, const char *argv[] )
 			} else if (is_dash_arg_prefix(ptr[0], "allow-crlf-script", 8)) {
 				allow_crlf_script = true;
 			} else if (is_dash_arg_prefix(ptr[0], "help")) {
-				if (!(--argc) || !(*(++ptr))) {
-					usage();
-				}
-				help_info(stdout, argc, ptr);
+				help_info(stdout, --argc, ++ptr);
 				exit( 0 );
+			} else if (is_dash_arg_colon_prefix(ptr[0], "capabilities", &pcolon, 3)) {
+				DashQueryCapabilities = 1;
+				if (pcolon && pcolon[0]) {
+					int opt = atoi(++pcolon);
+					if (opt) DashQueryCapabilities = opt;
+				}
 			} else if (is_dash_arg_prefix(ptr[0], "interactive", 1)) {
 				// we don't currently support -interactive on Windows, but we parse for it anyway.
 				dash_interactive = 1;
 				extraLines.Append( "+InteractiveJob=True" );
 			} else {
-				usage();
+				usage(stderr);
 				exit( 1 );
 			}
 		} else if (strchr(ptr[0],'=')) {
@@ -885,24 +878,6 @@ main( int argc, const char *argv[] )
 		NoCmdFileNeeded = true;
 	}
 
-	// ensure I have a known transfer method
-	if (STMethod == STM_UNKNOWN) {
-		fprintf( stderr, 
-			"%s: Unknown sandbox transfer method: %s\n", MyName, method.c_str());
-		usage();
-		exit(1);
-	}
-
-	// we only want communication with the schedd to take place... because
-	// that's the only type of communication we are interested in
-	if ( DumpClassAdToFile && STMethod != STM_USE_SCHEDD_ONLY ) {
-		fprintf( stderr, 
-			"%s: Dumping ClassAds to a file is not compatible with sandbox "
-			"transfer method: %s\n", MyName, method.c_str());
-		usage();
-		exit(1);
-	}
-
 	if (!DisableFileChecks) {
 		DisableFileChecks = param_boolean_crufty("SUBMIT_SKIP_FILECHECKS", true) ? 1 : 0;
 	}
@@ -935,6 +910,26 @@ main( int argc, const char *argv[] )
 		}
 	}
 
+	if (DashQueryCapabilities) {
+		queue_connect();
+		if ( ! MyQ) {
+			fprintf(stderr, "Could not connect to schedd to query capabilities");
+			exit(1);
+		}
+
+		ClassAd ad;
+		std::string helpex;
+		MyQ->get_Capabilities(ad);
+		if (MyQ->has_extended_help(helpex) && ! IsUrl(helpex.c_str())) {
+			MyQ->get_ExtendedHelp(helpex);
+		}
+		schedd_capabilities_help(stdout, ad, helpex, MySchedd, DashQueryCapabilities);
+
+		// TODO: report errors?? can this even fail?
+		CondorError errstk;
+		MyQ->disconnect(false, errstk);
+		exit(0);
+	}
 
 	// make sure our shadow will have access to our credential
 	// (check is disabled for "-n" and "-r" submits)
@@ -945,7 +940,7 @@ main( int argc, const char *argv[] )
 		std::string userdom;
 		auto_free_ptr the_username(my_username());
 		auto_free_ptr the_domainname(my_domainname());
-		userdom = the_username;
+		userdom = the_username.ptr();
 		userdom += "@";
 		if (the_domainname) { userdom += the_domainname.ptr(); }
 
@@ -1058,7 +1053,6 @@ main( int argc, const char *argv[] )
 	submit_hash.setDisableFileChecks(DisableFileChecks);
 	submit_hash.setFakeFileCreationChecks(DashDryRun);
 	submit_hash.setScheddVersion(MySchedd ? MySchedd->version() : CondorVersion());
-	if (myproxy_password) submit_hash.setMyProxyPassword(myproxy_password);
 	submit_hash.init_base_ad(get_submit_time(), username);
 
 	if ( !DumpClassAdToFile ) {
@@ -1177,77 +1171,14 @@ main( int argc, const char *argv[] )
 			bool result;
 			CondorError errstack;
 
-			switch(STMethod) {
-				case STM_USE_SCHEDD_ONLY:
-					// perhaps check for proper schedd version here?
-					result = MySchedd->spoolJobFiles( (int)JobAdsArray.size(),
-											  JobAdsArray.data(),
-											  &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, "ERROR: Failed to spool job files.\n" );
-						exit(1);
-					}
-					break;
-
-				case STM_USE_TRANSFERD:
-					{ // start block
-
-					fprintf(stdout,
-							"Locating a Sandbox for %lu jobs.\n", (unsigned long)JobAdsArray.size());
-					std::string td_sinful;
-					std::string td_capability;
-					ClassAd respad;
-					int invalid;
-					std::string reason;
-
-					result = MySchedd->requestSandboxLocation( FTPD_UPLOAD, 
-												(int)JobAdsArray.size(),
-												JobAdsArray.data(), FTP_CFTP,
-												&respad, &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, 
-							"ERROR: Failed to get a sandbox location.\n" );
-						exit(1);
-					}
-
-					respad.LookupInteger(ATTR_TREQ_INVALID_REQUEST, invalid);
-					if (invalid == TRUE) {
-						fprintf( stderr, 
-							"Schedd rejected sand box location request:\n");
-						respad.LookupString(ATTR_TREQ_INVALID_REASON, reason);
-						fprintf( stderr, "\t%s\n", reason.c_str());
-						return 0;
-					}
-
-					respad.LookupString(ATTR_TREQ_TD_SINFUL, td_sinful);
-					respad.LookupString(ATTR_TREQ_CAPABILITY, td_capability);
-
-					dprintf(D_ALWAYS, "Got td: %s, cap: %s\n", td_sinful.c_str(),
-						td_capability.c_str());
-
-					fprintf(stdout,"Spooling data files for %lu jobs.\n",
-						(unsigned long)JobAdsArray.size());
-
-					DCTransferD dctd(td_sinful.c_str());
-
-					result = dctd.upload_job_files( (int)JobAdsArray.size(),
-											  JobAdsArray.data(),
-											  &respad, &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, "ERROR: Failed to spool job files.\n" );
-						exit(1);
-					}
-
-					} // end block
-
-					break;
-
-				default:
-					EXCEPT("PROGRAMMER ERROR: Unknown sandbox transfer method");
-					break;
+			// perhaps check for proper schedd version here?
+			result = MySchedd->spoolJobFiles( (int)JobAdsArray.size(),
+			                                  JobAdsArray.data(),
+			                                  &errstack );
+			if ( !result ) {
+				fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
+				fprintf( stderr, "ERROR: Failed to spool job files.\n" );
+				exit(1);
 			}
 		}
 	}
@@ -1258,6 +1189,31 @@ main( int argc, const char *argv[] )
 		if( ProcId != -1 ) {
 			reschedule();
 		}
+	}
+
+	if (DashDryRun && DashDryRunFullAds) {
+		FILE* dryfile = NULL;
+		bool  close_it = false;
+		if (MATCH == strcmp(DashDryRunOutName, "-")) {
+			dryfile = stdout; close_it = false;
+			fputs("\n", stdout);
+		} else {
+			dryfile = safe_fopen_wrapper_follow(DashDryRunOutName,"wb");
+			if ( ! dryfile) {
+				fprintf( stderr, "\nERROR: Failed to open file -dry-run output file (%s)\n", strerror(errno));
+				exit(1);
+			}
+			close_it = true;
+		}
+		std::string out;
+		for (size_t idx=0;idx<JobAdsArray.size();idx++) {
+			if (idx > 0) { out = "\n"; }
+			// for testing...
+			//formatstr_cat(out, "-- %d %p chainedto %p\n", (int)idx, JobAdsArray[idx], JobAdsArray[idx]->GetChainedParentAd());
+			formatAd(out, *JobAdsArray[idx]);
+			fputs(out.c_str(), dryfile);
+		}
+		if (close_it) { fclose(dryfile); }
 	}
 
 	// Deallocate some memory just to keep Purify happy
@@ -1312,7 +1268,7 @@ main( int argc, const char *argv[] )
 			sshargs[i++] = "-name";
 			sshargs[i++] = ScheddName;
 		}
-		sprintf(jobid,"%d.0",ClusterId);
+		snprintf(jobid, sizeof(jobid), "%d.0", ClusterId);
 		sshargs[i++] = jobid;
 		sleep(3);	// with luck, schedd will start the job while we sleep
 		// We cannot fork before calling ssh_to_job, since ssh will want
@@ -1610,6 +1566,38 @@ bool CheckForNewExecutable(MACRO_SET& macro_set) {
 	return new_exe;
 }
 
+static bool jobset_ad_is_trivial(const ClassAd *ad)
+{
+	if ( ! ad) return true;
+	for (auto it : *ad) {
+		if (YourStringNoCase(ATTR_JOB_SET_NAME) == it.first) continue;
+		return false;
+	}
+	return true;
+}
+
+int send_jobset_ad(SubmitHash & hash, int ClusterId)
+{
+	int rval = 0;
+	const ClassAd * jobsetAd = hash.getJOBSET();
+	if (jobsetAd) {
+		int jobset_version = 0;
+		if (MyQ->has_send_jobset(jobset_version)) {
+			rval = MyQ->send_Jobset(ClusterId, jobsetAd);
+			if (rval == 0 || rval == 1) {
+				rval = 0;
+			} else {
+				fprintf( stderr, "\nERROR: Failed to submit jobset.\n" );
+				return rval;
+			}
+		} else {
+			fprintf(stderr, "\nWARNING: schedd does not support jobsets.%s\n",
+				jobset_ad_is_trivial(jobsetAd) ? "" : "  Ignoring JOBSET.* attributes");
+		}
+	}
+	return rval;
+}
+
 int send_cluster_ad(SubmitHash & hash, int ClusterId, bool is_interactive, bool is_remote)
 {
 	int rval = 0;
@@ -1628,29 +1616,35 @@ int send_cluster_ad(SubmitHash & hash, int ClusterId, bool is_interactive, bool 
 	classad::ClassAd * clusterAd = job->GetChainedParentAd();
 	if ( ! clusterAd) {
 		fprintf( stderr, "\nERROR: no cluster ad.\n" );
-		return -1;
+		rval = -1;
+		goto bail;
 	}
 
-	int JobUniverse = hash.getUniverse();
-	if ( ! JobUniverse) {
+	if ( ! hash.getUniverse()) {
+		fprintf( stderr, "\nERROR: job has no universe.\n" );
 		rval = -1;
-	} else {
+		goto bail;
+	}
+
+	// if this submission is using jobsets, send the jobset ad first
+	rval = send_jobset_ad(hash, ClusterId);
+	if (rval >= 0) {
 		SendLastExecutable(); // if spooling the exe, send it now.
 		rval = MySendJobAttributes(JOB_ID_KEY(ClusterId,-1), *clusterAd, setattrflags);
-		if (rval == 0 || rval == 1) {
-			rval = 0;
-		} else {
+		if (rval < 0) {
 			fprintf( stderr, "\nERROR: Failed to queue job.\n" );
 		}
 	}
 
+bail:
+	if (rval == 0 || rval == 1) {
+		rval = 0;
+	}
 	hash.delete_job_ad();
 	job = NULL;
 
 	return rval;
 }
-
-
 
 int submit_jobs (
 	FILE * fp,
@@ -1938,6 +1932,10 @@ int submit_jobs (
 			if (DashDryRun && DumpSubmitHash) {
 				fprintf(stdout, "\n----- submit hash at queue begin -----\n");
 				submit_hash.dump(stdout, DumpSubmitHash & 0xF);
+				if (DumpSubmitHash & 0x80) {
+					fprintf(stdout, "\n----- templates -----\n");
+					submit_hash.dump_templates(stdout, "TEMPLATE", DumpSubmitHash & 0xFF);
+				}
 				fprintf(stdout, "-----\n");
 			}
 
@@ -1965,6 +1963,10 @@ int submit_jobs (
 			if (DashDryRun && DumpSubmitHash) {
 				fprintf(stdout, "\n----- submit hash at queue begin -----\n");
 				submit_hash.dump(stdout, DumpSubmitHash & 0xF);
+				if (DumpSubmitHash & 0x80) {
+					fprintf(stdout, "\n----- templates -----\n");
+					submit_hash.dump_templates(stdout, "TEMPLATE", DumpSubmitHash & 0xFF);
+				}
 				fprintf(stdout, "-----\n");
 			}
 
@@ -1987,6 +1989,14 @@ int submit_jobs (
 
 			// make sure vars don't continue to reference the o.items data that we are about to free.
 			cleanup_vars(submit_hash, o.vars);
+		}
+
+		if (DashDryRun && DumpJOBSETClassad) {
+			fprintf(stdout, "\n----- jobset -----\n");
+			if (submit_hash.getJOBSET()) {
+				fPrintAd(stdout, *submit_hash.getJOBSET());
+			}
+			fprintf(stdout, "-----\n");
 		}
 
 		// if there was a failure, quit out of this loop.
@@ -2080,19 +2090,21 @@ int queue_connect()
 		if (DumpClassAdToFile || DashDryRun) {
 			SimScheddQ* SimQ = new SimScheddQ(sim_starting_cluster);
 			if (DumpFileIsStdout) {
-				SimQ->Connect(stdout, false, false);
+				SimQ->Connect(DashDryRunFullAds ? nullptr : stdout, false, false);
 			} else if (DashDryRun) {
 				FILE* dryfile = NULL;
 				bool  free_it = false;
-				if (MATCH == strcmp(DashDryRunOutName, "-")) {
-					dryfile = stdout; free_it = false;
-				} else {
-					dryfile = safe_fopen_wrapper_follow(DashDryRunOutName,"w");
-					if ( ! dryfile) {
-						fprintf( stderr, "\nERROR: Failed to open file -dry-run output file (%s)\n", strerror(errno));
-						exit(1);
+				if ( ! DashDryRunFullAds) {
+					if (MATCH == strcmp(DashDryRunOutName, "-")) {
+						dryfile = stdout; free_it = false;
+					} else {
+						dryfile = safe_fopen_wrapper_follow(DashDryRunOutName,"w");
+						if ( ! dryfile) {
+							fprintf( stderr, "\nERROR: Failed to open file -dry-run output file (%s)\n", strerror(errno));
+							exit(1);
+						}
+						free_it = true;
 					}
-					free_it = true;
 				}
 				SimQ->Connect(dryfile, free_it, (DashDryRun&2)!=0);
 			} else {
@@ -2113,7 +2125,7 @@ int queue_connect()
 static char ClusterString[20]="1", ProcessString[20]="0", EmptyItemString[] = "";
 void init_vars(SubmitHash & hash, int cluster_id, StringList & vars)
 {
-	sprintf(ClusterString, "%d", cluster_id);
+	snprintf(ClusterString, sizeof(ClusterString), "%d", cluster_id);
 	strcpy(ProcessString, "0");
 
 	// establish live buffers for $(Cluster) and $(Process), and other loop variables
@@ -2321,8 +2333,8 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 		}
 
 		// update the live $(Cluster), $(Process) and $(Step) string buffers
-		(void)sprintf(ClusterString, "%d", ClusterId);
-		(void)sprintf(ProcessString, "%d", ProcId);
+		(void)snprintf(ClusterString, sizeof(ClusterString), "%d", ClusterId);
+		(void)snprintf(ProcessString, sizeof(ProcessString), "%d", ProcId);
 
 		// we move this outside the above, otherwise it appears that we have 
 		// received no queue command (or several, if there were multiple ones)
@@ -2339,6 +2351,14 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 		int JobUniverse = submit_hash.getUniverse();
 		rval = 0;
 		if ( ProcId == 0 ) {
+			// if there are custom jobset attributes, and the schedd supports jobsets
+			// send the jobset attributes now.
+			rval = send_jobset_ad(submit_hash, jid.cluster);
+			if (rval < 0) {
+				DoCleanup(0,0,NULL);
+				exit(1);
+			}
+
 			SendLastExecutable(); // if spooling the exe, send it now.
 
 			// before sending proc0 ad, send the cluster ad
@@ -2389,12 +2409,14 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 
 		// If spooling entire job "sandbox" to the schedd, then we need to keep
 		// the classads in an array to later feed into the filetransfer object.
-		if ( dash_remote ) {
+		if (dash_remote || (DashDryRun && DashDryRunFullAds)) {
 			ClassAd * tmp = new ClassAd(*job);
 			tmp->Assign(ATTR_CLUSTER_ID, ClusterId);
 			tmp->Assign(ATTR_PROC_ID, ProcId);
 			if (0 == ProcId) {
 				JobAdsArrayLastClusterIndex = JobAdsArray.size();
+				tmp->Unchain();
+				tmp->UpdateFromChain(*job);
 			} else {
 				// proc ad to cluster ad (if there is one)
 				tmp->ChainToAd(JobAdsArray[JobAdsArrayLastClusterIndex]);
@@ -2416,50 +2438,46 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 
 
 void
-usage()
+usage(FILE* out)
 {
-	fprintf( stderr, "Usage: %s [options] [<attrib>=<value>] [- | <submit-file>]\n", MyName );
-	fprintf( stderr, "    [options] are\n" );
-	fprintf( stderr, "\t-file <submit-file>\tRead Submit commands from <submit-file>\n");
-	fprintf( stderr, "\t-terse  \t\tDisplay terse output, jobid ranges only\n" );
-	fprintf( stderr, "\t-verbose\t\tDisplay verbose output, jobid and full job ClassAd\n" );
-	fprintf( stderr, "\t-debug  \t\tDisplay debugging output\n" );
-	fprintf( stderr, "\t-append <line>\t\tadd line to submit file before processing\n"
-					 "\t              \t\t(overrides submit file; multiple -a lines ok)\n" );
-	fprintf( stderr, "\t-queue <queue-opts>\tappend Queue statement to submit file before processing\n"
-					 "\t                   \t(submit file must not already have a Queue statement)\n" );
-	fprintf( stderr, "\t-batch-name <name>\tappend a line to submit file that sets the batch name\n"
+	fprintf( out, "Usage: %s [options] [<attrib>=<value>] [- | <submit-file>]\n", MyName );
+	fprintf( out, "    [options] are\n" );
+	fprintf( out, "\t-file <submit-file>\tRead Submit commands from <submit-file>\n");
+	fprintf( out, "\t-terse  \t\tDisplay terse output, jobid ranges only\n" );
+	fprintf( out, "\t-verbose\t\tDisplay verbose output, jobid and full job ClassAd\n" );
+	fprintf( out, "\t-capabilities\t\tDisplay configured capabilities of the schedd\n" );
+	fprintf( out, "\t-debug  \t\tDisplay debugging output\n" );
+	fprintf( out, "\t-append <line>\t\tadd line to submit file before processing\n"
+				  "\t              \t\t(overrides submit file; multiple -a lines ok)\n" );
+	fprintf( out, "\t-queue <queue-opts>\tappend Queue statement to submit file before processing\n"
+				  "\t                   \t(submit file must not already have a Queue statement)\n" );
+	fprintf( out, "\t-batch-name <name>\tappend a line to submit file that sets the batch name\n"
 					/* "\t                  \t(overrides batch_name in submit file)\n" */);
-	fprintf( stderr, "\t-disable\t\tdisable file permission checks\n" );
-	fprintf( stderr, "\t-dry-run <filename>\tprocess submit file and write ClassAd attributes to <filename>\n"
-					 "\t        \t\tbut do not actually submit the job(s) to the SCHEDD\n" );
-	fprintf( stderr, "\t-maxjobs <maxjobs>\tDo not submit if number of jobs would exceed <maxjobs>.\n" );
-	fprintf( stderr, "\t-single-cluster\t\tDo not submit if more than one ClusterId is needed.\n" );
-	fprintf( stderr, "\t-unused\t\t\ttoggles unused or unexpanded macro warnings\n"
+	fprintf( out, "\t-disable\t\tdisable file permission checks\n" );
+	fprintf( out, "\t-dry-run <filename>\tprocess submit file and write ClassAd attributes to <filename>\n"
+				  "\t        \t\tbut do not actually submit the job(s) to the SCHEDD\n" );
+	fprintf( out, "\t-maxjobs <maxjobs>\tDo not submit if number of jobs would exceed <maxjobs>.\n" );
+	fprintf( out, "\t-single-cluster\t\tDo not submit if more than one ClusterId is needed.\n" );
+	fprintf( out, "\t-unused\t\t\ttoggles unused or unexpanded macro warnings\n"
 					 "\t       \t\t\t(overrides config file; multiple -u flags ok)\n" );
 	//fprintf( stderr, "\t-force-mpi-universe\tAllow submission of obsolete MPI universe\n );
-	fprintf( stderr, "\t-allow-crlf-script\tAllow submitting #! executable script with DOS/CRLF line endings\n" );
-	fprintf( stderr, "\t-dump <filename>\tWrite job ClassAds to <filename> instead of\n"
+	fprintf( out, "\t-allow-crlf-script\tAllow submitting #! executable script with DOS/CRLF line endings\n" );
+	fprintf( out, "\t-dump <filename>\tWrite job ClassAds to <filename> instead of\n"
 					 "\t                \tsubmitting to a schedd.\n" );
 #if !defined(WIN32)
-	fprintf( stderr, "\t-interactive\t\tsubmit an interactive session job\n" );
+	fprintf( out, "\t-interactive\t\tsubmit an interactive session job\n" );
 #endif
-	fprintf( stderr, "\t-factory\t\tSubmit a late materialization job factory\n");
-	fprintf( stderr, "\t-name <name>\t\tsubmit to the specified schedd\n" );
-	fprintf( stderr, "\t-remote <name>\t\tsubmit to the specified remote schedd\n"
+	fprintf( out, "\t-factory\t\tSubmit a late materialization job factory\n");
+	fprintf( out, "\t-name <name>\t\tsubmit to the specified schedd\n" );
+	fprintf( out, "\t-remote <name>\t\tsubmit to the specified remote schedd\n"
 					 "\t              \t\t(implies -spool)\n" );
-    fprintf( stderr, "\t-addr <ip:port>\t\tsubmit to schedd at given \"sinful string\"\n" );
-	fprintf( stderr, "\t-spool\t\t\tspool all files to the schedd\n" );
-	fprintf( stderr, "\t-password <password>\tspecify password to MyProxy server\n" );
-	fprintf( stderr, "\t-pool <host>\t\tUse host as the central manager to query\n" );
-	fprintf( stderr, "\t-stm <method>\t\tHow to move a sandbox into HTCondor\n" );
-	fprintf( stderr, "\t             \t\t<methods> is one of: stm_use_schedd_only\n" );
-	fprintf( stderr, "\t             \t\t                     stm_use_transferd\n" );
+    fprintf( out, "\t-addr <ip:port>\t\tsubmit to schedd at given \"sinful string\"\n" );
+	fprintf( out, "\t-spool\t\t\tspool all files to the schedd\n" );
+	fprintf( out, "\t-pool <host>\t\tUse host as the central manager to query\n" );
+	fprintf( out, "\t<attrib>=<value>\tSet <attrib>=<value> before reading the submit file.\n" );
 
-	fprintf( stderr, "\t<attrib>=<value>\tSet <attrib>=<value> before reading the submit file.\n" );
-
-	fprintf( stderr, "\n    If <submit-file> is omitted or is -, and a -queue is not provided, submit commands\n"
-					"     are read from stdin. Use of - implies verbose output unless -terse is specified\n");
+	fprintf( out, "\n    If <submit-file> is omitted or is -, and a -queue is not provided, submit commands\n"
+				  "     are read from stdin. Use of - implies verbose output unless -terse is specified\n");
 }
 
 
@@ -2496,9 +2514,6 @@ DoCleanup(int,int,const char*)
 		free(username);
 		username = NULL;
 	}
-	if (myproxy_password) {
-		free (myproxy_password);
-	}
 
 	return 0;		// For historical reasons...
 }
@@ -2508,9 +2523,6 @@ DoCleanup(int,int,const char*)
 void
 init_params()
 {
-	char *tmp = NULL;
-	std::string method;
-
 	const char * err = init_submit_default_macros();
 	if (err) {
 		fprintf(stderr, "%s\n", err);
@@ -2522,14 +2534,6 @@ init_params()
 		// Will always return something, since config() will put in a
 		// value (full hostname) if it's not in the config file.
 
-
-	// The default is set as the global initializer for STMethod
-	tmp = param( "SANDBOX_TRANSFER_METHOD" );
-	if ( tmp != NULL ) {
-		method = tmp;
-		free( tmp );
-		string_to_stm( method, STMethod );
-	}
 
 	WarnOnUnusedMacros =
 		param_boolean_crufty("WARN_ON_UNUSED_SUBMIT_FILE_MACROS",
@@ -2917,6 +2921,8 @@ typedef struct attr_force_pair {
 #define FILL(attr,force) { attr, force }
 static const ATTR_FORCE_PAIR aForcedSetAttrs[] = {
 	FILL(ATTR_CLUSTER_ID,         -2), // forced into cluster ad
+	FILL(ATTR_JOB_SET_ID,         -1), // forced into cluster ad
+	FILL(ATTR_JOB_SET_NAME,       -1), // forced into cluster ad
 	FILL(ATTR_JOB_STATUS,         2),  // forced into proc ad (because job counters don't work unless this is set to IDLE/HELD on startup)
 	FILL(ATTR_JOB_UNIVERSE,       -1), // forced into cluster ad
 	FILL(ATTR_OWNER,              -1), // forced into cluster ad
@@ -3057,7 +3063,7 @@ setupAuthentication()
 	if( Rendezvous ) {
 		dprintf( D_FULLDEBUG,"setting RENDEZVOUS_DIRECTORY=%s\n", Rendezvous );
 			//SetEnv because Authentication::authenticate() expects them there.
-		SetEnv( "RENDEZVOUS_DIRECTORY", Rendezvous );
+		SetEnv(ENV_RENDEZVOUS_DIRECTORY, Rendezvous);
 		free( Rendezvous );
 	}
 }

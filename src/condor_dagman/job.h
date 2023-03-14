@@ -22,7 +22,6 @@
 #define JOB_H
 
 #include "condor_common.h"      /* for <stdio.h> */
-#include "condor_constants.h"   /* from condor_includes/ directory */
 #include "simplelist.h"         /* from condor_utils/ directory */
 #include "condor_id.h"
 #include "throttle_by_category.h"
@@ -99,7 +98,7 @@ class Job {
 	bool NoParents() const {
 		// Once we are done with AdjustEdges this should agree
 		// but some code checks for parents during parse time (see the splice code)
-		// so we check _numparehttps://politics.theonion.com/wisconsin-primary-voters-receive-i-voted-gravestones-1842729790nts (set at parse time) and also _parent (set by AdjustEdges)
+		// so we check _numparents (set at parse time) and also _parent (set by AdjustEdges)
 		return _parent == NO_ID && _numparents == 0;
 	}
 
@@ -126,6 +125,7 @@ class Job {
         /** Job waiting for POST script */ STATUS_POSTRUN = 4,
         /** Job is done */                 STATUS_DONE = 5,
         /** Job exited abnormally */       STATUS_ERROR = 6,
+        /** Job Ancestor Failure cant run*/ STATUS_FUTILE = 7,
     };
 
     /** The string names for the status_t enumeration.  Use this the same
@@ -174,6 +174,11 @@ class Job {
 	const char* GetPostScriptName() const;
 	const char* GetHoldScriptName() const;
 	static const char* JobTypeString() { return "HTCondor"; }
+	inline int GetProcEventsSize() const { return _gotEvents.size(); }
+	inline unsigned char GetProcEvent( int proc ) const { return _gotEvents[proc]; }
+	//If this is a factory/late materialization cluster we have to wait for a cluster
+	//remove event. Otherwise if queued nodes is 0 then all job procs are done
+	inline bool AllProcsDone() const { return !is_factory && _queuedNodeJobProcs == 0; }
 
 	bool AddScript( ScriptType script_type, const char *cmd, int defer_status,
 				time_t defer_time, std::string &whynot );
@@ -191,6 +196,10 @@ class Job {
 	Script * _scriptHold;
 
 
+	//Mark that the node is set to preDone meaning user defined done node
+	inline void SetPreDone() { _preDone = true; }
+	//Return if the node was set to Done by User
+	inline bool IsPreDone() const { return _preDone; }
 	// returns true if the job is waiting for other jobs to finish
   	bool IsWaiting() const { return (_parent != NO_ID) && ! _parents_done; };
  	// remove this parent from the waiting collection, and ! IsWaiting
@@ -209,6 +218,10 @@ class Job {
 	// notify children of parent completion, and call the optional callback for each
 	// child that is no longer waiting
 	int NotifyChildren(Dag& dag, bool(*fn)(Dag& dag, Job* child));
+
+	// Recursively set all descendant nodes to status FUTILE
+	// @return the number of nodes set to status
+	int SetDescendantsToFutile(Dag& dag);
 
 	/** Returns true if this job is ready for submission.
 		@return true if job is submittable, false if not
@@ -229,7 +242,7 @@ class Job {
         @return true: status change was successful, false: otherwise
     */
 	bool SetStatus( status_t newStatus );
-
+	
 	/** Get whether the specified proc is idle.
 		@param proc The proc for which we're getting idle status
 		@return true iff the specified proc is idle; false otherwise
@@ -278,7 +291,7 @@ class Job {
 	// before passing it to this function
 	bool AddChildren(std::forward_list<Job*> & children, std::string &whynot);
 
-	bool AddVar(const char * name, const char * value, const char* filename, int lineno);
+	bool AddVar(const char * name, const char * value, const char* filename, int lineno, bool prepend);
 	void ShrinkVars() { /*varsFromDag.shrink_to_fit();*/ }
 	bool HasVars() const { return ! varsFromDag.empty(); }
 	int PrintVars(std::string &vars);
@@ -430,8 +443,8 @@ public:
 		// Indicates whether abort_dag_return_val was set.
 	bool have_abort_dag_return_val;
 
-		// Indicates if this is a cluster job or not
-	bool is_cluster;
+		// Indicates if this is a factory submit cluster in terms of late materialization
+	bool is_factory;
 
 	// somewhat kludgey, but this indicates to Dag::TerminateJob()
 	// whether Dag::_numJobsDone has been incremented for this node
@@ -453,7 +466,8 @@ public:
 	struct NodeVar {
 		const char * _name; // stringspace string, not owned by this struct
 		const char * _value; // stringspace string, not owned by this struct
-		NodeVar(const char * n, const char * v) : _name(n), _value(v) {}
+		bool _prepend; //bool to determine if variable is prepended or appended
+		NodeVar(const char * n, const char * v, bool p) : _name(n), _value(v), _prepend(p) {}
 	};
 	std::forward_list<NodeVar> varsFromDag;
 
@@ -544,6 +558,7 @@ private:
 	bool _multiple_children; // true when _child is an EdgeID rather than a JobID
 	bool _parents_done;      // set to true when all of the parents of this node are done
 	bool _spare;
+	bool _preDone;           // true when user defines node as done in *.dag file
 
     /*	The ID of this job.  This serves as a primary key for Jobs, where each
 		Job's ID is unique from all the rest 

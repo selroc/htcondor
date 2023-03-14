@@ -50,6 +50,7 @@
 #include "schedd_negotiate.h"
 
 #include <vector>
+#include <algorithm>
 
 extern Scheduler scheduler;
 extern DedicatedScheduler dedicated_scheduler;
@@ -82,10 +83,8 @@ AllocationNode::AllocationNode( int cluster_id, int n_procs )
 	status = A_NEW;
 	num_resources = 0;
 
-	jobs = new ExtArray< ClassAd* >(num_procs);
-	matches = new ExtArray< MRecArray* >(num_procs);
-	jobs->fill(NULL);
-	matches->fill(NULL);
+	jobs = new std::vector<ClassAd*>;
+	matches = new std::vector<MRecArray*>;
 	is_reconnect = false;
 }
 
@@ -130,8 +129,8 @@ AllocationNode::display( void ) const
 		if( ! ma ) {
 			return;
 		}
-		num_nodes = ma->getlast();
-		for( n=0; n<=num_nodes; n++ ) {
+		num_nodes = ma->size();
+		for( n=0; n < num_nodes; n++ ) {
 			mrec = (*ma)[n];
 			if( mrec ) {
 				snprintf( buf, 256, "%d.%d.%d: ", cluster, p, n );
@@ -338,7 +337,7 @@ ResList::sortByRank(ClassAd *rankAd) {
 	}
 
 		// and sort it
-	qsort(array, index, sizeof(struct rankSortRec), ResList::machineSortByRank );
+	std::sort(array, array + index, ResList::machineSortByRank);
 
 		// Now, rebuild our list in order
 	for (int i = 0; i < index; i++) {
@@ -348,12 +347,9 @@ ResList::sortByRank(ClassAd *rankAd) {
 	delete [] array;
 }
 
-/* static */ int
-ResList::machineSortByRank(const void *left, const void *right) {
-	const struct rankSortRec *lhs = (const struct rankSortRec *)left;
-	const struct rankSortRec *rhs = (const struct rankSortRec *)right;
-
-	return lhs->rank < rhs->rank;
+/* static */ bool
+ResList::machineSortByRank(const struct rankSortRec &lhs, const struct rankSortRec &rhs) {
+	return lhs.rank > rhs.rank;
 }
 
 void
@@ -766,7 +762,7 @@ DedicatedScheddNegotiate::scheduler_handleNegotiationFinished( Sock *sock )
 		daemonCore->Register_Socket(
 			sock, "<Negotiator Socket>", 
 			(SocketHandlercpp)&Scheduler::negotiatorSocketHandler,
-			"<Negotiator Command>", &scheduler, ALLOW);
+			"<Negotiator Command>", &scheduler);
 
 	if( rval >= 0 ) {
 			// do not delete this sock until we get called back
@@ -1140,7 +1136,8 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 	int cluster = -1;
 	char *id = NULL, *sinful = NULL;
 	MRecArray* matches;
-	int i, p, last;
+	int p;
+	size_t last;
 
 	dprintf( D_FULLDEBUG, "Entering DedicatedScheduler::giveMatches()\n" );
 
@@ -1229,29 +1226,28 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 
 	for( p=0; p<alloc->num_procs; p++ ) {
 		matches = (*alloc->matches)[p];
-		last = matches->getlast() + 1; 
-		dprintf( D_FULLDEBUG, "In proc %d, num_matches: %d\n", p, last );
+		last = matches->size();
+		dprintf( D_FULLDEBUG, "In proc %d, num_matches: %zu\n", p, last );
 		if( ! stream->code(last) ) {
 			dprintf( D_ALWAYS, "ERROR in giveMatches: can't send "
-					 "number of matches (%d) for proc %d\n", last, p );
+					 "number of matches (%zu) for proc %d\n", last, p );
 			return FALSE;
 		}			
 
-		for( i=0; i<last; i++ ) {
+		for( size_t i=0; i<last; i++ ) {
 			ClassAd *job_ad;
 			sinful = (*matches)[i]->peer;
 			if( ! stream->code(sinful) ) {
 				dprintf( D_ALWAYS, "ERROR in giveMatches: can't send "
-						 "address (%s) for match %d of proc %d\n", 
+						 "address (%s) for match %zu of proc %d\n", 
 						 sinful, i, p );
 				return FALSE;
 			}				
 			if( ! stream->put( (*matches)[i]->claimId() ) ) {
 				dprintf( D_ALWAYS, "ERROR in giveMatches: can't send "
-						 "ClaimId for match %d of proc %d\n", i, p );
+						 "ClaimId for match %zu of proc %d\n", i, p );
 				return FALSE;
 			}				
-			//job_ad = new ClassAd( *((*alloc->jobs)[p]) );
 			job_ad = dollarDollarExpand(cluster,p, (*alloc->jobs)[p], (*matches)[i]->my_match_ad, true);
 			if( ! job_ad) {
 				dprintf( D_ALWAYS, "ERROR in giveMatches: "
@@ -1292,11 +1288,9 @@ void
 DedicatedScheduler::addDedicatedCluster( int cluster )
 {
 	if( ! idle_clusters ) {
-		idle_clusters = new ExtArray<int>;
-		idle_clusters->fill(0);
+		idle_clusters = new std::vector<int>;
 	}
-	int next = idle_clusters->getlast() + 1;
-	(*idle_clusters)[next] = cluster;
+	idle_clusters->push_back(cluster);
 	dprintf( D_FULLDEBUG, "Found idle MPI cluster %d\n", cluster );
 }
 
@@ -1307,13 +1301,70 @@ DedicatedScheduler::hasDedicatedClusters( void )
 	if( ! idle_clusters ) {
 		return false;
 	}
-	if( idle_clusters->getlast() < 0 ) {
+	if( idle_clusters->size() == 0 ) {
 		return false;
 	}
 	return true;
 }
 
+// Higher job prios are better, lower cluster ids are better
+static bool
+clusterPrioDateLessThan(const int cluster1, const int cluster2) {
+	int c1_prio=0, c1_preprio1=0, c1_preprio2=0, c1_postprio1=0, c1_postprio2=0;
+	int c2_prio=0, c2_preprio1=0, c2_preprio2=0, c2_postprio1=0, c2_postprio2=0;
 
+	if ((GetAttributeInt(cluster1, 0, ATTR_JOB_PRIO, &c1_prio) < 0) ||
+			(GetAttributeInt(cluster2, 0, ATTR_JOB_PRIO, &c2_prio) < 0)) {
+		
+		return false;
+	}
+
+	GetAttributeInt(cluster1, 0, ATTR_PRE_JOB_PRIO1, &c1_preprio1);
+	GetAttributeInt(cluster2, 0, ATTR_PRE_JOB_PRIO1, &c2_preprio1);
+	if (c1_preprio1 > c2_preprio1) {
+		return true;
+	}
+	if (c1_preprio1 < c2_preprio1) {
+		return false;
+	}
+
+	GetAttributeInt(cluster1, 0, ATTR_PRE_JOB_PRIO2, &c1_preprio2);
+	GetAttributeInt(cluster2, 0, ATTR_PRE_JOB_PRIO2, &c2_preprio2);
+	if (c1_preprio2 > c2_preprio2) {
+		return true;
+	}
+	if (c1_preprio2 < c2_preprio2) {
+		return false;
+	}
+	
+	if (c1_prio > c2_prio) {
+		return true;
+	}
+
+	if (c1_prio < c2_prio) {
+		return false;
+	}
+
+	GetAttributeInt(cluster1, 0, ATTR_POST_JOB_PRIO1, &c1_postprio1);
+	GetAttributeInt(cluster2, 0, ATTR_POST_JOB_PRIO1, &c2_postprio1);
+	if (c1_postprio1 > c2_postprio1) {
+		return true;
+	}
+	if (c1_postprio1 < c2_postprio1) {
+		return false;
+	}
+
+	GetAttributeInt(cluster1, 0, ATTR_POST_JOB_PRIO2, &c1_postprio2);
+	GetAttributeInt(cluster2, 0, ATTR_POST_JOB_PRIO2, &c2_postprio2);
+	if (c1_postprio2 > c2_postprio2) {
+		return true;
+	}
+	if (c1_postprio2 < c2_postprio2) {
+		return false;
+	}
+	
+	return cluster1 < cluster2;
+}
 // Go through our list of idle clusters we're supposed to deal with,
 // get pointers to all the classads, put it in a big array, and sort
 // that array based on QDate.
@@ -1322,7 +1373,7 @@ DedicatedScheduler::sortJobs( void )
 {
 	ClassAd *job;
 	int i, last_cluster, next_cluster, cluster, status;
-	ExtArray<int>* verified_clusters;
+	std::vector<int>* verified_clusters;
 	
 	if( ! idle_clusters ) {
 			// No dedicated jobs found, we're done.
@@ -1335,15 +1386,15 @@ DedicatedScheduler::sortJobs( void )
 		// valid jobs, that are still, in fact idle.  If we find any
 		// that are no longer jobs or no longer idle, remove them from
 		// the array.
-	last_cluster = idle_clusters->getlast() + 1;
+	last_cluster = idle_clusters->size();
 	if( ! last_cluster ) {
 			// No dedicated jobs found, we're done.
 		dprintf( D_FULLDEBUG, 
 				 "DedicatedScheduler::sortJobs: no jobs found\n" );
 		return false;
 	}		
-	verified_clusters= new ExtArray<int>( last_cluster );
-	verified_clusters->fill(0);
+	verified_clusters= new std::vector<int>( last_cluster );
+	std::fill(verified_clusters->begin(), verified_clusters->end(), 0);
 	next_cluster = 0;
 
 
@@ -1441,8 +1492,8 @@ DedicatedScheduler::sortJobs( void )
 			 next_cluster );
 
 		// Now, sort them by prio and qdate
-	qsort( &(*idle_clusters)[0], next_cluster, sizeof(int), 
-		   clusterSortByPrioAndDate ); 
+	std::sort(idle_clusters->begin(), idle_clusters->end(),
+			clusterPrioDateLessThan);
 
 		// Show the world what we've got
 	listDedicatedJobs( D_FULLDEBUG );
@@ -1527,7 +1578,6 @@ DedicatedScheduler::handleDedicatedJobs( void )
 void
 DedicatedScheduler::listDedicatedJobs( int debug_level )
 {
-	int cluster, proc;
 	std::string owner_str;
 
 	if( ! idle_clusters ) {
@@ -1536,10 +1586,8 @@ DedicatedScheduler::listDedicatedJobs( int debug_level )
 	}
 	dprintf( debug_level, "DedicatedScheduler: Listing all dedicated "
 			 "jobs - \n" );
-	int i, last = idle_clusters->getlast();
-	for( i=0; i<=last; i++ ) {
-		cluster = (*idle_clusters)[i];
-		proc = 0;
+	for( int cluster : *idle_clusters) {
+		int proc = 0;
 		owner_str = "";
 		GetAttributeString( cluster, proc, ATTR_OWNER, owner_str ); 
 		dprintf( debug_level, "Dedicated job: %d.%d %s\n", cluster,
@@ -1946,7 +1994,7 @@ DedicatedScheduler::spawnJobs( void )
 		int total_nodes = 0;
 		int procIndex = 0;
 		for( procIndex = 0; procIndex < allocation->num_procs; procIndex++) {
-			total_nodes += ((*allocation->matches)[procIndex])->getlast() + 1;
+			total_nodes += ((*allocation->matches)[procIndex])->size();
 		}
 
 			// In each proc's classad, set CurrentHosts to be the
@@ -1987,8 +2035,8 @@ DedicatedScheduler::spawnJobs( void )
 
 			// We must set all the match recs to point at this srec.
 		for( p=0; p<allocation->num_procs; p++ ) {
-			n = ((*allocation->matches)[p])->getlast();
-			for( i=0; i<=n; i++ ) {
+			n = ((*allocation->matches)[p])->size();
+			for( i=0; i< n; i++ ) {
 				(*(*allocation->matches)[p])[i]->shadowRec = srec;
 				(*(*allocation->matches)[p])[i]->setStatus( M_ACTIVE );
 			}
@@ -2010,10 +2058,10 @@ DedicatedScheduler::addReconnectAttributes(AllocationNode *allocation)
 			StringList public_claims;
 			StringList remoteHosts;
 
-			int n = ((*allocation->matches)[p])->getlast();
+			int n = ((*allocation->matches)[p])->size();
 
 				// Foreach node within this proc...
-			for( int i=0; i<=n; i++ ) {
+			for( int i=0; i < n; i++ ) {
 					// Grab the claim from the mrec
 				char const *claim = (*(*allocation->matches)[p])[i]->claimId();
 				char const *publicClaim = (*(*allocation->matches)[p])[i]->publicClaimId();
@@ -2180,8 +2228,8 @@ DedicatedScheduler::computeSchedule( void )
 
 		// For each job, try to satisfy it as soon as possible.
 	CAList *jobs = NULL;
-	l = idle_clusters->getlast();
-	for( i=0; i<=l; i++ ) {
+	l = idle_clusters->size();
+	for( i=0; i< l; i++ ) {
 
 			// This is the main data structure for handling multiple
 			// procs It just contains one non-unique job ClassAd for
@@ -2542,7 +2590,7 @@ DedicatedScheduler::computeSchedule( void )
 
 						// See if this machine has a true
 						// SCHEDD_PREEMPTION_REQUIREMENT
-					requirement = EvalExprTree( preemption_req, machine, job,
+					requirement = EvalExprToBool( preemption_req, machine, job,
 												result );
 					if (requirement) {
 						bool val;
@@ -2558,7 +2606,7 @@ DedicatedScheduler::computeSchedule( void )
 							// Evaluate its SCHEDD_PREEMPTION_RANK in
 							// the context of this job
 						int rval;
-						rval = EvalExprTree( preemption_rank, machine, job,
+						rval = EvalExprToNumber( preemption_rank, machine, job,
 											 result );
 						if( !rval || !result.IsNumber(rank) ) {
 								// The result better be a number
@@ -2581,15 +2629,12 @@ DedicatedScheduler::computeSchedule( void )
 					// Now we've got an array from 0 to num_candidates
 					// of PreemptCandidateNodes sort by rank,
 					// cluster_id;
-				qsort( preempt_candidate_array, num_candidates,
-					   sizeof(struct PreemptCandidateNode), RankSorter );
+				std::sort( preempt_candidate_array, preempt_candidate_array + num_candidates, RankSorter );
 
-				int num_preemptions = 0;
 				for( int cand = 0; cand < num_candidates; cand++) {
                     if (satisfies(job, preempt_candidate_array[cand].machine_ad)) {
                         // And we found a victim to preempt
 						preempt_candidates->Append(preempt_candidate_array[cand].machine_ad);
-						num_preemptions++;
 						jobs->DeleteCurrent();
 						job = jobs->Next();
 						nodes--;
@@ -2873,16 +2918,14 @@ DedicatedScheduler::createAllocations( CAList *idle_candidates,
 
 				// create a new MRecArray
 			matches = new MRecArray();
-			ASSERT(matches != NULL);
-			matches->fill(NULL);
 			
 				// And stick it into the AllocationNode
-			(*alloc->matches)[proc] = matches;
-			(*alloc->jobs)[proc] = job;
+			alloc->matches->push_back(matches);
+			alloc->jobs->push_back(job);
 		}
 
 			// And put the mrec into the matches for this node in the proc
-		(*matches)[node] = mrec;
+		matches->push_back(mrec);
 		node++;
 	}
 	
@@ -2921,8 +2964,8 @@ DedicatedScheduler::removeAllocation( shadow_rec* srec )
 		// our MPI job.
 	for( i=0; i<alloc->num_procs; i++ ) {
 		matches = (*alloc->matches)[i];
-		n = matches->getlast();
-		for( m=0 ; m <= n ; m++ ) {
+		n = matches->size();
+		for( m=0 ; m < n ; m++ ) {
 			deallocMatchRec( (*matches)[m] );
 		}
 	}
@@ -3148,11 +3191,11 @@ DedicatedScheduler::shutdownMpiJob( shadow_rec* srec , bool kill /* = false */)
 	alloc->status = A_DYING;
 	for (int i=0; i<alloc->num_procs; i++ ) {
         MRecArray* matches = (*alloc->matches)[i];
-        int n = matches->getlast();
+        int n = matches->size();
         std::vector<match_rec*> delmr;
         // Save match_rec pointers into a vector, because deactivation of claims 
         // alters the MRecArray object (*matches) destructively:
-        for (int j = 0;  j <= n;  ++j) delmr.push_back((*matches)[j]);
+        for (int j = 0;  j <  n;  ++j) delmr.push_back((*matches)[j]);
         for (std::vector<match_rec*>::iterator mr(delmr.begin());  mr != delmr.end();  ++mr) {
             if (kill) {
                 dprintf( D_ALWAYS, "Dedicated job abnormally ended, releasing claim\n");
@@ -3355,11 +3398,12 @@ DedicatedScheduler::DelMrec( char const* id )
 			// pointer in there.
 
 		bool found_it = false;
-		for( int proc_index = 0; proc_index < alloc->num_procs; proc_index++) {
+		for( size_t proc_index = 0; proc_index < (size_t) alloc->num_procs; proc_index++) {
 			MRecArray* rec_array = (*alloc->matches)[proc_index];
-			int i, last = rec_array->getlast();
+			size_t i;
+			size_t last = rec_array->size();
 
-			for( i=0; i<= last; i++ ) {
+			for( i=0; i < last; i++ ) {
 					// In case you were wondering, this works just fine if
 					// the mrec we care about is in the last position.
 					// The first assignment will be a no-op, but no harm
@@ -3369,7 +3413,7 @@ DedicatedScheduler::DelMrec( char const* id )
 				if( (*rec_array)[i] == rec ) {
 					found_it = true;
 					(*rec_array)[i] = (*rec_array)[last];
-					(*rec_array)[last] = NULL;
+					(*rec_array)[last - 1] = nullptr;
 						// We want to decrement last so we break out of
 						// this for loop before checking the element we
 						// NULL'ed out.  Otherwise, the truncate below
@@ -3378,7 +3422,7 @@ DedicatedScheduler::DelMrec( char const* id )
 					last--;
 						// Truncate our array so we realize the match is
 						// gone, and don't consider it in the future.
-					rec_array->truncate(last);
+					rec_array->resize(last);
 				}
 			}
 		}
@@ -3884,7 +3928,7 @@ DedicatedScheduler::holdAllDedicatedJobs( void )
 		return;
 	}
 
-	last_cluster = idle_clusters->getlast() + 1;
+	last_cluster = idle_clusters->size();
 	if( ! last_cluster ) {
 			// No dedicated jobs found, we're done.
 		dprintf( D_FULLDEBUG,
@@ -3896,8 +3940,9 @@ DedicatedScheduler::holdAllDedicatedJobs( void )
 	for( i=0; i<last_cluster; i++ ) {
 		cluster = (*idle_clusters)[i];
 		holdJob( cluster, 0, 
-				 "No condor_shadow installed that supports MPI jobs",
-				 true, true, true, should_notify_admin );
+		         "No condor_shadow installed that supports MPI jobs",
+		         CONDOR_HOLD_CODE::NoCompatibleShadow, 0, false,
+		         false, should_notify_admin );
 		if( should_notify_admin ) {
 				// only send email to the admin once per lifetime of
 				// the schedd, so we don't swamp them w/ email...
@@ -4381,72 +4426,6 @@ findAvailTime( match_rec* mrec )
 }
 
 
-// Comparison function for sorting jobs (given cluster id) by QDate 
-int
-clusterSortByPrioAndDate( const void *ptr1, const void* ptr2 )
-{
-	int cluster1 = *((const int*)ptr1);
-	int cluster2 = *((const int*)ptr2);
-	int c1_qdate, c2_qdate;	
-	int c1_prio=0, c1_preprio1=0, c1_preprio2=0, c1_postprio1=0, c1_postprio2=0;
-	int c2_prio=0, c2_preprio1=0, c2_preprio2=0, c2_postprio1=0, c2_postprio2=0;
-
-	if ((GetAttributeInt(cluster1, 0, ATTR_Q_DATE, &c1_qdate) < 0) || 
-	        (GetAttributeInt(cluster2, 0, ATTR_Q_DATE, &c2_qdate) < 0) ||
-	        (GetAttributeInt(cluster1, 0, ATTR_JOB_PRIO, &c1_prio) < 0) ||
-	        (GetAttributeInt(cluster2, 0, ATTR_JOB_PRIO, &c2_prio) < 0)) {
-		
-		return -1;
-	}
-
-	GetAttributeInt(cluster1, 0, ATTR_PRE_JOB_PRIO1, &c1_preprio1);
-	GetAttributeInt(cluster2, 0, ATTR_PRE_JOB_PRIO1, &c2_preprio1);
-	if (c1_preprio1 < c2_preprio1) {
-		return 1;
-	}
-	if (c1_preprio1 > c2_preprio1) {
-		return -1;
-	}
-
-	GetAttributeInt(cluster1, 0, ATTR_PRE_JOB_PRIO2, &c1_preprio2);
-	GetAttributeInt(cluster2, 0, ATTR_PRE_JOB_PRIO2, &c2_preprio2);
-	if (c1_preprio2 < c2_preprio2) {
-		return 1;
-	}
-	if (c1_preprio2 > c2_preprio2) {
-		return -1;
-	}
-	
-	if (c1_prio < c2_prio) {
-		return 1;
-	}
-
-	if (c1_prio > c2_prio) {
-		return -1;
-	}
-
-	GetAttributeInt(cluster1, 0, ATTR_POST_JOB_PRIO1, &c1_postprio1);
-	GetAttributeInt(cluster2, 0, ATTR_POST_JOB_PRIO1, &c2_postprio1);
-	if (c1_postprio1 < c2_postprio1) {
-		return 1;
-	}
-	if (c1_postprio1 > c2_postprio1) {
-		return -1;
-	}
-
-	GetAttributeInt(cluster1, 0, ATTR_POST_JOB_PRIO2, &c1_postprio2);
-	GetAttributeInt(cluster2, 0, ATTR_POST_JOB_PRIO2, &c2_postprio2);
-	if (c1_postprio2 < c2_postprio2) {
-		return 1;
-	}
-	if (c1_postprio2 > c2_postprio2) {
-		return -1;
-	}
-	
-	return (c1_qdate - c2_qdate);
-}
-
-
 void
 displayResource( ClassAd* ad, const char* str, int debug_level )
 {
@@ -4471,7 +4450,8 @@ displayRequest( ClassAd* ad, char* str, int debug_level )
 void
 deallocMatchRec( match_rec* mrec )
 {
-	dprintf( D_ALWAYS, "DedicatedScheduler::deallocMatchRec\n");
+	dprintf( D_ALWAYS, "DedicatedScheduler::deallocMatchRec(%d.%d)\n",
+	         mrec ? mrec->cluster : -1, mrec ? mrec->proc : -1);
 		// We might call this with a NULL mrec, so don't seg fault.
 	if( ! mrec ) {
 		return;
@@ -4487,20 +4467,17 @@ deallocMatchRec( match_rec* mrec )
 }
 
 // Comparision function for sorting machines
-int
-RankSorter(const void *ptr1, const void *ptr2) {
-	const PreemptCandidateNode *n1 = (const PreemptCandidateNode *) ptr1;
-	const PreemptCandidateNode *n2 = (const PreemptCandidateNode *) ptr2;
-
-	if (n1->rank < n2->rank) {
-		return -1;
+bool
+RankSorter(const PreemptCandidateNode &n1, const PreemptCandidateNode &n2) {
+	if (n1.rank < n2.rank) {
+		return true;
 	}
 
-	if (n1->rank > n2->rank) {
-		return 1;
+	if (n1.rank > n2.rank) {
+		return false;
 	}
 
-	return n1->cluster_id - n2->cluster_id;
+	return n1.cluster_id - n2.cluster_id < 0;
 }
 
 ClassAd *

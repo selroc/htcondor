@@ -39,6 +39,10 @@ Scheduler ClassAd Attributes
 :classad-attribute:`DetectedMemory`
     The amount of detected machine RAM in MBytes.
 
+:classad-attribute:`EffectiveFlockList`
+    A comma seperated list of *condor_collector* addresses to which
+    *condor_schedd* jobs are actively flocking.
+
 :classad-attribute:`JobQueueBirthdate`
     This attribute contains the Unix epoch time when the job_queue.log file which
     stores the scheduler's database was first created.
@@ -264,6 +268,10 @@ Scheduler ClassAd Attributes
 :classad-attribute:`JobsSubmitted`.
     A Statistics attribute defining the number of jobs submitted in the
     time interval defined by attribute ``StatsLifetime``.
+
+:classad-attribute:`JobsUnmaterialized`.
+    A Statistics attribute defining the number of jobs submitted as
+    late materialization jobs that have not yet materialized.
 
 :classad-attribute:`Machine`
     A string with the machine's fully qualified host name.
@@ -535,10 +543,6 @@ Scheduler ClassAd Attributes
 :classad-attribute:`ScheddIpAddr`
     String with the IP and port address of the *condor_schedd* daemon
     which is publishing this Scheduler ClassAd.
-
-:classad-attribute:`ServerTime`
-    This is the current time, in Unix epoch seconds when the reply to
-    this query started.
 
 :classad-attribute:`ShadowsReconnections`
     A Statistics attribute defining the number of times

@@ -184,7 +184,7 @@ char		*myName;
 ClassadSortSpecs sortSpecs;
 bool			noSort = false; // set to true to disable sorting entirely
 bool			naturalSort = true;
-int				dash_snapshot = 0; // for direct query, just return current state, do *not* recompute anything
+const char *	dash_snapshot = 0; // for direct query, just return current state, do *not* recompute anything
 
 classad::References projList;
 StringList dashAttributes; // Attributes specifically requested via the -attributes argument
@@ -447,11 +447,11 @@ static bool process_ads_callback(void * pv,  ClassAd* ad)
 				classad::Value lval, val;
 				const classad::ExprList* plst = NULL;
 				// roll up child states into a consensus child state
-				if (ad->EvaluateAttr("Child" ATTR_STATE, lval) && lval.IsListValue(plst)) {
-					for (classad::ExprList::const_iterator it = plst->begin(); it != plst->end(); ++it) {
-						const classad::ExprTree * pexpr = *it;
-						if (pexpr->Evaluate(val) && val.IsStringValue(tmp,sizeof(tmp)-1)) {
-							State st = string_to_state(tmp);
+				if (ad->EvaluateAttr("Child" ATTR_STATE, lval, classad::Value::ALL_VALUES) && lval.IsListValue(plst)) {
+					for (auto it : *plst) {
+						const char * cstr = nullptr;
+						if (ExprTreeIsLiteralString(it, cstr) && cstr) {
+							State st = string_to_state(cstr);
 							if (st >= no_state && st < _state_threshold_) {
 								if (consensus_state != st) {
 									if (consensus_state == no_state) consensus_state = st;
@@ -469,11 +469,11 @@ static bool process_ads_callback(void * pv,  ClassAd* ad)
 				}
 
 				// roll up child activity into a consensus child state
-				if (ad->EvaluateAttr("Child" ATTR_ACTIVITY, lval) && lval.IsListValue(plst)) {
-					for (classad::ExprList::const_iterator it = plst->begin(); it != plst->end(); ++it) {
-						const classad::ExprTree * pexpr = *it;
-						if (pexpr->Evaluate(val) && val.IsStringValue(tmp,sizeof(tmp)-1)) {
-							Activity ac = string_to_activity(tmp);
+				if (ad->EvaluateAttr("Child" ATTR_ACTIVITY, lval, classad::Value::ALL_VALUES) && lval.IsListValue(plst)) {
+					for (auto it : *plst) {
+						const char * cstr = nullptr;
+						if (ExprTreeIsLiteralString(it, cstr) && cstr) {
+							Activity ac = string_to_activity(cstr);
 							if (ac >= no_act && ac < _act_threshold_) {
 								if (consensus_activity != ac) {
 									if (consensus_activity == no_act) consensus_activity = ac;
@@ -711,11 +711,11 @@ main (int argc, char *argv[])
 #endif
 
 	// initialize to read from config file
-	myDistro->Init( argc, argv );
 	myName = argv[0];
 	set_priv_initialize(); // allow uid switching if root
 	config();
 	dprintf_config_tool_on_error(0);
+	const CustomFormatFnTable GlobalFnTable = getGlobalPrintFormatTable();
 
 	// The arguments take two passes to process --- the first pass
 	// figures out the mode, after which we can instantiate the required
@@ -747,8 +747,7 @@ main (int argc, char *argv[])
 		query->setResultLimit(result_limit);
 	}
 	if (dash_snapshot) {
-		std::string snap; formatstr(snap, "%d", dash_snapshot);
-		query->addExtraAttribute("snapshot", snap.c_str());
+		query->addExtraAttribute("Snapshot", dash_snapshot);
 	}
 
 		// if there was a generic type specified
@@ -761,25 +760,25 @@ main (int argc, char *argv[])
 	// set the constraints implied by the mode
 	if (sdo_mode == SDO_Startd_Avail && ! compactMode) {
 		// -avail shows unclaimed slots
-		sprintf (buffer, "%s == \"%s\" && Cpus > 0", ATTR_STATE, state_to_string(unclaimed_state));
+		snprintf (buffer, sizeof(buffer), "%s == \"%s\" && Cpus > 0", ATTR_STATE, state_to_string(unclaimed_state));
 		if (diagnose) { printf ("Adding OR constraint [%s]\n", buffer); }
 		query->addORConstraint (buffer);
 	}
 	else if (sdo_mode == SDO_Startd_Claimed && ! compactMode) {
 		// -claimed shows claimed slots
-		sprintf (buffer, "%s == \"%s\"", ATTR_STATE, state_to_string(claimed_state));
+		snprintf (buffer, sizeof(buffer), "%s == \"%s\"", ATTR_STATE, state_to_string(claimed_state));
 		if (diagnose) { printf ("Adding OR constraint [%s]\n", buffer); }
 		query->addORConstraint (buffer);
 	}
 	else if (sdo_mode == SDO_Startd_Cod) {
 		// -run shows claimed slots
-		sprintf (buffer, ATTR_NUM_COD_CLAIMS " > 0");
+		snprintf (buffer, sizeof(buffer), ATTR_NUM_COD_CLAIMS " > 0");
 		if (diagnose) { printf ("Adding OR constraint [%s]\n", buffer); }
 		query->addORConstraint (buffer);
 	}
 
 	if(javaMode) {
-		sprintf( buffer, "%s == TRUE", ATTR_HAS_JAVA );
+		snprintf( buffer, sizeof(buffer), "%s == TRUE", ATTR_HAS_JAVA );
 		if (diagnose) {
 			printf ("Adding constraint [%s]\n", buffer);
 		}
@@ -796,7 +795,7 @@ main (int argc, char *argv[])
 	}
 
 	if(absentMode) {
-	    sprintf( buffer, "%s == TRUE", ATTR_ABSENT );
+	    snprintf( buffer, sizeof(buffer), "%s == TRUE", ATTR_ABSENT );
 	    if (diagnose) {
 	        printf( "Adding constraint %s\n", buffer );
 	    }
@@ -808,7 +807,7 @@ main (int argc, char *argv[])
 	}
 
 	if(vmMode) {
-		sprintf( buffer, "%s == TRUE", ATTR_HAS_VM);
+		snprintf( buffer, sizeof(buffer), "%s == TRUE", ATTR_HAS_VM);
 		if (diagnose) {
 			printf ("Adding constraint [%s]\n", buffer);
 		}
@@ -829,12 +828,12 @@ main (int argc, char *argv[])
 	if (compactMode && ! (vmMode || javaMode)) {
 		if (sdo_mode == SDO_Startd_Avail) {
 			// State==Unclaimed picks up partitionable and unclaimed static, Cpus > 0 picks up only partitionable that have free memory
-			sprintf(buffer, "State == \"%s\" && Cpus > 0 && Memory > 0", state_to_string(unclaimed_state));
+			snprintf(buffer, sizeof(buffer), "State == \"%s\" && Cpus > 0 && Memory > 0", state_to_string(unclaimed_state));
 		} else if (sdo_mode == SDO_Startd_Claimed) {
 			// State==Claimed picks up static slots, NumDynamicSlots picks up partitionable slots that are partly claimed.
-			sprintf(buffer, "(State == \"%s\" && DynamicSlot =!= true) || (NumDynamicSlots isnt undefined && NumDynamicSlots > 0)", state_to_string(claimed_state));
+			snprintf(buffer, sizeof(buffer), "(State == \"%s\" && DynamicSlot =!= true) || (NumDynamicSlots isnt undefined && NumDynamicSlots > 0)", state_to_string(claimed_state));
 		} else {
-			sprintf(buffer, "PartitionableSlot =?= true || DynamicSlot =!= true");
+			snprintf(buffer, sizeof(buffer), "PartitionableSlot =?= true || DynamicSlot =!= true");
 		}
 		if (diagnose) {
 			printf ("Adding constraint [%s]\n", buffer);
@@ -996,7 +995,7 @@ main (int argc, char *argv[])
 				ConstraintHolder constrReduced(SkipExprParens(tree)->Copy());
 				pmms.where_expression = constrReduced.c_str();
 			}
-			const CustomFormatFnTable * pFnTable = getCondorStatusPrintFormats();
+			const CustomFormatFnTable * pFnTable = &GlobalFnTable;
 
 			temp.clear();
 			temp.reserve(4096);
@@ -1026,7 +1025,7 @@ main (int argc, char *argv[])
 		if ( ! mainPP.pm.has_headings()) {
 			if (mainPP.pm_head.Length() > 0) pheadings = &mainPP.pm_head;
 		}
-		mainPP.pm.dump(style_text, getCondorStatusPrintFormats(), pheadings);
+		mainPP.pm.dump(style_text, &GlobalFnTable, pheadings);
 		fprintf(fout, "\nPrintMask:\n%s\n", style_text.c_str());
 
 		ClassAd queryAd;
@@ -1057,6 +1056,7 @@ main (int argc, char *argv[])
 
 	// Address (host:port) is taken from requested pool, if given.
 	const char* addr = (NULL != pool) ? pool->addr() : NULL;
+	Daemon *d = nullptr;
 	Daemon* requested_daemon = pool;
 
 	// If we're in "direct" mode, then we attempt to locate the daemon
@@ -1064,7 +1064,6 @@ main (int argc, char *argv[])
 	// In this case the host:port of pool (if given) denotes which
 	// pool is being consulted
 	if( direct ) {
-		Daemon *d = NULL;
 		switch (adType) {
 		case MASTER_AD: d = new Daemon( DT_MASTER, direct, addr ); break;
 		case STARTD_AD: d = new Daemon( DT_STARTD, direct, addr ); break;
@@ -1239,7 +1238,7 @@ main (int argc, char *argv[])
 			const char* daddr = requested_daemon->addr();
 			if (NULL == daddr) daddr = "<unknown>";
 			char info[1000];
-			sprintf(info, "%s (%s)", fullhost, daddr);
+			snprintf(info, sizeof(info), "%s (%s)", fullhost, daddr);
 			printNoCollectorContact( stderr, info, !expert );
 		} else if ((NULL != requested_daemon) && (Q_COMMUNICATION_ERROR == q)) {
 				// more helpful message for failure to connect to some daemon/subsys
@@ -1254,6 +1253,8 @@ main (int argc, char *argv[])
 		// fail
 		exit (1);
 	}
+
+	delete d;
 
 	if(! mergeMode) {
 		doNormalOutput( right_ai, adType );
@@ -1317,6 +1318,8 @@ main (int argc, char *argv[])
 			fputs(output.c_str(), stdout);
 		}
 	}
+
+	fflush(stdout);
 
 	delete query;
 	return 0;
@@ -1479,7 +1482,7 @@ int PrettyPrinter::set_status_print_mask_from_stream (
 	//PRAGMA_REMIND("tj: fix to handle summary formatting.")
 	int err = SetAttrListPrintMaskFromStream(
 					*pstream,
-					*getCondorStatusPrintFormats(),
+					NULL,
 					pm,
 					pmopt,
 					group_by_keys,
@@ -1865,9 +1868,9 @@ firstPass (int argc, char *argv[])
 			diagnose = 1;
 			if (pcolon) diagnostics_ads_file = ++pcolon;
 		} else
-		if (is_dash_arg_prefix (argv[i], "debug", 2)) {
+		if (is_dash_arg_colon_prefix (argv[i], "debug", &pcolon, 2)) {
 			// dprintf to console
-			dprintf_set_tool_debug("TOOL", 0);
+			dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
 		} else
 		if (is_dash_arg_prefix (argv[i], "defrag", 3)) {
 			mainPP.setMode (SDO_Defrag, i, argv[i]);
@@ -1991,11 +1994,8 @@ firstPass (int argc, char *argv[])
 			mainPP.setPPstyle (PP_STARTD_STATE, i, argv[i]);
 		} else
 		if (is_dash_arg_colon_prefix (argv[i],"snapshot", &pcolon, 4)){
-			if (pcolon) {
-				dash_snapshot = atoi(pcolon + 1);
-			} else {
-				dash_snapshot = 1;
-			}
+			dash_snapshot = "1";
+			if (pcolon && pcolon[1]) { dash_snapshot = pcolon + 1; }
 		} else
 		if (is_dash_arg_prefix (argv[i], "statistics", 5)) {
 			if( statistics ) {
@@ -2304,7 +2304,7 @@ secondPass (int argc, char *argv[])
 		if( is_dash_arg_prefix(argv[i], "sort", 2) ) {
 			i++;
 			if ( ! noSort) {
-				sprintf( buffer, "%s =!= UNDEFINED", argv[i] );
+				snprintf( buffer, sizeof(buffer), "%s =!= UNDEFINED", argv[i] );
 				query->addANDConstraint( buffer );
 			}
 			continue;
@@ -2312,11 +2312,10 @@ secondPass (int argc, char *argv[])
 
 		if (is_dash_arg_prefix (argv[i], "statistics", 5)) {
 			i += 2;
-			sprintf(buffer,"\"%s\"", statistics);
 			if (diagnose) {
-				printf ("[STATISTICS_TO_PUBLISH = %s]\n", buffer);
+				printf ("[STATISTICS_TO_PUBLISH = %s]\n", statistics);
 			}
-			query->addExtraAttribute("STATISTICS_TO_PUBLISH", buffer);
+			query->addExtraAttributeString("STATISTICS_TO_PUBLISH", statistics);
 			continue;
 		}
 
@@ -2363,11 +2362,11 @@ secondPass (int argc, char *argv[])
 			}
 
 			if (sdo_mode == SDO_Startd_Claimed) {
-				sprintf (buffer, ATTR_REMOTE_USER " == \"%s\"", argv[i]);
+				snprintf (buffer, sizeof(buffer), ATTR_REMOTE_USER " == \"%s\"", argv[i]);
 				if (diagnose) { printf ("[%s]\n", buffer); }
 				query->addORConstraint (buffer);
 			} else {
-				sprintf(buffer, ATTR_NAME "==\"%s\" || " ATTR_MACHINE "==\"%s\"", name, name);
+				snprintf(buffer, sizeof(buffer), ATTR_NAME "==\"%s\" || " ATTR_MACHINE "==\"%s\"", name, name);
 				if (diagnose) { printf ("[%s]\n", buffer); }
 				query->addORConstraint (buffer);
 			}

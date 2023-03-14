@@ -55,7 +55,6 @@
 #include "schedd_cron_job_mgr.h"
 #include "named_classad_list.h"
 #include "env.h"
-#include "tdman.h"
 #include "condor_crontab.h"
 #include "condor_timeslice.h"
 #include "condor_claimid_parser.h"
@@ -90,6 +89,7 @@ extern int updateSchedDInterval( JobQueueJob*, const JOB_ID_KEY&, void* );
 
 class JobQueueCluster;
 class JobQueueJobSet;
+class JobQueueBase;
 
 //typedef std::set<JOB_ID_KEY> JOB_ID_SET;
 class LocalJobRec {
@@ -301,9 +301,6 @@ class match_rec: public ClaimIdParser
 		// punched hole
 	std::string*	auth_hole_id;
 
-	match_rec *m_paired_mrec;
-	bool m_can_start_jobs;
-
 	bool m_startd_sends_alives;
 
 	int keep_while_idle; // number of seconds to hold onto an idle claim
@@ -510,7 +507,7 @@ class Scheduler : public Service
 
 	JobTransforms	jobTransforms;
 	friend	int		NewProc(int cluster_id);
-	friend	int		count_a_job(JobQueueJob*, const JOB_ID_KEY&, void* );
+	friend	int		count_a_job(JobQueueBase*, const JOB_ID_KEY&, void* );
 //	friend	void	job_prio(ClassAd *);
 	void			AddRunnableLocalJobs();
 	bool			IsLocalJobEligibleToRun(JobQueueJob* job);
@@ -535,8 +532,8 @@ class Scheduler : public Service
 	void			removeJobFromIndexes(const JOB_ID_KEY& job_id, int job_prio=0);
 	int				RecycleShadow(int cmd, Stream *stream);
 	void			finishRecycleShadow(shadow_rec *srec);
+	int				CmdDirectAttach(int cmd, Stream* stream);
 
-	int				requestSandboxLocation(int mode, Stream* s);
 	int			FindGManagerPid(PROC_ID job_id);
 
 	// match managing
@@ -576,11 +573,6 @@ class Scheduler : public Service
 	void			spawnLocalStarter( shadow_rec* );
 	bool			claimLocalStartd();
 	bool			isStillRunnable( int cluster, int proc, int &status ); 
-	bool			jobNeedsTransferd( int cluster, int proc, int univ ); 
-	bool			availableTransferd( int cluster, int proc ); 
-	bool			availableTransferd( int cluster, int proc, 
-						TransferDaemon *&td_ref ); 
-	bool			startTransferd( int cluster, int proc ); 
 	WriteUserLog*	InitializeUserLog( PROC_ID job_id );
 	bool			WriteSubmitToUserLog( JobQueueJob* job, bool do_fsync, const char * warning );
 	bool			WriteAbortToUserLog( PROC_ID job_id );
@@ -652,6 +644,7 @@ class Scheduler : public Service
 	bool			getAllowLateMaterialize() const { return AllowLateMaterialize; }
 	bool			getNonDurableLateMaterialize() const { return NonDurableLateMaterialize; }
 	const ClassAd * getExtendedSubmitCommands() const { return &m_extendedSubmitCommands; }
+	const std::string & getExtendedSubmitHelpFile() const { return m_extendedSubmitHelpFile; }
 	bool			getEnableJobQueueTimestamps() const { return EnableJobQueueTimestamps; }
 	int				getMaxJobsRunning() const { return MaxJobsRunning; }
 	int				getJobsTotalAds() const { return JobsTotalAds; };
@@ -676,34 +669,6 @@ class Scheduler : public Service
 	void			add_shadow_rec_pid(shadow_rec*);
 	void			HadException( match_rec* );
 
-	// Callbacks which are notifications from the TDMan object about
-	// registrations and reaping of transfer daemons
-	// These functions DO NOT own the memory passed to them.
-	TdAction td_register_callback(TransferDaemon *td);
-	TdAction td_reaper_callback(long pid, int status, TransferDaemon *td);
-
-	// Callbacks to handle transfer requests for clients uploading files into
-	// Condor's control.
-	// These functions DO NOT own the memory passed to them.
-	TreqAction treq_upload_pre_push_callback(TransferRequest *treq,
-		TransferDaemon *td);
-	TreqAction treq_upload_post_push_callback(TransferRequest *treq, 
-		TransferDaemon *td);
-	TreqAction treq_upload_update_callback(TransferRequest *treq, 
-		TransferDaemon *td, ClassAd *update);
-	TreqAction treq_upload_reaper_callback(TransferRequest *treq);
-
-	// Callbacks to handle transfer requests for clients downloading files
-	// out of Condor's control.
-	// These functions DO NOT own the memory passed to them.
-	TreqAction treq_download_pre_push_callback(TransferRequest *treq, 
-		TransferDaemon *td);
-	TreqAction treq_download_post_push_callback(TransferRequest *treq, 
-		TransferDaemon *td);
-	TreqAction treq_download_update_callback(TransferRequest *treq, 
-		TransferDaemon *td, ClassAd *update);
-	TreqAction treq_download_reaper_callback(TransferRequest *treq);
-
 		// Used to manipulate the "extra ads" (read:Hawkeye)
 	int adlist_register( const char *name );
 	int adlist_replace( const char *name, ClassAd *newAd );
@@ -726,9 +691,6 @@ class Scheduler : public Service
 	HashTable <PROC_ID, ClassAd *> *resourcesByProcID;
 
 	bool usesLocalStartd() const { return m_use_startd_for_local;}
-
-	void swappedClaims( DCMsgCallback *cb );
-	bool CheckForClaimSwap(match_rec *rec);
 
 	//
 	// Verifies that the new clusters created in the current transaction
@@ -762,6 +724,7 @@ class Scheduler : public Service
 	bool ImportExportedJobResults(ClassAd & result, const char * import_dir, const char *user);
 	bool UnexportJobs(ClassAd & result, std::set<int> & clusters, const char *user);
 
+	bool forwardMatchToSidecarCM(const char *claim_id, const char *claim_ids, ClassAd &match_ad, const char *slot_name);
 private:
 
 	bool JobCanFlock(classad::ClassAd &job_ad, const std::string &pool);
@@ -797,6 +760,7 @@ private:
 	ClassAd*			m_adSchedd;
 	ClassAd*        	m_adBase;
 	ClassAd             m_extendedSubmitCommands;
+	std::string         m_extendedSubmitHelpFile;
 
 	// information about the command port which Shadows use
 	char*			MyShadowSockName;
@@ -880,7 +844,7 @@ private:
 		// If we we need to reconnect to disconnected starters, we
 		// stash the proc IDs in here while we read through the job
 		// queue.  Then, we can spawn all the shadows after the fact. 
-	SimpleList<PROC_ID> jobsToReconnect;
+	std::vector<PROC_ID> jobsToReconnect;
 	int				checkReconnectQueue_tid;
 
 		// queue for sending hold/remove signals to shadows
@@ -905,9 +869,6 @@ private:
 	ExprTree* m_parsed_gridman_selection_expr;
 	char* m_unparsed_gridman_selection_expr;
 
-	// The object which manages the various transferds.
-	TDMan m_tdman;
-
 	// The object which manages the transfer queue
 	TransferQueueManager m_xfer_queue_mgr;
 
@@ -930,6 +891,8 @@ private:
 	bool			m_use_slot_weights;
 
 	// utility functions
+	void		sumAllSubmitterData(SubmitterData &all);
+	void		updateSubmitterAd(SubmitterData &submitterData, ClassAd &pAd, DCCollector *collector,  int flock_level, time_t time_now);
 	int			count_jobs();
 	bool		fill_submitter_ad(ClassAd & pAd, const SubmitterData & Owner, const std::string &pool_name, int flock_level);
 	int			make_ad_list(ClassAdList & ads, ClassAd * pQueryAd=NULL);
@@ -1002,6 +965,7 @@ private:
 		 */
 	void	contactStartd( ContactStartdArgs* args );
 	void claimedStartd( DCMsgCallback *cb );
+	void claimStartdForUs(DCMsgCallback *cb);
 
 	shadow_rec*		StartJob(match_rec*, PROC_ID*);
 
@@ -1023,7 +987,7 @@ private:
 	HashTable <PROC_ID, match_rec *> *matchesByJobID;
 	HashTable <int, shadow_rec *> *shadowsByPid;
 	HashTable <PROC_ID, shadow_rec *> *shadowsByProcID;
-	HashTable <int, ExtArray<PROC_ID> *> *spoolJobFileWorkers;
+	HashTable <int, std::vector<PROC_ID> *> *spoolJobFileWorkers;
 	int				numMatches;
 	int				numShadows;
 	DaemonList		*FlockCollectors, *FlockNegotiators;

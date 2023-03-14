@@ -125,6 +125,9 @@ extern	int		startd_noclaim_shutdown;
     // # of seconds we can go without being claimed before we "pull
     // the plug" and tell the master to shutdown.
 
+    // how often we query docker for the size of the image cache
+extern	int		docker_cached_image_size_interval;
+
 extern	char*	Name;			// The startd's name
 
 extern	int		pid_snapshot_interval;	
@@ -144,5 +147,7 @@ extern CleanupReminderMap cleanup_reminders;
 
 // Check to see if we're all free
 void	startd_check_free();
+// so we can call this to reconfig on command
+void	main_config();
 
 #endif /* _CONDOR_STARTD_H */

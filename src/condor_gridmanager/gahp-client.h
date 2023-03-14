@@ -45,9 +45,6 @@ struct GahpProxyInfo
 	int num_references;
 };
 
-class BoincJob;
-class BoincResource;
-
 #define GAHP_SUCCESS 0
 
 // Additional error values that GAHP calls can return
@@ -74,7 +71,7 @@ class GahpServer : public Service {
 	GahpServer(const char *id, const char *path, const ArgList *args = NULL);
 	~GahpServer();
 
-	bool Startup();
+	bool Startup(bool force=false);
 	bool Initialize(Proxy * proxy);
 	bool UpdateToken(const std::string &token_file);
 	bool CreateSecuritySession();
@@ -166,9 +163,6 @@ class GahpServer : public Service {
 
 	void poll_real_soon();
 
-	bool useBoincResource( BoincResource *resource );
-	bool command_boinc_select_project( const char *url, const char *auth_file );
-
 	bool cacheProxyFromFile( GahpProxyInfo *new_proxy );
 	bool uncacheProxy( GahpProxyInfo *gahp_proxy );
 	bool useCachedProxy( GahpProxyInfo *new_proxy, bool force = false );
@@ -208,7 +202,7 @@ class GahpServer : public Service {
 	bool m_gahp_startup_failed;
 	char m_gahp_version[150];
 	std::string m_gahp_condor_version;
-	StringList * m_commands_supported;
+	std::vector<std::string> m_commands_supported;
 	bool use_prefix;
 	unsigned int m_pollInterval;
 	int poll_tid;
@@ -224,8 +218,6 @@ class GahpServer : public Service {
 	int m_ssh_forward_port;
 
 	std::string m_sec_session_id;
-
-	BoincResource *m_currentBoincResource;
 
 	GahpProxyInfo *master_proxy;
 	int proxy_check_tid;
@@ -243,7 +235,7 @@ class GenericGahpClient : public Service {
 							const ArgList * args = NULL );
 		virtual ~GenericGahpClient();
 
-		bool Startup();
+		bool Startup(bool force=false);
 		bool Initialize( Proxy * proxy );
 		bool UpdateToken(const std::string &token_file);
 		bool CreateSecuritySession();
@@ -275,7 +267,7 @@ class GenericGahpClient : public Service {
 		bool isStarted() { return server->m_gahp_pid != -1 && !server->m_gahp_startup_failed; }
 		bool isInitialized() { return server->is_initialized; }
 
-		StringList *getCommands() { return server->m_commands_supported; }
+		std::vector<std::string>& getCommands() { return server->m_commands_supported; }
 
 	    void setErrorString( const std::string & newErrorString );
 		const char * getErrorString();
@@ -323,9 +315,6 @@ class GenericGahpClient : public Service {
 		GahpProxyInfo * pending_proxy;
 		std::string error_string;
 
-		// Used in now_pending(), not worth rewriting to get rid of for now.
-		BoincResource *m_boincResource;
-
 		GahpServer * server;
 };
 
@@ -348,8 +337,6 @@ class GahpClient : public GenericGahpClient {
 		~GahpClient();
 		
 		//@}
-
-		void setBoincResource( BoincResource *server );
 
 		int getSshForwardPort() { return server->m_ssh_forward_port; }
 
@@ -403,9 +390,12 @@ class GahpClient : public GenericGahpClient {
 
 		int
 		condor_job_update_lease(const char *schedd_name,
-								const SimpleList<PROC_ID> &jobs,
-								const SimpleList<int> &expirations,
-								SimpleList<PROC_ID> &updated );
+		                        const std::vector<PROC_ID> &jobs,
+		                        const std::vector<int> &expirations,
+		                        std::vector<PROC_ID> &updated);
+
+		int
+		blah_ping(const std::string& lrms);
 
 		int
 		blah_job_submit(ClassAd *job_ad, char **job_id);
@@ -434,45 +424,6 @@ class GahpClient : public GenericGahpClient {
 
 		bool
 		blah_get_sandbox_path(const char *sandbox_id, std::string &sandbox_path);
-
-		int
-		nordugrid_submit(const char *hostname, const char *rsl, char *&job_id);
-
-		int
-		nordugrid_status(const char *hostname, const char *job_id,
-						 char *&status);
-
-		int
-		nordugrid_ldap_query(const char *hostname, const char *ldap_base,
-							 const char *ldap_filter, const char *ldap_attrs,
-							 StringList &results);
-
-		int
-		nordugrid_cancel(const char *hostname, const char *job_id);
-
-		int
-		nordugrid_stage_in(const char *hostname, const char *job_id,
-						   StringList &files);
-
-		int
-		nordugrid_stage_out(const char *hostname, const char *job_id,
-							StringList &files);
-
-		int
-		nordugrid_stage_out2(const char *hostname, const char *job_id,
-							 StringList &src_files, StringList &dest_files);
-
-		int
-		nordugrid_exit_info(const char *hostname, const char *job_id,
-							bool &normal_exit, int &exit_code,
-							float &wallclock, float &sys_cpu,
-							float &user_cpu );
-
-		int
-		nordugrid_ping(const char *hostname);
-
-		int
-		gridftp_transfer(const char *src_url, const char *dst_url);
 
 		int
 		arc_ping(const std::string &service_url);
@@ -520,11 +471,13 @@ class GahpClient : public GenericGahpClient {
 
 		int
 		arc_delegation_new(const std::string &service_url,
+		                   const std::string &proxy_file,
 		                   std::string &deleg_id);
 
 		int
 		arc_delegation_renew(const std::string &service_url,
-		                     const std::string &deleg_id);
+		                     const std::string &deleg_id,
+		                     const std::string &proxy_file);
 
 		int gce_ping( const std::string &service_url,
 					  const std::string &auth_file,
@@ -580,36 +533,6 @@ class GahpClient : public GenericGahpClient {
 		                   const std::string &subscription,
 		                   StringList &vm_names,
 		                   StringList &vm_statuses );
-
-		int boinc_ping();
-
-		int boinc_submit( const char *batch_name,
-						  const std::set<BoincJob *> &jobs );
-
-		typedef std::vector< std::pair< std::string, std::string > > BoincBatchResults;
-		typedef std::vector< BoincBatchResults > BoincQueryResults;
-//		typedef std::vector< std::vector< std::pair< std::string, std::string > > > BoincQueryResults;
-		int boinc_query_batches( StringList &batch_names,
-								 const std::string& last_query_time,
-								 std::string &new_query_time,
-								 BoincQueryResults &results );
-
-		typedef std::vector< std::pair< std::string, std::string> > BoincOutputFiles;
-		int boinc_fetch_output( const char *job_name,
-								const char *iwd,
-								const char *std_err,
-								bool transfer_all,
-								const BoincOutputFiles &output_files,
-								int &exit_status,
-								double &cpu_time,
-								double &wallclock_time );
-
-		int boinc_abort_jobs( StringList &job_names );
-
-		int boinc_retire_batch( const char *batch_name );
-
-		int boinc_set_lease( const char *batch_name,
-							 time_t new_lease_time );
 
 	private:
 

@@ -24,6 +24,7 @@
 #include "user_job_policy.h"
 #include "proc.h"
 #include "condor_holdcodes.h"
+#include "format_time.h"
 
 #define PARAM_SYSTEM_PERIODIC_REMOVE "SYSTEM_PERIODIC_REMOVE"
 #define PARAM_SYSTEM_PERIODIC_RELEASE "SYSTEM_PERIODIC_RELEASE"
@@ -404,18 +405,20 @@ void UserPolicy::ResetTriggers()
 }
 
 int
-UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
+UserPolicy::AnalyzePolicy(ClassAd & ad, int mode, int state)
 {
 
 	int timer_remove;
-	int state;
 
 	if (mode != PERIODIC_ONLY && mode != PERIODIC_THEN_EXIT)
 	{
-		EXCEPT("UserPolicy Error: Unknown mode in AnalyzePolicy()");
+		dprintf(D_ERROR, "UserPolicy Error: Unknown mode %d in AnalyzePolicy()\n", mode);
+		return UNDEFINED_EVAL;
 	}
 
-	if( ! ad.LookupInteger(ATTR_JOB_STATUS,state) ) {
+	if( state < 0 && ! ad.LookupInteger(ATTR_JOB_STATUS, state) ) {
+		dprintf( D_ERROR, "UserPolicy Error: %s is not present in the classad\n",
+		         ATTR_JOB_STATUS );
 		return UNDEFINED_EVAL;
 	}
 
@@ -467,7 +470,7 @@ UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
 				if( time(NULL) - birthday >= allowedJobDuration ) {
 					m_fire_expr = ATTR_JOB_ALLOWED_JOB_DURATION;
 					m_fire_source = FS_JobDuration;
-					formatstr(m_fire_reason, "The job exceeded allowed job duration of %d", allowedJobDuration);
+					formatstr(m_fire_reason, "The job exceeded allowed job duration of %s", format_time_short(allowedJobDuration));
 					return HOLD_IN_QUEUE;
 				}
 			}
@@ -496,7 +499,7 @@ UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
 			if ((time(NULL) - beganExecuting) > allowedExecuteDuration) {
 				m_fire_expr = ATTR_JOB_ALLOWED_EXECUTE_DURATION;
 				m_fire_source = FS_ExecuteDuration;
-				formatstr(m_fire_reason, "The job exceeded allowed execute duration of %d", allowedExecuteDuration);
+				formatstr(m_fire_reason, "The job exceeded allowed execute duration of %s", format_time_short(allowedExecuteDuration));
 				return HOLD_IN_QUEUE;
 			}
 		}
@@ -534,8 +537,13 @@ UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
 
 	/* Should I perform a periodic release? */
 	if(state==HELD) {
-		if(AnalyzeSinglePeriodicPolicy(ad, ATTR_PERIODIC_RELEASE_CHECK, POLICY_SYSTEM_PERIODIC_RELEASE, RELEASE_FROM_HOLD, retval)) {
-			return retval;
+		/* Ignore jobs held at user request */
+		int hold_code = 0;
+		ad.LookupInteger(ATTR_HOLD_REASON_CODE, hold_code);
+		if(hold_code != CONDOR_HOLD_CODE::UserRequest) {
+			if(AnalyzeSinglePeriodicPolicy(ad, ATTR_PERIODIC_RELEASE_CHECK, POLICY_SYSTEM_PERIODIC_RELEASE, RELEASE_FROM_HOLD, retval)) {
+				return retval;
+			}
 		}
 	}
 
@@ -555,8 +563,9 @@ UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
 	/* This better be in the classad because it determines how the process
 		exited, either by signal, or by exit() */
 	if( ! ad.LookupExpr(ATTR_ON_EXIT_BY_SIGNAL) ) {
-		EXCEPT( "UserPolicy Error: %s is not present in the classad",
-				ATTR_ON_EXIT_BY_SIGNAL );
+		dprintf( D_ERROR, "UserPolicy Error: %s is not present in the classad\n",
+		         ATTR_ON_EXIT_BY_SIGNAL );
+		return UNDEFINED_EVAL;
 	}
 
 	/* Check to see if ExitSignal or ExitCode
@@ -566,7 +575,8 @@ UserPolicy::AnalyzePolicy(ClassAd & ad, int mode)
 	if( ad.LookupExpr(ATTR_ON_EXIT_CODE) == 0 &&
 		ad.LookupExpr(ATTR_ON_EXIT_SIGNAL) == 0 )
 	{
-		EXCEPT( "UserPolicy Error: No signal/exit codes in job ad!" );
+		dprintf( D_ERROR, "UserPolicy Error: No signal/exit codes in job ad!\n" );
+		return UNDEFINED_EVAL;
 	}
 
 	/* Should I hold on exit? */

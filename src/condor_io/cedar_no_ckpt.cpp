@@ -35,7 +35,6 @@
 #include "condor_io.h"
 #include "directory.h"
 #include "globus_utils.h"
-#include "condor_auth_x509.h"
 #include "condor_config.h"
 #include "ccb_client.h"
 #include "condor_sinful.h"
@@ -628,7 +627,7 @@ ReliSock::get_file_with_permissions( filesize_t *size,
 									 DCTransferQueue *xfer_q)
 {
 	int result;
-	condor_mode_t file_mode;
+	condor_mode_t file_mode = __mode_t_dummy_value;
 
 	// Read the permissions
 	this->decode();

@@ -89,7 +89,6 @@ public:
 	char*	accountingGroup() {return c_acctgrp;};
 	char*	host()	{return c_host;};
 	char*	addr() 	{return c_addr;};
-	char*   proxyFile() {return c_proxyfile; };
 	char*   getConcurrencyLimits() {return c_concurrencyLimits; };
     char*   rmtgrp() {return c_rmtgrp;}
     char*   neggrp() {return c_neggrp;}
@@ -101,7 +100,6 @@ public:
 	void	setAccountingGroup(const char* grp);
 	void	setaddr(const char* addr);
 	void	sethost(const char* host);
-	void    setProxyFile(const char* pf);
 	void    setConcurrencyLimits(const char* limits);
     void    setrmtgrp(const char* rmtgrp);
     void    setneggrp(const char* neggrp);
@@ -117,8 +115,6 @@ private:
 	char	*c_acctgrp; // name of the accounting group, if any
 	char	*c_host;	// hostname of the clientmachine
 	char	*c_addr;	// <ip:port> of the client
-	char	*c_proxyfile;   // file holding delegated proxy
-		                // (used when using GLEXEC_STARTER)
 	char	*c_concurrencyLimits; // limits, if any
     char*   c_rmtgrp;   // the submitter's accounting group
     char*   c_neggrp;   // the negotiating accounting group
@@ -196,8 +192,8 @@ public:
 	void scheddClosedClaim();
 
 		// Functions that return data
-	float		rank() const			{return c_rank;};
-	float		oldrank() const		{return c_oldrank;};
+	double		rank() const			{return c_rank;};
+	double		oldrank() const		{return c_oldrank;};
 	ClaimType	type()			{return c_type;};
 	char*		codId()			{return c_id->codId();};
     char*       id();
@@ -228,8 +224,8 @@ public:
 	int         getPledgedMachineMaxVacateTime() const {return c_pledged_machine_max_vacate_time;}
 
 		// Functions that set the values of data
-	void setrank(float therank)	{c_rank=therank;};
-	void setoldrank(float therank) {c_oldrank=therank;};
+	void setrank(double therank)	{c_rank=therank;};
+	void setoldrank(double therank) {c_oldrank=therank;};
 	// take ownership of the given job ad pointer.
 	void setjobad(ClassAd * ad);
 	void setRequestStream(Stream* stream);	
@@ -244,7 +240,7 @@ public:
 	int activationCount() const {return c_activation_count;}
 
 		// starter-related functions
-	int	 spawnStarter( Starter* starter, ClassAd * job, Stream* = NULL );
+	pid_t spawnStarter( Starter* starter, ClassAd * job, Stream* = NULL );
 	void starterExited( Starter* starter, int status );
 	bool starterPidMatches( pid_t starter_pid ) const;
 	bool isDeactivating( void );
@@ -317,8 +313,8 @@ private:
 	ClassAd*	c_jobad;
 	ClassAd		c_job_execution_overlay_ad;
 	pid_t		c_starter_pid;
-	float		c_rank;
-	float		c_oldrank;
+	double		c_rank;
+	double		c_oldrank;
 	int			c_universe;
 	int			c_cluster;
 	int			c_proc;

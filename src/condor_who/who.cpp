@@ -30,7 +30,7 @@
 #include "string_list.h"
 #include "match_prefix.h"    // is_arg_colon_prefix
 #include "condor_api.h"
-#include "condor_string.h"   // for strnewp()
+#include "condor_string.h"
 #include "status_types.h"
 #include "directory.h"
 #include "format_time.h"
@@ -106,6 +106,8 @@ static struct AppType {
 	bool   ping_all_addrs;	 //
 	int    query_ready_timeout;
 	int    poll_for_master_time; // time spent polling for the master
+	const char * startd_snapshot_opt; // CondorQuery extra attribute value to get internal snapshot from STARTD, use with show_full_ads
+	const char * startd_statistics_opt; // CondorQuery extra attribute value to get internal snapshot from STARTD, use with show_full_ads
 	std::string query_ready_requirements;
 	int    test_backward;   // test backward reading code.
 	vector<pid_t> query_pids;
@@ -173,6 +175,8 @@ void InitAppGlobals(const char * argv0)
 	App.ping_all_addrs = false;
 	App.test_backward = false;
 	App.query_ready_timeout = 0;
+	App.startd_snapshot_opt = nullptr;
+	App.startd_statistics_opt = nullptr;
 
 	// map Log name to daemon name for those that don't match the rule : 'remove Log'
 	App.log_to_daemon["Sched"] = "Schedd";
@@ -206,6 +210,8 @@ void usage(bool and_exit)
 		"   and [display-opt] is one or more of\n"
 //		"\t-ps\t\t\tDisplay process tree\n"
 		"\t-l[ong]\t\t\tDisplay entire classads\n"
+		"\t-snap[shot]\t\tQuery internal startd classads.\n"
+		"\t-stat[istics] <set>:<n>\tQuery startd statistics for <set> at level <n>\n"
 		"\t-w[ide]\t\t\tdon't truncate fields to fit the screen\n"
 		"\t-f[ormat] <fmt> <attr>\tPrint attribute with a format specifier\n"
 
@@ -343,10 +349,10 @@ render_slot_id (std::string & out, ClassAd * ad, Formatter & /*fmt*/)
 			if (pat)
 				pat[0] = 0;
 		} else {
-			sprintf(outstr, "%u_?", slotid);
+			snprintf(outstr, sizeof(outstr), "%u_?", slotid);
 		}
 	} else {
-		sprintf(outstr, "%u", slotid);
+		snprintf(outstr, sizeof(outstr), "%u", slotid);
 	}
 	out = outstr;
 	return true;
@@ -359,7 +365,7 @@ format_jobid_pid (const char *jobid, Formatter & /*fmt*/)
 	static char outstr[16];
 	outstr[0] = 0;
 	if (App.job_to_pid.find(jobid) != App.job_to_pid.end()) {
-		sprintf(outstr, "%u", App.job_to_pid[jobid]);
+		snprintf(outstr, sizeof(outstr), "%u", App.job_to_pid[jobid]);
 	}
 	return outstr;
 }
@@ -1043,6 +1049,7 @@ void AddPrintColumn(const char * heading, int width, const char * attr, const Cu
 
 void parse_args(int /*argc*/, char *argv[])
 {
+	const char * pcolon;
 	for (int ixArg = 0; argv[ixArg]; ++ixArg)
 	{
 		const char * parg = argv[ixArg];
@@ -1050,7 +1057,9 @@ void parse_args(int /*argc*/, char *argv[])
 			usage(true);
 			continue;
 		}
-		if (is_dash_arg_prefix(parg, "debug", 1)) {
+		// condor_who is unusual in that -debug can be followed by an optional second argument
+		// with debug flags.  We still allow that for backward compat.
+		if (is_dash_arg_colon_prefix(parg, "debug", &pcolon, 1)) {
 			const char * pflags = argv[ixArg+1];
 			if (pflags && (pflags[0] == '"' || pflags[0] == '\'')) ++pflags;
 			if (pflags && pflags[0] == 'D' && pflags[1] == '_') {
@@ -1058,8 +1067,8 @@ void parse_args(int /*argc*/, char *argv[])
 			} else {
 				pflags = NULL;
 			}
-			dprintf_set_tool_debug("TOOL", 0);
-			set_debug_flags( pflags, D_NOHEADER | D_FULLDEBUG );
+			if (pflags || ! pcolon) { set_debug_flags(pflags, D_NOHEADER | D_FULLDEBUG); }
+			dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
 			continue;
 		}
 
@@ -1123,6 +1132,15 @@ void parse_args(int /*argc*/, char *argv[])
 				App.wide = true;
 			} else if (IsArg(parg, "long", 1)) {
 				App.show_full_ads = true;
+			} else if (IsArgColon(parg, "snapshot", &pcolon, 4)) {
+				App.startd_snapshot_opt = "1";
+				if (pcolon && pcolon[1]) { App.startd_snapshot_opt = pcolon + 1; }
+			} else if (IsArg(parg, "statistics", 4)) {
+				if ( ! argv[ixArg+1] || *argv[ixArg+1] == '-') {
+					fprintf(stderr, "Error: Argument %s requires an argument\n", argv[ixArg]);
+					exit(1);
+				}
+				App.startd_statistics_opt = argv[++ixArg];
 			} else if (IsArg(parg, "format", 1)) {
 			} else if (IsArgColon(parg, "autoformat", &pcolon, 5) ||
 			           IsArgColon(parg, "af", &pcolon, 2)) {
@@ -1275,7 +1293,7 @@ void parse_args(int /*argc*/, char *argv[])
 
 	if (App.show_job_ad) {
 		// constraint?
-	} else {
+	} else if ( ! App.startd_snapshot_opt && ! App.startd_statistics_opt) {
 		App.constraint.push_back("JobID=!=UNDEFINED");
 	}
 
@@ -1330,7 +1348,7 @@ void init_condor_config()
 	// a CONDOR_UIDS environment variable, set one to keep config happy.
 	//
 	if (is_root()) {
-		const char *env_name = EnvGetName(ENV_UG_IDS);
+		const char *env_name = ENV_CONDOR_UG_IDS;
 		if (env_name) {
 			bool fSetUG_IDS = false;
 			char * env = getenv(env_name);
@@ -1352,7 +1370,7 @@ void init_condor_config()
 	}
 #endif
 
-	const char *env_name = EnvGetName(ENV_CONFIG);
+	const char *env_name = ENV_CONDOR_CONFIG;
 	char * env = getenv(env_name);
 	if ( ! env) {
 		// If no CONDOR_CONFIG environment variable, we don't want to fail if there
@@ -1418,8 +1436,6 @@ main( int argc, char *argv[] )
 #if !defined(WIN32)
 	install_sig_handler(SIGPIPE, SIG_IGN );
 #endif
-
-	myDistro->Init( argc, argv );
 
 	if( argc < 1 ) {
 		usage(true);
@@ -1510,6 +1526,10 @@ main( int argc, char *argv[] )
 				}
 				if ( ! App.show_daemons) {
 					// if we aren't printing the daemons table, just quit now.
+					for (const auto &keyvalue : info) {
+						delete keyvalue.second;
+					}
+					info.clear();
 					continue;
 				}
 			}
@@ -1608,6 +1628,10 @@ main( int argc, char *argv[] )
 								print_daemon_info(info, false);
 							}
 							free(logdir);
+							for (const auto &keyvalue : info) {
+								delete keyvalue.second;
+							}
+							info.clear();
 						}
 					}
 				}
@@ -1641,6 +1665,13 @@ main( int argc, char *argv[] )
 
 	if (App.projection.size() > 0) {
 		query->setDesiredAttrs(App.projection);
+	}
+
+	if (App.startd_snapshot_opt) {
+		query->addExtraAttribute("Snapshot", App.startd_snapshot_opt);
+	}
+	if (App.startd_statistics_opt) {
+		query->addExtraAttributeString("STATISTICS_TO_PUBLISH", App.startd_statistics_opt);
 	}
 
 	// if diagnose was requested, just print the query ad
@@ -2375,6 +2406,7 @@ static bool get_daemon_ready(const char * addr, const char * requirements, time_
 			return false;
 		}
 	}
+	ad.Assign("WantAddrs", true);
 
 	sock.encode();
 	if ( ! putClassAd(&sock, ad)) {

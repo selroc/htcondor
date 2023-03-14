@@ -64,18 +64,20 @@ else (WINDOWS)
     if (DEFINED SYSTEM_NAME)
         if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "64")
             if ( ${SYSTEM_NAME} MATCHES "rhel7" OR ${SYSTEM_NAME} MATCHES "centos7" OR ${SYSTEM_NAME} MATCHES "sl7" OR ${SYSTEM_NAME} MATCHES "amzn2")
-                message (STATUS "Using system boost169 for 64-bit EL7" )
                 # If you look for python on cmake 2.8.12.2 it fails.
                 # Looking for thread finds boost for python for me.
                 set (BOOST_COMPONENTS thread)
-                set(BOOST_INCLUDEDIR "/usr/include/boost169")
-                set(BOOST_LIBRARYDIR "/usr/lib64/boost169")
-                set(Boost_INCLUDE_DIR "/usr/include/boost169")
-                set(Boost_LIBRARY_DIR "/usr/lib64/boost169")
+                if (NOT WANT_PYTHON_WHEELS)
+                    message (STATUS "Using system boost169 for 64-bit EL7" )
+                    set(BOOST_INCLUDEDIR "/usr/include/boost169")
+                    set(BOOST_LIBRARYDIR "/usr/lib64/boost169")
+                    set(Boost_INCLUDE_DIRS "/usr/include/boost169")
+                    set(Boost_LIBRARY_DIRS "/usr/lib64/boost169")
+                endif()
                 set(USE_SYSTEM_BOOST True)
             endif()
         endif()
-        if (${SYSTEM_NAME} MATCHES "Debian" OR ${SYSTEM_NAME} MATCHES "Ubuntu" OR ${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "fc" OR ${SYSTEM_NAME} MATCHES "rocky8")
+        if (${SYSTEM_NAME} MATCHES "Debian" OR ${SYSTEM_NAME} MATCHES "Ubuntu" OR ${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "fc" OR ${SYSTEM_NAME} MATCHES "almalinux8" OR ${SYSTEM_NAME} MATCHES "rocky8")
             set(USE_SYSTEM_BOOST True)
             # BOOST_COMPONENTS breaks CMake boost detection on Ubuntu 20.04, Debian bullseye
             set(BOOST_COMPONENTS "" )
@@ -87,23 +89,6 @@ else (WINDOWS)
 
 	# always prefer system libraries where possible
 	if(Boost_FOUND)
-
-		if (NOT PREFER_CPP11)
-			check_cxx_source_compiles("
-				#include <boost/unordered_map.hpp>
-				int main() {
-				boost::unordered_map<int,int> foo;
-				return 0;
-				}
-				" HAVE_BOOST_UNORDER_MAP )
-
-			# we don't have any unordered map?
-			if (NOT HAVE_BOOST_UNORDER_MAP)
-				message (STATUS "WARNING did not detect unordered_map")
-				set ( SYSTEM_NOT_UP_TO_SNUFF TRUE )
-			endif()
-
-		endif()
 
 		# set vars b/c we are good to go.
 		if (NOT SYSTEM_NOT_UP_TO_SNUFF)
@@ -145,7 +130,7 @@ else (WINDOWS)
 				set(BUILD_OPTIONS --user-config=${CMAKE_CURRENT_BINARY_DIR}/python-config.jam --layout=system variant=release cxxflags=-fPIC linkflags=-fPIC)
 			endif()
 
-			if (DARWIN)
+			if (APPLE)
 				if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
 					set(TOOLSET clang-darwin)
 				else()

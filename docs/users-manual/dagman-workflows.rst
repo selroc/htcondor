@@ -749,7 +749,7 @@ DAG Throttling
     page) for more information.
     Also see the equivalent ``DAGMAN_MAX_JOBS_SUBMITTED``
     :index:`DAGMAN_MAX_JOBS_SUBMITTED` configuration option
-    (ref:`admin-manual/configuration-macros:configuration file entries for dagman`).
+    (:ref:`admin-manual/configuration-macros:configuration file entries for dagman`).
 
 *   **Idle procs:** The number of idle procs within a given DAG can be
     limited with the optional command line argument **-maxidle**.
@@ -763,7 +763,7 @@ DAG Throttling
     information.)
     Also see the equivalent ``DAGMAN_MAX_JOBS_IDLE``
     :index:`DAGMAN_MAX_JOBS_IDLE` configuration option
-    (ref:`admin-manual/configuration-macros:configuration file entries for dagman`).
+    (:ref:`admin-manual/configuration-macros:configuration file entries for dagman`).
 
 *   **Subsets of nodes:** Node submission can also be throttled in a
     finer-grained manner by grouping nodes into categories. See section
@@ -780,7 +780,7 @@ DAG Throttling
     Also see the equivalent
     ``DAGMAN_MAX_PRE_SCRIPTS`` :index:`DAGMAN_MAX_PRE_SCRIPTS` and
     ``DAGMAN_MAX_POST_SCRIPTS`` :index:`DAGMAN_MAX_POST_SCRIPTS`
-    (ref:`admin-manual/configuration-macros:configuration file entries for dagman`)
+    (:ref:`admin-manual/configuration-macros:configuration file entries for dagman`)
     configuration options.
 
 File Paths in DAGs
@@ -980,7 +980,7 @@ removing a *condor_dagman* job that has been held.)
 The previous behavior of *condor_dagman* itself not removing the node
 jobs can be restored by setting the ``DAGMAN_REMOVE_NODE_JOBS``
 configuration macro (see
-ref:`admin-manual/configuration-macros:configuration file entries for dagman`)
+:ref:`admin-manual/configuration-macros:configuration file entries for dagman`)
 to ``False``. This will decrease the load on the *condor_schedd*, at the cost of
 allowing the possibility of "orphaned" node jobs.
 
@@ -1176,7 +1176,7 @@ a macro. Macros are defined on a per-node basis, using the syntax
 
 .. code-block:: condor-dagman
 
-    VARS <JobName | ALL_NODES> macroname="string" [macroname2="string2" ... ]
+    VARS <JobName | ALL_NODES> [PREPEND | APPEND] macroname="string" [macroname2="string2" ... ]
 
 The macro may be used within the submit description file of the relevant
 node. A *macroname* may contain alphanumeric characters (a-z, A-Z, and
@@ -1262,6 +1262,57 @@ The submit description file appears as
 For a DAG such as this one, but with thousands of nodes, the ability to
 write and maintain a single submit description file together with a
 single, yet more complex, DAG input file is worthwhile.
+
+Prepend or Append Variables to Node
+'''''''''''''''''''''''''''''''''''
+
+After *JobName* the word *PREPEND* or *APPEND* can be added to specify how
+a variable is passed to a node at job submission time. *APPEND* will add
+the variable after the submit description file is read. Resulting in the
+passed variable being added as a macro or overwitting any already existing
+variable values. *PREPEND* will add the variable before the submit
+description file is read. This allows the variable to be used in submit
+description file conditionals.
+
+The relevant portion of the DAG input file appears as
+
+.. code-block:: condor-dagman
+
+     JOB A theotherfile.sub
+
+     VARS A PREPEND var1="A"
+     VARS A APPEND  var2="B"
+
+The submit description file appears as
+
+.. code-block:: condor-submit
+
+     # submit description file called:   theotherfile.sub
+     executable   = progX
+
+     if defined var1
+          # This will occur due to PREPEND
+          Arguments = "$(var1) was prepended"
+     else
+          # This will occur due to APPEND
+          Arguments = "No variables prepended"
+     endif
+
+     var2 = "C"
+
+     output       = results-$(var2).out
+     error        = error.txt
+     log          = job.log
+     queue
+
+For a DAG such as this one, ``Arguments`` will become "A was prepended" and the
+output file will be named ``results-B.out``. If instead var1 used *APPEND*
+and var2 used *PREPEND* then ``Arguments`` will become "No variables prepended"
+and the output file will be named ``results-C.out``.
+
+If neither *PREPEND* nor *APPEND* is used in the *VARS* line then the variable
+will either be prepended or appended based on the configuration variable
+``DAGMAN_DEFAULT_APPEND_VARS``.
 
 Multiple macroname definitions
 ''''''''''''''''''''''''''''''
@@ -1648,7 +1699,7 @@ Configuration Specific to a DAG
 
 All configuration variables and their definitions that relate to DAGMan
 may be found in
-ref:`admin-manual/configuration-macros:configuration file entries for dagman`.
+:ref:`admin-manual/configuration-macros:configuration file entries for dagman`.
 
 Configuration variables for *condor_dagman* can be specified in several
 ways, as given within the ordered list:
@@ -1828,7 +1879,7 @@ By default, DAGMan internally renames the nodes to avoid node name
 collisions. If all node names are unique, the renaming of nodes may be
 disabled by setting the configuration variable
 ``DAGMAN_MUNGE_NODE_NAMES`` :index:`DAGMAN_MUNGE_NODE_NAMES` to
-``False`` (see ref:`admin-manual/configuration-macros:configuration file
+``False`` (see :ref:`admin-manual/configuration-macros:configuration file
 entries for dagman`).
 
 INCLUDE
@@ -3180,7 +3231,7 @@ completed, then the Rescue DAG file will also contain *RETRY* entries.
 The number of retries will be set to the appropriate remaining number of
 retries. The configuration variable ``DAGMAN_RESET_RETRIES_UPON_RESCUE``
 :index:`DAGMAN_RESET_RETRIES_UPON_RESCUE`
-(ref:`admin-manual/configuration-macros:configuration file entries for dagman`),
+(:ref:`admin-manual/configuration-macros:configuration file entries for dagman`),
 controls whether or not node retries are reset in a Rescue DAG.
 
 Partial versus Full Rescue DAGs
@@ -3420,7 +3471,7 @@ defaults to 60 seconds (as of version 8.5.8; previously, it defaulted to
 0). The node status file can be updated at most once per
 ``DAGMAN_USER_LOG_SCAN_INTERVAL``
 :index:`DAGMAN_USER_LOG_SCAN_INTERVAL`, as defined in
-ref:`admin-manual/configuration-macros:configuration file entries for dagman`,
+:ref:`admin-manual/configuration-macros:configuration file entries for dagman`,
 no matter how small the *minimumUpdateTime* value. Also, the node status
 file will be updated when the DAG finishes, whether successfully or not,
 even if *minimumUpdateTime* seconds have not elapsed since the last
@@ -3518,6 +3569,23 @@ Possible ``DagStatus`` and ``NodeStatus`` attribute values are:
 -  4 (STATUS_POSTRUN): The node's POST script is running.
 -  5 (STATUS_DONE): The node has completed successfully.
 -  6 (STATUS_ERROR): The node has failed.
+-  7 (STATUS_FUTILE): The node will never run because ancestor node failed.
+
+An *ancestor* is a node that a another node depends on either directly or indirectly
+through a chain of **PARENT/CHILD** relationships. For example, the **DAG** shown below
+would result in node **G**'s *ancestors* to be nodes **A**, **B**, **D**, and **F**
+because the **PARENT** to **CHILD** realtionships appear as ``A & B -> D -> F -> G``
+
+.. code-block:: text
+
+    Example DAG Visualized
+          A     B
+          └──┬──┘
+          C──┴──D
+              E─┴─F
+                  │
+                  G
+
 
 A *NODE_STATUS_FILE* command inside any splice is ignored. If multiple
 DAG files are specified on the *condor_submit_dag* command line, and
@@ -3694,8 +3762,14 @@ into its own job ClassAd. The attributes are fully described in
 -  ``DAG_NodesReady``
 -  ``DAG_NodesFailed``
 -  ``DAG_NodesUnready``
+-  ``DAG_NodesFutile``
 -  ``DAG_Status``
 -  ``DAG_InRecovery``
+-  ``DAG_JobsSubmitted``
+-  ``DAG_JobsIdle``
+-  ``DAG_JobsHeld``
+-  ``DAG_JobsRunning``
+-  ``DAG_JobsCompleted``
 
 Note that most of this information is also available in the
 ``dagman.out`` file as described in

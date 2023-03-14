@@ -23,7 +23,6 @@
 /* Note: this code needs to have error handling overhauled */
 
 #include "condor_common.h"
-#include "condor_constants.h"
 #include "condor_io.h"
 #include "condor_debug.h"
 #include "internet.h"
@@ -280,8 +279,9 @@ int SafeSock::connect(
 	if (!host || port < 0) return FALSE;
 
 	std::string addr;
-	if( chooseAddrFromAddrs( host, addr ) ) {
+	if( chooseAddrFromAddrs( host, addr, &_who ) ) {
 		host = addr.c_str();
+		set_connect_addr(addr.c_str());
 	} else {
 		_who.clear();
 		if (!Sock::guess_address_string(host, port, _who))
@@ -289,11 +289,11 @@ int SafeSock::connect(
 
 		if (host[0] == '<') {
 			set_connect_addr(host);
-			} else {
+		} else {
 			set_connect_addr(_who.to_sinful().c_str());
 		}
-    	addr_changed();
 	}
+	addr_changed();
 
 	// now that we have set _who (useful for getting informative
 	// peer_description), see if we should do a reverse connect

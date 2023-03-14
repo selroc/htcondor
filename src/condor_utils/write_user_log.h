@@ -23,6 +23,8 @@
    reliance on other Condor files to ease distribution.  -Jim B. */
 
 #include "condor_event.h"
+#include "read_user_log.h"
+#include "user_log_header.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -95,13 +97,14 @@ class WriteUserLog
     /** The log file                 */  int fd;
     /** Implementation detail        */  mutable bool copied;
     /** Whether to use user priv     */  bool user_priv_flag;
+    /** Whether or not is DAGMan log */  bool is_dag_log;
 
       // set of jobs that are using this log file
       log_file_cache_refset_t refset;
 
       log_file(const char* p) : path(p), lock(NULL), fd(-1),
-        copied(false), user_priv_flag(false) {}
-      log_file() : lock(NULL), fd(-1), copied(false), user_priv_flag(false) {}
+        copied(false), user_priv_flag(false), is_dag_log(false) {}
+      log_file() : lock(NULL), fd(-1), copied(false), user_priv_flag(false), is_dag_log(false) {}
       log_file(const log_file& orig);
       ~log_file(); 
       log_file& operator=(const log_file& rhs);
@@ -364,6 +367,25 @@ public:
 	/** switch to user priv?         */  bool       m_set_user_priv;
 	/** Creator Name (schedd name)   */  char     * m_creator_name;
 	/** Mask for events              */  std::vector<ULogEventNumber> mask;
+};
+
+// Simple class to extract info from a log file header event
+class WriteUserLogHeader : public UserLogHeader
+{
+public:
+	WriteUserLogHeader( void )
+		{ };
+	WriteUserLogHeader( const UserLogHeader &other )
+		: UserLogHeader( other )
+		{ };
+	~WriteUserLogHeader( void )
+		{ };
+
+	// Read the header from a file
+	int Write( WriteUserLog &writer, int fd = -1 );
+	bool GenerateEvent( GenericEvent &event );
+
+private:
 };
 
 #endif /* _CONDOR_USER_LOG_CPP_H */

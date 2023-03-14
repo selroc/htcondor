@@ -212,6 +212,13 @@ Recognized metric attribute names and their use:
     an "@" sign, the default IP value will be set to the same value as
     ``Machine`` in order to make the IP value unique to each instance of
     HTCondor running on the same host.
+ Lifetime
+    A postive integer value representing the max number of seconds
+    without updating a metric will be kept before deletion. This is
+    represented in ganglia as DMAX. If no Lifetime is defined for a
+    metric then the default value will be set to a calculated value
+    based on the ganglia publish interval with a minimum value set by
+    :macro:`GANGLIAD_MIN_METRIC_LIFETIME`.
 
 Absent ClassAds
 ---------------
@@ -315,8 +322,8 @@ Elasticsearch
 :index:`condor_adstash`
 
 HTCondor supports pushing *condor_schedd* and *condor_startd* job
-history ClassAds to Elasticsearch via the *condor_adstash*
-tool/daemon.
+history ClassAds to Elasticsearch (and other targets) via the
+*condor_adstash* tool/daemon.
 *condor_adstash* collects job history ClassAds as specified by its
 configuration, either querying specified daemons' histories
 or reading job history ClassAds from a specified file,
@@ -349,7 +356,8 @@ See the ``condor_config.local.adstash`` example configuration file in
 the ``examples/`` directory for detailed information on how to modify
 your configuration.
 
-If you prefer to run *condor_adstash* in standalone mode, see the
+If you prefer to run *condor_adstash* in standalone mode, or are
+curious about other ClassAd sources or targets, see the
 :doc:`../man-pages/condor_adstash` man page for more
 details.
 

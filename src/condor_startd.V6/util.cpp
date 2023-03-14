@@ -122,10 +122,8 @@ check_execute_dir_perms( char const *exec_path )
 	// additionally, the GLEXEC_JOB feature requires world-writability
 	// on the execute dir
 	//
-	bool glexec_job = param_boolean("GLEXEC_JOB", false);
 	if ((st.st_uid == get_condor_uid()) &&
-	    (!can_switch_ids() || not_root_squashed(exec_path)) &&
-	    !glexec_job)
+	    (!can_switch_ids() || not_root_squashed(exec_path)))
 	{
 		// do the chown unless the current mode is exactly 755
 		//
@@ -139,12 +137,11 @@ check_execute_dir_perms( char const *exec_path )
 		if ((st.st_mode & 01777) != 01777) {
 			new_mode = 01777;
 		}
-		if (!glexec_job) {
-			dprintf(D_ALWAYS,
-			        "WARNING: %s root-squashed or not condor-owned: "
-			            "requiring world-writability\n",
-			        exec_path);
-		}
+		dprintf(D_ALWAYS,
+				"WARNING: %s root-squashed or not condor-owned: "
+				"requiring world-writability\n",
+				exec_path);
+
 	}
 #endif
 	// now do a chmod if needed
@@ -589,12 +586,12 @@ configInsert( ClassAd* ad, const char* param_name,
 
 
 /* 
-   This function reads of a ClaimId string, optional classad, and eom from the
+   This function reads of a ClaimId string and eom from the
    given stream.  It looks up that ClaimId in the resmgr to find
    the corresponding Resource*.  If such a Resource is found, we
    return the pointer to it, otherwise, we return NULL.  */
 Resource*
-stream_to_rip( Stream* stream, ClassAd * pad )
+stream_to_rip( Stream* stream )
 {
 	char* id = NULL;
 	Resource* rip;
@@ -604,12 +601,6 @@ stream_to_rip( Stream* stream, ClassAd * pad )
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
 		free( id );
 		return NULL;
-	}
-	// if we are not ad end of message, then there may be a classad payload containing argument options.
-	if (pad && ! stream->peek_end_of_message()) {
-		if ( ! getClassAd(stream, *pad)) {
-			dprintf( D_ALWAYS, "Can't read options ClassAd after ClaimId\n");
-		}
 	}
 	if( ! stream->end_of_message() ) {
 		dprintf( D_ALWAYS, "Can't read end_of_message\n" );

@@ -2,7 +2,7 @@
 set( HTCONDOR_BINDINGS_SOURCES collector.cpp negotiator.cpp config.cpp daemon_and_ad_types.cpp daemon_location.cpp dc_tool.cpp export_headers.h old_boost.h schedd.cpp credd.cpp secman.cpp event.cpp module_lock.cpp export_compat_classad.cpp enable_deprecation_warnings.cpp claim.cpp startd.cpp bulk_query_iterator.cpp JobEventLog.cpp exception_utils.cpp )
 
 if(WINDOWS)
-  if(WITH_PYTHON_BINDINGS AND PYTHONLIBS_FOUND)
+  if(WITH_PYTHON_BINDINGS AND ( PYTHONLIBS_FOUND OR PYTHON3LIBS_FOUND ))
     # Modern compilers complain about using the deprecated std::auto_ptr.
     # Prevent boost from using them.
     add_definitions ( -DBOOST_NO_AUTO_PTR )
@@ -10,9 +10,13 @@ if(WINDOWS)
 	#only for VS2012 and above
 	if(NOT (MSVC_VERSION LESS 1700))
 		#only for boost-1.54.0 or boost-1.68
-		IF("${BOOST_VER}" MATCHES "boost-1.(54|68).0")
+		IF("${BOOST_VER}" MATCHES "boost-1.(54|68|78).0")
 			message(STATUS "===> Generating python-bindings with boost 1.${CMAKE_MATCH_1}")
 			set(BOOST_LIB_BOOST_VER "1_${CMAKE_MATCH_1}")
+			if ("${CMAKE_MATCH_1}" EQUAL "78")
+				# disable python2
+				unset (PYTHON_VERSION_STRING)
+			endif()
 			if ("${CMAKE_MATCH_1}" EQUAL "54") # no bitness neeeded	(32 bit only)
 			else() #need bitness
 				if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -26,7 +30,7 @@ if(WINDOWS)
 				set(BOOST_LIB_PY3_VC_VER "python3-vc110")
 			else()
 				set(BOOST_LIB_PY2_VC_VER "python27-vc141")
-				set(BOOST_LIB_PY3_VC_VER "python36-vc141")
+				set(BOOST_LIB_PY3_VC_VER "${PYTHON3_LIB_BASENAME}-${BOOST_DLL_VCVER}")
 			endif()
 
 			link_directories(${BOOST_LD})
@@ -79,7 +83,7 @@ if(WINDOWS)
 				# the 'optimized' keyword indicates that the library following it is for release builds only
 				# the 'debug' keyword indicates that the library following it is for debug builds only
 				add_library( classad_module SHARED classad_module.cpp classad_module_impl.cpp classad_parsers.cpp )
-				target_link_libraries( classad_module pyclassad ${PCRE_FOUND} ${THE_BOOST_LIBS} ${PYTHON_LIBRARIES} )
+				target_link_libraries( classad_module pyclassad ${THE_BOOST_LIBS} ${PYTHON_LIBRARIES} )
 				set_target_properties(classad_module PROPERTIES PREFIX "" OUTPUT_NAME classad )
 				set_target_properties(classad_module PROPERTIES SUFFIX "${PYTHON_DLL_SUFFIX}" )
 				target_include_directories( classad_module PUBLIC ${PYTHON_INCLUDE_DIRS} )
@@ -133,8 +137,8 @@ if(WINDOWS)
 				set(THE_BOOST_LIBS
 				  optimized ${BOOST_LD}/boost_${BOOST_LIB_PY3_VC_VER}-mt-${BOOST_LIB_BOOST_VER}.lib
 				      debug ${BOOST_LD}/boost_${BOOST_LIB_PY3_VC_VER}-mt-gd-${BOOST_LIB_BOOST_VER}.lib
-				  optimized ${BOOST_LD}/libboost_${BOOST_LIB_PY3_VC_VER}-mt-${BOOST_LIB_BOOST_VER}.lib
-				      debug ${BOOST_LD}/libboost_${BOOST_LIB_PY3_VC_VER}-mt-gd-${BOOST_LIB_BOOST_VER}.lib
+				#  optimized ${BOOST_LD}/libboost_${BOOST_LIB_PY3_VC_VER}-mt-${BOOST_LIB_BOOST_VER}.lib
+				#      debug ${BOOST_LD}/libboost_${BOOST_LIB_PY3_VC_VER}-mt-gd-${BOOST_LIB_BOOST_VER}.lib
 					)
 
 				condor_shared_lib( py3classad classad.cpp classad_wrapper.h exprtree_wrapper.h exception_utils.cpp classad_exceptions.cpp )
@@ -146,7 +150,7 @@ if(WINDOWS)
 				# the 'optimized' keyword indicates that the library following it is for release builds only
 				# the 'debug' keyword indicates that the library following it is for debug builds only
 				add_library( py3classad_module SHARED classad_module.cpp classad_module_impl.cpp classad_parsers.cpp )
-				target_link_libraries( py3classad_module py3classad ${PCRE_FOUND}  ${THE_BOOST_LIBS} ${PYTHON3_LIBRARIES} )
+				target_link_libraries( py3classad_module py3classad ${THE_BOOST_LIBS} ${PYTHON3_LIBRARIES} )
 				set_target_properties(py3classad_module PROPERTIES PREFIX "" OUTPUT_NAME py3classad PDB_NAME py3classad)
 				set_target_properties(py3classad_module PROPERTIES PREFIX "" RUNTIME_OUTPUT_NAME classad PDB_NAME py3classad)
 				set_target_properties(py3classad_module PROPERTIES SUFFIX "${PYTHON3_DLL_SUFFIX}" )
@@ -172,7 +176,7 @@ if(WINDOWS)
 				install ( TARGETS py3htcondor DESTINATION ${C_PYTHONARCHLIB}/htcondor )
 				install ( TARGETS py3classad_module DESTINATION ${C_PYTHONARCHLIB}/classad )
 
-			endif(DEFINED PYTHON3_VERSION_STRING) # python36 was found
+			endif(DEFINED PYTHON3_VERSION_STRING) # python3x was found
 
 		# more targets are built if we plan on building wheels
 		if ( WANT_PYTHON_WHEELS )
@@ -195,7 +199,7 @@ else()
       add_definitions ( -DBOOST_NO_AUTO_PTR )
     endif()
 
-    if (DARWIN)
+    if (APPLE)
         # This is probably a sign that something else needs fixing.
         # Note that you can NOT set this to DARWIN, because CMake's parser
         # is terrible.  (It will silently dereference the quoted string
@@ -213,7 +217,7 @@ else()
           if (${SYSTEM_NAME} MATCHES "rhel7" OR ${SYSTEM_NAME} MATCHES "centos7" OR ${SYSTEM_NAME} MATCHES "sl7" OR ${SYSTEM_NAME} MATCHES "amzn2" OR ${SYSTEM_NAME} MATCHES "fc3[0-9]" OR ${SYSTEM_NAME} MATCHES "Debian.*10" OR WANT_PYTHON_WHEELS)
             set ( PYTHON_BOOST_LIB "boost_python${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}" )
           endif()
-          if (${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "rocky8")
+          if (${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "rocky8" OR ${SYSTEM_NAME} MATCHES "almalinux8")
             set ( PYTHON_BOOST_LIB "boost_python${PYTHON_VERSION_MAJOR}" )
           endif()
           if (${SYSTEM_NAME} MATCHES "fc2[0-9]" )
@@ -229,29 +233,21 @@ else()
 
       get_filename_component(PYTHON_LIBRARY_FILENAME ${PYTHON_LIBRARIES} NAME)
       string(REGEX REPLACE "([0-9]+[.][0-9]+).*" "\\1" _PYTHON_VERSION ${PYTHON_VERSION_STRING})
-      # Not sure why this is here. Probably should be in Python 3 section.
-      # Protecting with conditionals so Python wheel building will succeed.
-      if (DEFINED PYTHON3_VERSION_STRING)
-        string(REGEX REPLACE "([0-9]+[.][0-9]+).*" "\\1" _PYTHON3_VERSION ${PYTHON3_VERSION_STRING})
-      endif()
       if ( ${PACKAGE_VERSION} MATCHES "([0-9]+)[.]([0-9]+)[.]([0-9]+)" )
         set( PYCLASSAD_LIB_NAME "pyclassad${_PYTHON_VERSION}_${CMAKE_MATCH_1}_${CMAKE_MATCH_2}_${CMAKE_MATCH_3}" )
-        if (DEFINED PYTHON3_VERSION_STRING)
-          set( PYCLASSAD3_LIB_NAME "pyclassad${_PYTHON3_VERSION}_${CMAKE_MATCH_1}_${CMAKE_MATCH_2}_${CMAKE_MATCH_3}" )
-        endif()
       else()
         message(FATAL_ERROR "Can't determine HTCondor version!")
       endif()
       condor_shared_lib( pyclassad classad.cpp classad_wrapper.h exprtree_wrapper.h exception_utils.cpp classad_exceptions.cpp )
       target_include_directories( pyclassad PUBLIC ${PYTHON_INCLUDE_DIRS} )
-      target_link_libraries( pyclassad ${CLASSADS_FOUND} -l${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
+      target_link_libraries( pyclassad ${CLASSADS_FOUND} ${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
       set_target_properties( pyclassad PROPERTIES OUTPUT_NAME "${PYCLASSAD_LIB_NAME}" )
       set_target_properties( pyclassad PROPERTIES COMPILE_FLAGS "-fPIC")
 
       # Note we do not use condor_shared_lib below because we want a separate install target.
       add_library( classad_module SHARED classad_module.cpp classad_module_impl.cpp classad_parsers.cpp )
       target_include_directories( classad_module PUBLIC ${PYTHON_INCLUDE_DIRS} )
-      target_link_libraries( classad_module pyclassad -l${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
+      target_link_libraries( classad_module pyclassad ${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
       set_target_properties(classad_module PROPERTIES PREFIX "" OUTPUT_NAME classad )
       set_target_properties(classad_module PROPERTIES SUFFIX "${PYTHON_MODULE_SUFFIX}" )
       if ( NOT CMAKE_SKIP_RPATH )
@@ -269,24 +265,12 @@ else()
       endif()
       install ( TARGETS classad_python_user DESTINATION "${C_LIBEXEC}" )
 
-      if ( LINUX )
-        # This is to be used as a collector plugin module which invoke python functions.
-        add_library( collector_python_plugin SHARED collector_plugin.cpp )
-        target_include_directories( collector_python_plugin PUBLIC ${PYTHON_INCLUDE_DIRS} )
-        target_link_libraries( collector_python_plugin condor_utils pyclassad )
-        set_target_properties( collector_python_plugin PROPERTIES SUFFIX "${PYTHON_MODULE_SUFFIX}" )
-        if ( NOT CMAKE_SKIP_RPATH )
-          set_target_properties( collector_python_plugin PROPERTIES INSTALL_RPATH "${CONDOR_RPATH}")
-        endif()
-        install ( TARGETS collector_python_plugin DESTINATION "${C_LIBEXEC}" )
-      endif()
-
       # See note below about deprecating log_reader.cpp.
       set_source_files_properties( dc_tool.cpp classad.cpp classad_module.cpp classad_parsers.cpp ${HTCONDOR_BINDINGS_SOURCES} log_reader.cpp PROPERTIES COMPILE_FLAGS "-Wno-strict-aliasing -Wno-cast-qual -Wno-deprecated -Wno-write-strings")
       # We should probably deprecate log_reader.cpp (shortly after we deprecate event.cpp).
       add_library( htcondor SHARED htcondor.cpp ${HTCONDOR_BINDINGS_SOURCES} log_reader.cpp )
       target_include_directories( htcondor PUBLIC ${PYTHON_INCLUDE_DIRS} )
-      target_link_libraries( htcondor pyclassad condor_utils -l${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
+      target_link_libraries( htcondor pyclassad condor_utils ${PYTHON_BOOST_LIB} ${PYTHON_LIBRARIES} )
       set_target_properties( htcondor PROPERTIES PREFIX "" )
       set_target_properties( htcondor PROPERTIES SUFFIX "${PYTHON_MODULE_SUFFIX}" )
       if ( NOT CMAKE_SKIP_RPATH )
@@ -296,7 +280,7 @@ else()
       install ( TARGETS htcondor DESTINATION ${C_PYTHONARCHLIB}/htcondor )
       install ( TARGETS classad_module DESTINATION ${C_PYTHONARCHLIB}/classad )
 
-      if ( DARWIN )
+      if ( APPLE )
           set_target_properties( pyclassad PROPERTIES INSTALL_NAME_DIR ${CMAKE_CURRENT_BINARY_DIR} )
           install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_LIB}/lib${PYCLASSAD_LIB_NAME}.dylib)" )
           install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_PYTHONARCHLIB}/classad/classad${PYTHON_MODULE_SUFFIX})" )
@@ -304,7 +288,7 @@ else()
       endif()
     endif()
 
-    if (DARWIN)
+    if (APPLE)
         # This is probably a sign that something else needs fixing.
         # Note that you can NOT set this to DARWIN, because CMake's parser
         # is terrible.  (It will silently dereference the quoted string
@@ -316,7 +300,7 @@ else()
       if (NOT DEFINED PYTHON3_BOOST_LIB)
         if (${SYSTEM_NAME} MATCHES "Debian.*9" OR ${SYSTEM_NAME} MATCHES "Ubuntu.*16" OR ${SYSTEM_NAME} MATCHES "Ubuntu.*18")
           set ( PYTHON3_BOOST_LIB "boost_python-py${PYTHON3_VERSION_MAJOR}${PYTHON3_VERSION_MINOR}" )
-        elseif (${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "rocky8")
+        elseif (${SYSTEM_NAME} MATCHES "rhel8" OR ${SYSTEM_NAME} MATCHES "centos8" OR ${SYSTEM_NAME} MATCHES "rocky8" OR ${SYSTEM_NAME} MATCHES "almalinux8")
           set ( PYTHON3_BOOST_LIB "boost_python${PYTHON3_VERSION_MAJOR}" )
         else ()
           set ( PYTHON3_BOOST_LIB "boost_python${PYTHON3_VERSION_MAJOR}${PYTHON3_VERSION_MINOR}" )
@@ -334,14 +318,14 @@ else()
       endif()
       condor_shared_lib( py3classad classad.cpp classad_wrapper.h exprtree_wrapper.h exception_utils.cpp classad_exceptions.cpp )
       target_include_directories( py3classad PUBLIC ${PYTHON3_INCLUDE_DIRS} )
-      target_link_libraries( py3classad ${CLASSADS_FOUND} -l${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
+      target_link_libraries( py3classad ${CLASSADS_FOUND} ${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
       set_target_properties( py3classad PROPERTIES OUTPUT_NAME "${PY3CLASSAD_LIB_NAME}" )
       set_target_properties( py3classad PROPERTIES COMPILE_FLAGS "-fPIC")
 
       # Note we do not use condor_shared_lib below because we want a separate install target.
       add_library( py3classad_module SHARED classad_module.cpp classad_module_impl.cpp classad_parsers.cpp )
       target_include_directories( py3classad_module PUBLIC ${PYTHON3_INCLUDE_DIRS} )
-      target_link_libraries( py3classad_module py3classad -l${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
+      target_link_libraries( py3classad_module py3classad ${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
       set_target_properties(py3classad_module PROPERTIES PREFIX "" OUTPUT_NAME classad )
       set_target_properties(py3classad_module PROPERTIES SUFFIX "${PYTHON3_MODULE_SUFFIX}" )
       if ( NOT CMAKE_SKIP_RPATH )
@@ -364,29 +348,12 @@ else()
           COMMENT "Creating libclassad_python3_user.so symlink" )
       install ( FILES "${CMAKE_CURRENT_BINARY_DIR}/libclassad_python3_user.so" DESTINATION "${C_LIBEXEC}" )
 
-      if ( LINUX )
-        # This is to be used as a collector plugin module which invoke python functions.
-        add_library( collector_python3_plugin SHARED collector_plugin.cpp )
-        target_include_directories( collector_python3_plugin PUBLIC ${PYTHON3_INCLUDE_DIRS} )
-        target_link_libraries( collector_python3_plugin condor_utils py3classad )
-        set_target_properties( collector_python3_plugin PROPERTIES OUTPUT_NAME collector_python_plugin )
-        set_target_properties( collector_python3_plugin PROPERTIES SUFFIX "${PYTHON3_MODULE_SUFFIX}" )
-        if ( NOT CMAKE_SKIP_RPATH )
-          set_target_properties( collector_python3_plugin PROPERTIES INSTALL_RPATH "${CONDOR_RPATH}")
-        endif()
-        install ( TARGETS collector_python3_plugin DESTINATION "${C_LIBEXEC}" )
-        add_custom_command( TARGET collector_python3_plugin POST_BUILD
-          COMMAND ${CMAKE_COMMAND} -E create_symlink "libcollector_python_plugin${PYTHON3_MODULE_SUFFIX}" "${CMAKE_CURRENT_BINARY_DIR}/libcollector_python3_plugin.so"
-          COMMENT "Creating libcollector_python3_plugin.so symlink" )
-        install ( FILES "${CMAKE_CURRENT_BINARY_DIR}/libcollector_python3_plugin.so" DESTINATION "${C_LIBEXEC}" )
-      endif()
-
       # See note below about deprecating log_reader.cpp.
       set_source_files_properties( dc_tool.cpp classad.cpp classad_module.cpp classad_parsers.cpp ${HTCONDOR_BINDINGS_SOURCES} log_reader.cpp PROPERTIES COMPILE_FLAGS "-Wno-strict-aliasing -Wno-cast-qual -Wno-deprecated -Wno-write-strings")
       # We should probably deprecate log_reader.cpp (shortly after we deprecate event.cpp).
       add_library( py3htcondor SHARED htcondor.cpp ${HTCONDOR_BINDINGS_SOURCES} log_reader.cpp )
       target_include_directories( py3htcondor PUBLIC ${PYTHON3_INCLUDE_DIRS} )
-      target_link_libraries( py3htcondor py3classad condor_utils -l${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
+      target_link_libraries( py3htcondor py3classad condor_utils ${PYTHON3_BOOST_LIB} ${PYTHON3_LIBRARIES} )
       set_target_properties( py3htcondor PROPERTIES PREFIX "" OUTPUT_NAME htcondor )
       set_target_properties( py3htcondor PROPERTIES SUFFIX "${PYTHON3_MODULE_SUFFIX}" )
       if ( NOT CMAKE_SKIP_RPATH )
@@ -396,9 +363,9 @@ else()
       install ( TARGETS py3htcondor DESTINATION ${C_PYTHON3ARCHLIB}/htcondor )
       install ( TARGETS py3classad_module DESTINATION ${C_PYTHON3ARCHLIB}/classad )
 
-      if ( DARWIN )
+      if ( APPLE )
           set_target_properties( py3classad PROPERTIES INSTALL_NAME_DIR ${CMAKE_CURRENT_BINARY_DIR} )
-          install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_LIB}/lib${PYCLASSAD3_LIB_NAME}.dylib)" )
+          install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_LIB}/lib${PY3CLASSAD_LIB_NAME}.dylib)" )
           install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_PYTHON3ARCHLIB}/classad/classad${PYTHON3_MODULE_SUFFIX})" )
           install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_PYTHON3ARCHLIB}/htcondor/htcondor${PYTHON3_MODULE_SUFFIX})" )
       endif()
@@ -412,7 +379,7 @@ else()
 
       # the pyclassad library and the classad and htcondor modules should not link libpython
       # instead, the user's python interpreter will look for any such missing symbols
-      if ( DARWIN )
+      if ( APPLE )
         # in macOS, use "-undefined dynamic_lookup" in place of "-lpython" or "-framework Python" (i.e. ${PYTHON_LIBRARIES})
         set( NOLINK_PYTHON_LIB "-undefined dynamic_lookup" )
       else()
@@ -422,8 +389,8 @@ else()
 
       # build libpyclassad *not* linked against libpython
       add_library( wheel_pyclassad SHARED classad.cpp classad_wrapper.h exprtree_wrapper.h exception_utils.cpp classad_exceptions.cpp )
-      target_link_libraries( wheel_pyclassad ${CLASSADS_FOUND} -l${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
-      if ( DARWIN )
+      target_link_libraries( wheel_pyclassad ${CLASSADS_FOUND} ${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
+      if ( APPLE )
         set_target_properties( wheel_pyclassad PROPERTIES SUFFIX ".dylib" )
         set_target_properties( wheel_pyclassad PROPERTIES INSTALL_NAME_DIR "${WHEEL_BINARY_DIR}/htcondor/htcondor_libs" )
       else()
@@ -435,20 +402,20 @@ else()
 
       # next, build the classad module *not* linked against libpython
       add_library( wheel_classad_module SHARED classad_module.cpp classad_module_impl.cpp classad_parsers.cpp )
-      target_link_libraries( wheel_classad_module wheel_pyclassad -l${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
+      target_link_libraries( wheel_classad_module wheel_pyclassad ${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
       set_target_properties( wheel_classad_module PROPERTIES PREFIX "" OUTPUT_NAME "classad" SUFFIX ".so")
       set_target_properties( wheel_classad_module PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${WHEEL_BINARY_DIR}/classad" )
-      if ( NOT DARWIN )
+      if ( NOT APPLE )
         set_target_properties( wheel_classad_module PROPERTIES INSTALL_RPATH "$ORIGIN/../htcondor/htcondor_libs" )
       endif()
 
       # finally, build the htcondor module *not* linked against libpython
       # See note above about deprecating log_reader.cpp.
       add_library( wheel_htcondor SHARED htcondor.cpp ${HTCONDOR_BINDINGS_SOURCES} log_reader.cpp )
-      target_link_libraries( wheel_htcondor wheel_pyclassad condor_utils -l${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
+      target_link_libraries( wheel_htcondor wheel_pyclassad condor_utils ${PYTHON_BOOST_LIB} ${NOLINK_PYTHON_LIB} )
       set_target_properties( wheel_htcondor PROPERTIES PREFIX "" OUTPUT_NAME "htcondor" SUFFIX ".so")
       set_target_properties( wheel_htcondor PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${WHEEL_BINARY_DIR}/htcondor" )
-      if ( NOT DARWIN )
+      if ( NOT APPLE )
         set_target_properties( wheel_htcondor PROPERTIES INSTALL_RPATH "$ORIGIN/htcondor_libs" )
       endif()
 

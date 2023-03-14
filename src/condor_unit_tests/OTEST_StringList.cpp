@@ -27,7 +27,7 @@
 #include "function_test_driver.h"
 #include "emit.h"
 #include "unit_test_utils.h"
-#include "string_list.cpp"
+#include "string_list.h"
 
 static bool test_constructor(void);
 static bool test_constructor_empty_list(void);
@@ -57,16 +57,6 @@ static bool test_create_union_duplicates_all_ignore(void);
 static bool test_create_union_duplicates_some_ignore(void);
 static bool test_create_union_empty_current(void);
 static bool test_create_union_empty_subset(void);
-static bool test_contains_list_return_false(void);
-static bool test_contains_list_return_false_ignore(void);
-static bool test_contains_list_return_false_almost(void);
-static bool test_contains_list_return_false_reverse(void);
-static bool test_contains_list_return_true_not(void);
-static bool test_contains_list_return_true_consecutive(void);
-static bool test_contains_list_return_true_not_ignore(void);
-static bool test_contains_list_return_true_consecutive_ignore(void);
-static bool test_contains_list_return_true_itself(void);
-static bool test_contains_list_return_true_copy(void);
 static bool test_contains_return_false(void);
 static bool test_contains_return_false_substring(void);
 static bool test_contains_return_false_case(void);
@@ -242,6 +232,10 @@ static bool test_get_delimiters_empty_yes(void);
 static bool test_get_delimiters_non_empty_no(void);
 static bool test_get_delimiters_non_empty_yes(void);
 
+static bool string_compare(const char *x, const char *y) {
+	return strcmp(x, y) < 0;
+}
+
 bool OTEST_StringList(void) {
 	emit_object("StringList");
 	emit_comment("This primitive class is used to contain and search arrays "
@@ -279,16 +273,6 @@ bool OTEST_StringList(void) {
 	driver.register_function(test_create_union_duplicates_some_ignore);
 	driver.register_function(test_create_union_empty_current);
 	driver.register_function(test_create_union_empty_subset);
-	driver.register_function(test_contains_list_return_false);
-	driver.register_function(test_contains_list_return_false_ignore);
-	driver.register_function(test_contains_list_return_false_almost);
-	driver.register_function(test_contains_list_return_false_reverse);
-	driver.register_function(test_contains_list_return_true_not);
-	driver.register_function(test_contains_list_return_true_consecutive);
-	driver.register_function(test_contains_list_return_true_not_ignore);
-	driver.register_function(test_contains_list_return_true_consecutive_ignore);
-	driver.register_function(test_contains_list_return_true_itself);
-	driver.register_function(test_contains_list_return_true_copy);
 	driver.register_function(test_contains_return_false);
 	driver.register_function(test_contains_return_false_substring);
 	driver.register_function(test_contains_return_false_case);
@@ -1102,244 +1086,6 @@ static bool test_create_union_empty_subset() {
 	PASS;
 }
 
-static bool test_contains_list_return_false() {
-	emit_test("Does contains_list() return false when the StringList doesn't "
-		"contain the given subset?");
-	StringList sl("a;b;c;d;e;f", ";");
-	StringList subset("g;h;i", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("FALSE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_false_ignore() {
-	emit_test("Does contains_list() return false when the StringList contains"
-		" the given subset when ignoring case, but anycase is false?");
-	StringList sl("a;b;c", ";");
-	StringList subset("A;B;C", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("FALSE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_false_almost() {
-	emit_test("Does contains_list() return false when the StringList contains"
-		" all but 1 string of the subset?");
-	StringList sl("a;b;c;d;e;f", ";");
-	StringList subset("a;c;e;g", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("FALSE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_false_reverse() {
-	emit_test("Does contains_list() return false when the StringList is a "
-		"subset of the subset?");
-	StringList sl("a;b;c", ";");
-	StringList subset("a;b;c;d;e;f", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("FALSE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_true_not() {
-	emit_test("Does contains_list() return true when the StringList does "
-		"contain the given subset?");
-	StringList sl("a;b;c;d;e;f", ";");
-	StringList subset("a;c;f", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_true_consecutive() {
-	emit_test("Does contains_list() return true when the StringList does "
-		"contain the given subset consecutively?");
-	StringList sl("a;b;c;d;e;f", ";");
-	StringList subset("a;b;c", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_true_not_ignore() {
-	emit_test("Does contains_list() return true when the StringList does "
-		"contain the given subset when ignoring case?");
-	StringList sl("a;b;c;D;E;F", ";");
-	StringList subset("a;C;d;F", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, true);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "TRUE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_true_consecutive_ignore() {
-	emit_test("Does contains_list() return true when the StringList does "
-		"contain the given subset consecutively when ignoring case?");
-	StringList sl("a;b;C;D;e;f", ";");
-	StringList subset("a;B;c;D", ";");
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, true);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "TRUE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
-static bool test_contains_list_return_true_itself() {
-	emit_test("Does contains_list() return true when passed the same "
-		"StringList called on?");
-	StringList sl("a;b;c;d;e;f", ";");
-	char* orig = sl.print_to_string();
-	bool retVal = sl.contains_list(sl, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", orig);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig);
-		FAIL;
-	}
-	free(orig);
-	PASS;
-}
-
-static bool test_contains_list_return_true_copy() {
-	emit_test("Does contains_list() return true when passed a StringList "
-		"copy?");
-	StringList sl("a;b;c;d;e;f", ";");
-	StringList subset(sl);
-	char* orig = sl.print_to_string();
-	char* check = subset.print_to_string();
-	bool retVal = sl.contains_list(subset, false);
-	emit_input_header();
-	emit_param("StringList", orig);
-	emit_param("SUBSET", check);
-	emit_param("ANYCASE", "FALSE");
-	emit_output_expected_header();
-	emit_retval("TRUE");
-	emit_output_actual_header();
-	emit_retval(tfstr(retVal));
-	if(!retVal) {
-		free(orig); free(check);
-		FAIL;
-	}
-	free(orig); free(check);
-	PASS;
-}
-
 static bool test_contains_return_false() {
 	emit_test("Does contains() return false when passed a string not in the "
 		"StringList?");
@@ -1982,7 +1728,7 @@ static bool test_remove_anycase_many() {
 }
 
 static bool test_prefix_return_false_invalid() {
-	emit_test("Does substring() return false when passed a string not in the "
+	emit_test("Does prefix() return false when passed a string not in the "
 		"StringList?");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -2004,7 +1750,7 @@ static bool test_prefix_return_false_invalid() {
 }
 
 static bool test_prefix_return_false_almost() {
-	emit_test("Does substring() return false when the StringList contains a "
+	emit_test("Does prefix() return false when the StringList contains a "
 		"string that is almost a substring of the string?");
 	StringList sl("abc;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -2026,7 +1772,7 @@ static bool test_prefix_return_false_almost() {
 }
 
 static bool test_prefix_return_false_reverse() {
-	emit_test("Does substring() return false when the passed string is a "
+	emit_test("Does prefix() return false when the passed string is a "
 		"substring of one of the StringList's strings?");
 	StringList sl("aah;boo;car", ";");
 	char* orig = sl.print_to_string();
@@ -2048,7 +1794,7 @@ static bool test_prefix_return_false_reverse() {
 }
 
 static bool test_prefix_return_false_case() {
-	emit_test("Does substring() return false when the StringList contains a "
+	emit_test("Does prefix() return false when the StringList contains a "
 		"string that is a substring of the string when ignoring case?");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -2112,7 +1858,7 @@ static bool test_prefix_withwildcard_return_false() {
 }
 
 static bool test_prefix_return_true_identical() {
-	emit_test("Does substring() return true when the passed string is in "
+	emit_test("Does prefix() return true when the passed string is in "
 		"the StringList?");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -2134,8 +1880,8 @@ static bool test_prefix_return_true_identical() {
 }
 
 static bool test_prefix_return_true_many() {
-	emit_test("Does substring() return true when the StringList contains "
-		"substrings of the string for multiple calls?");
+	emit_test("Does prefix() return true when the StringList contains "
+		"prefixes of the string for multiple calls?");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
 	const char* check1 = "car";
@@ -2161,7 +1907,7 @@ static bool test_prefix_return_true_many() {
 }
 
 static bool test_prefix_current_single() {
-	emit_test("Does substring() change current to point to the location of "
+	emit_test("Does prefix() change current to point to the location of "
 		"the single match?");
 	emit_comment("To test that current points to the correct string, "
 		"next() has to be called so a problem with that may cause this"
@@ -2188,7 +1934,7 @@ static bool test_prefix_current_single() {
 }
 
 static bool test_prefix_current_multiple() {
-	emit_test("Does substring() change current to point to the location of "
+	emit_test("Does prefix() change current to point to the location of "
 		"the first match when there are multiple matches?");	
 	emit_comment("To test that current points to the correct string, "
 		"deleteCurrent() has to be called so a problem with that may cause this"
@@ -4024,7 +3770,7 @@ static bool test_print_to_delimed_string_many_null() {
 
 static bool test_delete_current_before() {
 	emit_test("Does calling deleteCurrent() before any calls to contains() "
-		"or substring() delete the last string from the StringList?");
+		"or prefix() delete the last string from the StringList?");
 	emit_comment("Since the StringList constructor calls Append on its "
 		"internal list for each string to add, current points at the last "
 		"string added.");
@@ -4055,7 +3801,7 @@ static bool test_delete_current_after_no_match() {
 		"internal list for each string to add, current points at the last "
 		"string added.");
 	emit_comment("Testing deleteCurrent() requires calling contains*() or "
-		"substring() so a problem with one of these could cause problems "
+		"prefix() so a problem with one of these could cause problems "
 		"here.");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -4082,7 +3828,7 @@ static bool test_delete_current_one_first() {
 	emit_test("Test deleteCurrent() after calling contains() on the first "
 		"string in the StringList.");
 	emit_comment("Testing deleteCurrent() requires calling contains*() or "
-		"substring() so a problem with one of these could cause problems "
+		"prefix() so a problem with one of these could cause problems "
 		"here.");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -4109,7 +3855,7 @@ static bool test_delete_current_one_mid() {
 	emit_test("Test deleteCurrent() after calling contains() on a string in "
 		"the middle of the StringList.");
 	emit_comment("Testing deleteCurrent() requires calling contains*() or "
-		"substring() so a problem with one of these could cause problems "
+		"prefix() so a problem with one of these could cause problems "
 		"here.");
 	StringList sl("a;b;c;d;e", ";");
 	char* orig = sl.print_to_string();
@@ -4136,7 +3882,7 @@ static bool test_delete_current_one_last() {
 	emit_test("Test deleteCurrent() after calling contains() on the last "
 		" string in the StringList.");
 	emit_comment("Testing deleteCurrent() requires calling contains*() or "
-		"substring() so a problem with one of these could cause problems "
+		"prefix() so a problem with one of these could cause problems "
 		"here.");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -4163,7 +3909,7 @@ static bool test_delete_current_all() {
 	emit_test("Test calling deleteCurrent() on all the strings in the "
 		"StringList.");
 	emit_comment("Testing deleteCurrent() requires calling contains*() or "
-		"substring() so a problem with one of these could cause problems "
+		"prefix() so a problem with one of these could cause problems "
 		"here.");
 	StringList sl("a;b;c", ";");
 	char* orig = sl.print_to_string();
@@ -4200,7 +3946,7 @@ static bool test_string_compare_equal_same_beg() {
 	StringList sl("a;b;c", ";");
 	char* list = sl.print_to_string();
 	char** strs = string_compare_helper(&sl, 0);
-	int retVal = string_compare(strs, strs);
+	int retVal = string_compare(*strs, *strs);
 	emit_input_header();
 	emit_param("StringList", list);
 	emit_param("STRING", *strs);
@@ -4225,7 +3971,7 @@ static bool test_string_compare_equal_same_mid() {
 	StringList sl("a;b;c", ";");
 	char* list = sl.print_to_string();
 	char** strs = string_compare_helper(&sl, 1);
-	int retVal = string_compare(strs, strs);
+	int retVal = string_compare(*strs, *strs);
 	emit_input_header();
 	emit_param("StringList", list);
 	emit_param("STRING", *strs);
@@ -4250,7 +3996,7 @@ static bool test_string_compare_equal_same_end() {
 	StringList sl("a;b;c", ";");
 	char* list = sl.print_to_string();
 	char** strs = string_compare_helper(&sl, 2);
-	int retVal = string_compare(strs, strs);
+	int retVal = string_compare(*strs, *strs);
 	emit_input_header();
 	emit_param("StringList", list);
 	emit_param("STRING", *strs);
@@ -4278,7 +4024,7 @@ static bool test_string_compare_equal_different_list() {
 	char* list2 = sl2.print_to_string();
 	char** strs1 = string_compare_helper(&sl1,1);
 	char** strs2 = string_compare_helper(&sl2,1);
-	int retVal = string_compare(strs1, strs2);
+	int retVal = string_compare(*strs1, *strs2);
 	emit_input_header();
 	emit_param("StringList", list1);
 	emit_param("StringList", list2);
@@ -4308,7 +4054,7 @@ static bool test_string_compare_copy() {
 	char* list2  = sl2.print_to_string();
 	char** strs1 = string_compare_helper(&sl1,0);
 	char** strs2 = string_compare_helper(&sl2,0);
-	int retVal = string_compare(strs1, strs2);
+	int retVal = string_compare(*strs1, *strs2);
 	emit_input_header();
 	emit_param("StringList", list1);
 	emit_param("StringList", list2);
@@ -4337,7 +4083,7 @@ static bool test_string_compare_not_equal_same() {
 	char* list = sl.print_to_string();
 	char** strs1 = string_compare_helper(&sl, 0);
 	char** strs2 = string_compare_helper(&sl, 1);
-	int retVal = string_compare(strs1, strs2);
+	int retVal = string_compare(*strs1, *strs2);
 	emit_input_header();
 	emit_param("StringList", list);
 	emit_param("STRING", *strs1);
@@ -4365,7 +4111,7 @@ static bool test_string_compare_not_equal_different() {
 	char* list2  = sl2.print_to_string();
 	char** strs1 = string_compare_helper(&sl1,1);
 	char** strs2 = string_compare_helper(&sl2,0);
-	int retVal = string_compare(strs1, strs2);
+	int retVal = string_compare(*strs1, *strs2);
 	emit_input_header();
 	emit_param("StringList", list1);
 	emit_param("StringList", list2);

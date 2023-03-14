@@ -33,16 +33,16 @@ class SecMan;
 class KeyCacheEntry {
  public:
     KeyCacheEntry(
-			char const * id,
-			const condor_sockaddr* addr,
+			const std::string& id,
+			const std::string& addr,
 			const KeyInfo * key,
 			const ClassAd * policy,
 			int expiration,
 			int session_lease
 			);
     KeyCacheEntry(
-			char const * id,
-			const condor_sockaddr* addr,
+			const std::string& id,
+			const std::string& addr,
 			std::vector<KeyInfo *> key,
 			const ClassAd * policy,
 			int expiration,
@@ -53,8 +53,8 @@ class KeyCacheEntry {
 
 	const KeyCacheEntry& operator=(const KeyCacheEntry &kc);
 
-    char*                 id();
-	const condor_sockaddr*         addr();
+	const std::string&    id() const { return _id; }
+	const std::string&    addr() const { return _addr; }
     KeyInfo*              key();
     KeyInfo*              key(Protocol protocol);
     ClassAd*              policy();
@@ -64,6 +64,8 @@ class KeyCacheEntry {
 	void                  setLingerFlag(bool flag) { _lingering = flag; }
 	bool                  getLingerFlag() const { return _lingering; }
 	bool                  setPreferredProtocol(Protocol preferred);
+	void                  setLastPeerVersion(const std::string& version) { _last_peer_version = version; }
+	std::string           getLastPeerVersion() const { return _last_peer_version; }
 
 	void                  renewLease();
  private:
@@ -71,8 +73,8 @@ class KeyCacheEntry {
 	void delete_storage();
 	void copy_storage(const KeyCacheEntry &);
 
-    char *               _id;
-    condor_sockaddr*              _addr;
+	std::string           _id;
+	std::string           _addr;
 	std::vector<KeyInfo*> _keys;
     ClassAd*             _policy;
     int                  _expiration;
@@ -81,6 +83,7 @@ class KeyCacheEntry {
 	bool                 _lingering; // true if session only exists
 	                                 // to catch lingering communication
 	Protocol             _preferred_protocol;
+	std::string          _last_peer_version;
 };
 
 
@@ -101,23 +104,12 @@ public:
 	int  count();
 
 	StringList * getExpiredKeys();
-	StringList * getKeysForPeerAddress(char const *addr);
-	StringList * getKeysForProcess(char const *parent_unique_id,int pid);
 
 private:
 	void copy_storage(const KeyCache &kc);
 	void delete_storage();
 
-	typedef HashTable<std::string, SimpleList<KeyCacheEntry *>* > KeyCacheIndex;
-
 	HashTable<std::string, KeyCacheEntry*> *key_table;
-	KeyCacheIndex *m_index;
-
-	void addToIndex(KeyCacheEntry *);
-	void removeFromIndex(KeyCacheEntry *);
-	void addToIndex(KeyCacheIndex *,std::string const &index,KeyCacheEntry *);
-	void removeFromIndex(KeyCacheIndex *,std::string const &index,KeyCacheEntry *);
-	void makeServerUniqueId(std::string const &parent_id,int server_pid,std::string& result);
 };
 
 

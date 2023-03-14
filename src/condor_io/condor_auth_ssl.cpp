@@ -20,7 +20,6 @@
 
 #include "condor_common.h"
 
-#if defined(HAVE_EXT_OPENSSL)
 #define ouch(x) dprintf(D_SECURITY,"SSL Auth: %s",x)
 #include "authentication.h"
 #include "condor_auth_ssl.h"
@@ -32,6 +31,7 @@
 #include "condor_sinful.h"
 #include "condor_secman.h"
 #include "condor_scitokens.h"
+#include "ca_utils.h"
 
 #if defined(DLOPEN_SECURITY_LIBS)
 #include <dlfcn.h>
@@ -39,14 +39,28 @@
 #endif
 
 #include "condor_attributes.h"
+#include "secure_file.h"
+#include "subsystem_info.h"
 
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
+#ifdef WIN32
+#include <openssl/applink.c>
+#endif
 
 #include <algorithm>
 #include <sstream>
+#include <iomanip>
 #include <string.h>
+
+#include "condor_daemon_core.h"
+
+GCC_DIAG_OFF(float-equal)
+GCC_DIAG_OFF(cast-qual)
+#include "jwt-cpp/jwt.h"
+GCC_DIAG_ON(float-equal)
+GCC_DIAG_ON(cast-qual)
 
 namespace {
 
@@ -117,56 +131,67 @@ bool hostname_match(const char *match_pattern, const char *hostname)
     return !tok1 && !tok2;
 }
 
+int g_last_verify_error_index = -1;
+
 }
 
 // Symbols from libssl
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-static long (*SSL_CTX_ctrl_ptr)(SSL_CTX *, int, long, void *) = NULL;
+static decltype(&SSL_CTX_ctrl) SSL_CTX_ctrl_ptr = nullptr;
 #else
-static unsigned long (*SSL_CTX_set_options_ptr)(SSL_CTX *, unsigned long) = NULL;
+static decltype(&SSL_CTX_set_options) SSL_CTX_set_options_ptr = nullptr;
 #endif
-static int (*SSL_peek_ptr)(SSL *ssl, void *buf, int num) = NULL;
-static void (*SSL_CTX_free_ptr)(SSL_CTX *) = NULL;
-static int (*SSL_CTX_load_verify_locations_ptr)(SSL_CTX *, const char *, const char *) = NULL;
-#if OPENSSL_VERSION_NUMBER < 0x10000000L
-static SSL_CTX *(*SSL_CTX_new_ptr)(SSL_METHOD *) = NULL;
-#else
-static SSL_CTX *(*SSL_CTX_new_ptr)(const SSL_METHOD *) = NULL;
-#endif
-static int (*SSL_CTX_set_cipher_list_ptr)(SSL_CTX *, const char *) = NULL;
-static void (*SSL_CTX_set_verify_ptr)(SSL_CTX *, int, int (*)(int, X509_STORE_CTX *)) = NULL;
-static void (*SSL_CTX_set_verify_depth_ptr)(SSL_CTX *, int) = NULL;
-static int (*SSL_CTX_use_PrivateKey_file_ptr)(SSL_CTX *, const char *, int) = NULL;
-static int (*SSL_CTX_use_certificate_chain_file_ptr)(SSL_CTX *, const char *) = NULL;
-static int (*SSL_accept_ptr)(SSL *) = NULL;
-static int (*SSL_connect_ptr)(SSL *) = NULL;
-static void (*SSL_free_ptr)(SSL *) = NULL;
-static int (*SSL_get_error_ptr)(const SSL *, int) = NULL;
-static X509 *(*SSL_get_peer_certificate_ptr)(const SSL *) = NULL;
-static long (*SSL_get_verify_result_ptr)(const SSL *) = NULL;
+static decltype(&SSL_peek) SSL_peek_ptr = nullptr;
+static decltype(&SSL_CTX_free) SSL_CTX_free_ptr = nullptr;
+static decltype(&SSL_CTX_load_verify_locations) SSL_CTX_load_verify_locations_ptr = nullptr;
+static decltype(&SSL_CTX_new) SSL_CTX_new_ptr = nullptr;
+static decltype(&SSL_CTX_set_cipher_list) SSL_CTX_set_cipher_list_ptr = nullptr;
+static decltype(&SSL_CTX_set_verify) SSL_CTX_set_verify_ptr = nullptr;
+static decltype(&SSL_CTX_set_verify_depth) SSL_CTX_set_verify_depth_ptr = nullptr;
+static decltype(&SSL_CTX_use_PrivateKey_file) SSL_CTX_use_PrivateKey_file_ptr = nullptr;
+static decltype(&SSL_CTX_use_certificate_chain_file) SSL_CTX_use_certificate_chain_file_ptr = nullptr;
+static decltype(&SSL_accept) SSL_accept_ptr = nullptr;
+static decltype(&SSL_connect) SSL_connect_ptr = nullptr;
+static decltype(&SSL_free) SSL_free_ptr = nullptr;
+static decltype(&SSL_get_error) SSL_get_error_ptr = nullptr;
+static decltype(&SSL_get_peer_certificate) SSL_get_peer_certificate_ptr = nullptr;
+static decltype(&SSL_get_verify_result) SSL_get_verify_result_ptr = nullptr;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-static int (*SSL_library_init_ptr)() = NULL;
-static void (*SSL_load_error_strings_ptr)() = NULL;
+static decltype(&SSL_library_init) SSL_library_init_ptr = nullptr;
+static decltype(&SSL_load_error_strings) SSL_load_error_strings_ptr = nullptr;
 #else
-static int (*OPENSSL_init_ssl_ptr)(uint64_t, const OPENSSL_INIT_SETTINGS *) = NULL;
+static decltype(&OPENSSL_init_ssl) OPENSSL_init_ssl_ptr = nullptr;
 #endif
-static SSL *(*SSL_new_ptr)(SSL_CTX *) = NULL;
-static int (*SSL_read_ptr)(SSL *, void *, int) = NULL;
-static void (*SSL_set_bio_ptr)(SSL *, BIO *, BIO *) = NULL;
-static int (*SSL_write_ptr)(SSL *, const void *, int) = NULL;
-#if OPENSSL_VERSION_NUMBER < 0x10000000L
-static SSL_METHOD *(*SSL_method_ptr)() = NULL;
+static decltype(&SSL_new) SSL_new_ptr = nullptr;
+static decltype(&SSL_read) SSL_read_ptr = nullptr;
+static decltype(&SSL_set_bio) SSL_set_bio_ptr = nullptr;
+static decltype(&SSL_write) SSL_write_ptr = nullptr;
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+static decltype(&SSLv23_method) SSL_method_ptr = nullptr;
 #else
-static const SSL_METHOD *(*SSL_method_ptr)() = NULL;
+static decltype(&TLS_method) SSL_method_ptr = nullptr;
 #endif
-static char *(*ERR_error_string_ptr)(unsigned long, char *) = nullptr;
-static unsigned long (*ERR_get_error_ptr)(void) = nullptr;
-
+static decltype(&ERR_error_string) ERR_error_string_ptr = nullptr;
+static decltype(&ERR_get_error) ERR_get_error_ptr = nullptr;
+static decltype(&SSL_CTX_get_cert_store) SSL_CTX_get_cert_store_ptr = nullptr;
+static decltype(&PEM_read_X509) PEM_read_X509_ptr = nullptr;
+static decltype(&X509_STORE_add_cert) X509_STORE_add_cert_ptr = nullptr;
+static decltype(&SSL_get_current_cipher) SSL_get_current_cipher_ptr = nullptr;
+static decltype(&SSL_CIPHER_get_name) SSL_CIPHER_get_name_ptr = nullptr;
+static decltype(&X509_digest) X509_digest_ptr = nullptr;
+static decltype(&X509_free) X509_free_ptr = nullptr;
+static decltype(&X509_STORE_CTX_get_ex_data) X509_STORE_CTX_get_ex_data_ptr = nullptr;
+static decltype(&SSL_get_ex_data_X509_STORE_CTX_idx) SSL_get_ex_data_X509_STORE_CTX_idx_ptr = nullptr;
+static decltype(&SSL_get_ex_data) SSL_get_ex_data_ptr = nullptr;
+static decltype(&SSL_set_ex_data) SSL_set_ex_data_ptr = nullptr;
 
 bool Condor_Auth_SSL::m_initTried = false;
 bool Condor_Auth_SSL::m_initSuccess = false;
 bool Condor_Auth_SSL::m_should_search_for_cert = true;
 bool Condor_Auth_SSL::m_cert_avail = false;
+
+int Condor_Auth_SSL::m_pluginReaperId = -1;
+std::map<int, Condor_Auth_SSL*> Condor_Auth_SSL::m_pluginPidTable;
 
 Condor_Auth_SSL::AuthState::~AuthState() {
 	if (m_ctx) {(*SSL_CTX_free_ptr)(m_ctx); m_ctx = nullptr;}
@@ -179,8 +204,9 @@ Condor_Auth_SSL::AuthState::~AuthState() {
 }
 
 Condor_Auth_SSL :: Condor_Auth_SSL(ReliSock * sock, int /* remote */, bool scitokens_mode)
-    : Condor_Auth_Base    ( sock, CAUTH_SSL ),
-	m_scitokens_mode(scitokens_mode)
+    : Condor_Auth_Base    ( sock, scitokens_mode ? CAUTH_SCITOKENS : CAUTH_SSL ),
+	m_scitokens_mode(scitokens_mode),
+	m_pluginRC(0)
 {
 	m_crypto = NULL;
 	m_crypto_state = NULL;
@@ -196,6 +222,9 @@ Condor_Auth_SSL :: ~Condor_Auth_SSL()
 #endif
 	if(m_crypto) delete(m_crypto);
 	if(m_crypto_state) delete(m_crypto_state);
+	if (m_pluginState && m_pluginState->m_pid > 0) {
+		m_pluginPidTable[m_pluginState->m_pid] = nullptr;
+	}
 }
 
 bool Condor_Auth_SSL::Initialize()
@@ -215,45 +244,56 @@ bool Condor_Auth_SSL::Initialize()
 #endif
 		 (dl_hdl = dlopen(LIBSSL_SO, RTLD_LAZY)) == NULL ||
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-		 !(SSL_CTX_ctrl_ptr = (long (*)(SSL_CTX *, int, long, void *))dlsym(dl_hdl, "SSL_CTX_ctrl")) ||
+		 !(SSL_CTX_ctrl_ptr = reinterpret_cast<decltype(SSL_CTX_ctrl_ptr)>(dlsym(dl_hdl, "SSL_CTX_ctrl"))) ||
 #else
-		 !(SSL_CTX_set_options_ptr = (unsigned long (*)(SSL_CTX *, unsigned long))dlsym(dl_hdl, "SSL_CTX_set_options")) ||
+		 !(SSL_CTX_set_options_ptr = reinterpret_cast<decltype(SSL_CTX_set_options_ptr)>(dlsym(dl_hdl, "SSL_CTX_set_options"))) ||
 #endif
-		 !(SSL_peek_ptr = (int (*)(SSL *ssl, void *buf, int num))dlsym(dl_hdl, "SSL_peek")) ||
-		 !(SSL_CTX_free_ptr = (void (*)(SSL_CTX *))dlsym(dl_hdl, "SSL_CTX_free")) ||
-		 !(SSL_CTX_load_verify_locations_ptr = (int (*)(SSL_CTX *, const char *, const char *))dlsym(dl_hdl, "SSL_CTX_load_verify_locations")) ||
-#if OPENSSL_VERSION_NUMBER < 0x10000000L
-		 !(SSL_CTX_new_ptr = (SSL_CTX *(*)(SSL_METHOD *))dlsym(dl_hdl, "SSL_CTX_new")) ||
+		 !(SSL_peek_ptr = reinterpret_cast<decltype(SSL_peek_ptr)>(dlsym(dl_hdl, "SSL_peek"))) ||
+		 !(SSL_CTX_free_ptr = reinterpret_cast<decltype(SSL_CTX_free_ptr)>(dlsym(dl_hdl, "SSL_CTX_free"))) ||
+		 !(SSL_CTX_load_verify_locations_ptr = reinterpret_cast<decltype(SSL_CTX_load_verify_locations_ptr)>(dlsym(dl_hdl, "SSL_CTX_load_verify_locations"))) ||
+		 !(SSL_CTX_new_ptr = reinterpret_cast<decltype(SSL_CTX_new_ptr)>(dlsym(dl_hdl, "SSL_CTX_new"))) ||
+		 !(SSL_CTX_set_cipher_list_ptr = reinterpret_cast<decltype(SSL_CTX_set_cipher_list_ptr)>(dlsym(dl_hdl, "SSL_CTX_set_cipher_list"))) ||
+		 !(SSL_CTX_set_verify_ptr = reinterpret_cast<decltype(SSL_CTX_set_verify_ptr)>(dlsym(dl_hdl, "SSL_CTX_set_verify"))) ||
+		 !(SSL_CTX_set_verify_depth_ptr = reinterpret_cast<decltype(SSL_CTX_set_verify_depth_ptr)>(dlsym(dl_hdl, "SSL_CTX_set_verify_depth"))) ||
+		 !(SSL_CTX_use_PrivateKey_file_ptr = reinterpret_cast<decltype(SSL_CTX_use_PrivateKey_file_ptr)>(dlsym(dl_hdl, "SSL_CTX_use_PrivateKey_file"))) ||
+		 !(SSL_CTX_use_certificate_chain_file_ptr = reinterpret_cast<decltype(SSL_CTX_use_certificate_chain_file_ptr)>(dlsym(dl_hdl, "SSL_CTX_use_certificate_chain_file"))) ||
+		 !(SSL_accept_ptr = reinterpret_cast<decltype(SSL_accept_ptr)>(dlsym(dl_hdl, "SSL_accept"))) ||
+		 !(SSL_connect_ptr = reinterpret_cast<decltype(SSL_connect_ptr)>(dlsym(dl_hdl, "SSL_connect"))) ||
+		 !(SSL_free_ptr = reinterpret_cast<decltype(SSL_free_ptr)>(dlsym(dl_hdl, "SSL_free"))) ||
+		 !(SSL_get_error_ptr = reinterpret_cast<decltype(SSL_get_error_ptr)>(dlsym(dl_hdl, "SSL_get_error"))) ||
+#if OPENSSL_VERSION_NUMBER < 0x30000000L || defined(LIBRESSL_VERSION_NUMBER)
+		 !(SSL_get_peer_certificate_ptr = reinterpret_cast<decltype(SSL_get_peer_certificate_ptr)>(dlsym(dl_hdl, "SSL_get_peer_certificate"))) ||
 #else
-		 !(SSL_CTX_new_ptr = (SSL_CTX *(*)(const SSL_METHOD *))dlsym(dl_hdl, "SSL_CTX_new")) ||
+		 !(SSL_get_peer_certificate_ptr = reinterpret_cast<decltype(SSL_get_peer_certificate_ptr)>(dlsym(dl_hdl, "SSL_get1_peer_certificate"))) ||
 #endif
-		 !(SSL_CTX_set_cipher_list_ptr = (int (*)(SSL_CTX *, const char *))dlsym(dl_hdl, "SSL_CTX_set_cipher_list")) ||
-		 !(SSL_CTX_set_verify_ptr = (void (*)(SSL_CTX *, int, int (*)(int, X509_STORE_CTX *)))dlsym(dl_hdl, "SSL_CTX_set_verify")) ||
-		 !(SSL_CTX_set_verify_depth_ptr = (void (*)(SSL_CTX *, int))dlsym(dl_hdl, "SSL_CTX_set_verify_depth")) ||
-		 !(SSL_CTX_use_PrivateKey_file_ptr = (int (*)(SSL_CTX *, const char *, int))dlsym(dl_hdl, "SSL_CTX_use_PrivateKey_file")) ||
-		 !(SSL_CTX_use_certificate_chain_file_ptr = (int (*)(SSL_CTX *, const char *))dlsym(dl_hdl, "SSL_CTX_use_certificate_chain_file")) ||
-		 !(SSL_accept_ptr = (int (*)(SSL *))dlsym(dl_hdl, "SSL_accept")) ||
-		 !(SSL_connect_ptr = (int (*)(SSL *))dlsym(dl_hdl, "SSL_connect")) ||
-		 !(SSL_free_ptr = (void (*)(SSL *))dlsym(dl_hdl, "SSL_free")) ||
-		 !(SSL_get_error_ptr = (int (*)(const SSL *, int))dlsym(dl_hdl, "SSL_get_error")) ||
-		 !(SSL_get_peer_certificate_ptr = (X509 *(*)(const SSL *))dlsym(dl_hdl, "SSL_get_peer_certificate")) ||
-		 !(SSL_get_verify_result_ptr = (long (*)(const SSL *))dlsym(dl_hdl, "SSL_get_verify_result")) ||
+		 !(SSL_get_verify_result_ptr = reinterpret_cast<decltype(SSL_get_verify_result_ptr)>(dlsym(dl_hdl, "SSL_get_verify_result"))) ||
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-		 !(SSL_library_init_ptr = (int (*)())dlsym(dl_hdl, "SSL_library_init")) ||
-		 !(SSL_load_error_strings_ptr = (void (*)())dlsym(dl_hdl, "SSL_load_error_strings")) ||
+		 !(SSL_library_init_ptr = reinterpret_cast<decltype(SSL_library_init_ptr)>(dlsym(dl_hdl, "SSL_library_init"))) ||
+		 !(SSL_load_error_strings_ptr = reinterpret_cast<decltype(SSL_load_error_strings_ptr)>(dlsym(dl_hdl, "SSL_load_error_strings"))) ||
 #else
-		 !(OPENSSL_init_ssl_ptr = (int (*)(uint64_t, const OPENSSL_INIT_SETTINGS *))dlsym(dl_hdl, "OPENSSL_init_ssl")) ||
+		 !(OPENSSL_init_ssl_ptr = reinterpret_cast<decltype(OPENSSL_init_ssl_ptr)>(dlsym(dl_hdl, "OPENSSL_init_ssl"))) ||
 #endif
-		 !(SSL_new_ptr = (SSL *(*)(SSL_CTX *))dlsym(dl_hdl, "SSL_new")) ||
-		 !(SSL_read_ptr = (int (*)(SSL *, void *, int))dlsym(dl_hdl, "SSL_read")) ||
-		 !(SSL_set_bio_ptr = (void (*)(SSL *, BIO *, BIO *))dlsym(dl_hdl, "SSL_set_bio")) ||
-		 !(SSL_write_ptr = (int (*)(SSL *, const void *, int))dlsym(dl_hdl, "SSL_write")) ||
-		 !(ERR_error_string_ptr = (char *(*)(unsigned long, char *))dlsym(dl_hdl, "ERR_error_string")) ||
-		 !(ERR_get_error_ptr = (unsigned long (*)(void))dlsym(dl_hdl, "ERR_get_error")) ||
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-		 !(SSL_method_ptr = (const SSL_METHOD *(*)())dlsym(dl_hdl, "SSLv23_method"))
+		 !(SSL_new_ptr = reinterpret_cast<decltype(SSL_new_ptr)>(dlsym(dl_hdl, "SSL_new"))) ||
+		 !(SSL_read_ptr = reinterpret_cast<decltype(SSL_read_ptr)>(dlsym(dl_hdl, "SSL_read"))) ||
+		 !(SSL_set_bio_ptr = reinterpret_cast<decltype(SSL_set_bio_ptr)>(dlsym(dl_hdl, "SSL_set_bio"))) ||
+		 !(SSL_write_ptr = reinterpret_cast<decltype(SSL_write_ptr)>(dlsym(dl_hdl, "SSL_write"))) ||
+		 !(ERR_error_string_ptr = reinterpret_cast<decltype(ERR_error_string_ptr)>(dlsym(dl_hdl, "ERR_error_string"))) ||
+		 !(SSL_CTX_get_cert_store_ptr = reinterpret_cast<decltype(SSL_CTX_get_cert_store_ptr)>(dlsym(dl_hdl, "SSL_CTX_get_cert_store"))) ||
+		 !(PEM_read_X509_ptr = reinterpret_cast<decltype(PEM_read_X509_ptr)>(dlsym(dl_hdl, "PEM_read_X509"))) ||
+		 !(X509_STORE_add_cert_ptr = reinterpret_cast<decltype(X509_STORE_add_cert_ptr)>(dlsym(dl_hdl, "X509_STORE_add_cert"))) ||
+		 !(SSL_get_current_cipher_ptr = reinterpret_cast<decltype(SSL_get_current_cipher_ptr)>(dlsym(dl_hdl, "SSL_get_current_cipher"))) ||
+		 !(SSL_CIPHER_get_name_ptr = reinterpret_cast<decltype(SSL_CIPHER_get_name_ptr)>(dlsym(dl_hdl, "SSL_CIPHER_get_name"))) ||
+		 !(X509_free_ptr = reinterpret_cast<decltype(X509_free_ptr)>(dlsym(dl_hdl, "X509_free"))) ||
+		 !(X509_digest_ptr = reinterpret_cast<decltype(X509_digest_ptr)>(dlsym(dl_hdl, "X509_digest"))) ||
+		 !(X509_STORE_CTX_get_ex_data_ptr = reinterpret_cast<decltype(X509_STORE_CTX_get_ex_data_ptr)>(dlsym(dl_hdl, "X509_STORE_CTX_get_ex_data"))) ||
+		 !(SSL_get_ex_data_X509_STORE_CTX_idx_ptr = reinterpret_cast<decltype(SSL_get_ex_data_X509_STORE_CTX_idx_ptr)>(dlsym(dl_hdl, "SSL_get_ex_data_X509_STORE_CTX_idx"))) ||
+		 !(SSL_get_ex_data_ptr = reinterpret_cast<decltype(SSL_get_ex_data_ptr)>(dlsym(dl_hdl, "SSL_get_ex_data"))) ||
+		 !(SSL_set_ex_data_ptr = reinterpret_cast<decltype(SSL_set_ex_data_ptr)>(dlsym(dl_hdl, "SSL_set_ex_data"))) ||
+		 !(ERR_get_error_ptr = reinterpret_cast<decltype(ERR_get_error_ptr)>(dlsym(dl_hdl, "ERR_get_error"))) ||
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+		 !(SSL_method_ptr = reinterpret_cast<decltype(SSL_method_ptr)>(dlsym(dl_hdl, "SSLv23_method")))
 #else
-		 !(SSL_method_ptr = (const SSL_METHOD *(*)())dlsym(dl_hdl, "TLS_method"))
+		 !(SSL_method_ptr = reinterpret_cast<decltype(SSL_method_ptr)>(dlsym(dl_hdl, "TLS_method")))
 #endif
 		 ) {
 
@@ -308,6 +348,17 @@ bool Condor_Auth_SSL::Initialize()
 #else
 	SSL_method_ptr = TLS_method;
 #endif
+	SSL_CTX_get_cert_store_ptr = SSL_CTX_get_cert_store;
+	PEM_read_X509_ptr = PEM_read_X509;
+	X509_STORE_add_cert_ptr = X509_STORE_add_cert;
+	SSL_get_current_cipher_ptr = SSL_get_current_cipher;
+	SSL_CIPHER_get_name_ptr = SSL_CIPHER_get_name;
+	X509_free_ptr = X509_free;
+	X509_digest_ptr = X509_digest;
+	X509_STORE_CTX_get_ex_data_ptr = X509_STORE_CTX_get_ex_data;
+	SSL_get_ex_data_X509_STORE_CTX_idx_ptr = SSL_get_ex_data_X509_STORE_CTX_idx;
+	SSL_get_ex_data_ptr = SSL_get_ex_data;
+	SSL_set_ex_data_ptr = SSL_set_ex_data;
 
 	m_initSuccess = true;
 #endif
@@ -348,6 +399,7 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
 	}
 
     if( mySock_->isClient() ) {
+		m_host_alias = "";
         if( init_OpenSSL( ) != AUTH_SSL_A_OK ) {
             ouch( "Error initializing OpenSSL for authentication\n" );
             m_auth_state->m_client_status = AUTH_SSL_ERROR;
@@ -356,6 +408,19 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
             ouch( "Error initializing client security context\n" );
             m_auth_state->m_client_status = AUTH_SSL_ERROR;
         }
+
+		{
+			char const *connect_addr = mySock_->get_connect_addr();
+			if (connect_addr) {
+				Sinful s(connect_addr);
+				char const *alias = s.getAlias();
+				if (alias) {
+					dprintf(D_SECURITY|D_FULLDEBUG,"SSL client host check: using host alias %s for peer %s\n", alias,
+						mySock_->peer_ip_str());
+					m_host_alias = alias;
+				}
+			}
+		}
 
 		std::string scitoken;
 		if (m_scitokens_mode) {
@@ -394,13 +459,15 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
             ouch( "Error creating buffer for SSL authentication\n" );
             m_auth_state->m_client_status = AUTH_SSL_ERROR;
         }
-        if( !(m_auth_state->m_ssl = (*SSL_new_ptr)( m_auth_state->m_ctx )) ) {
+        if( !(m_auth_state->m_ssl = SSL_new_ptr( m_auth_state->m_ctx )) ) {
             ouch( "Error creating SSL context\n" );
             m_auth_state->m_client_status = AUTH_SSL_ERROR;
         } else {
-            (*SSL_set_bio_ptr)( m_auth_state->m_ssl, m_auth_state->m_conn_in,
+            SSL_set_bio_ptr( m_auth_state->m_ssl, m_auth_state->m_conn_in,
 				m_auth_state->m_conn_out );
         }
+		if (g_last_verify_error_index >= 0)
+			SSL_set_ex_data_ptr( m_auth_state->m_ssl, g_last_verify_error_index, &m_last_verify_error);
         m_auth_state->m_server_status = client_share_status( m_auth_state->m_client_status );
         if( m_auth_state->m_server_status != AUTH_SSL_A_OK ||
 		m_auth_state->m_client_status != AUTH_SSL_A_OK ) {
@@ -414,14 +481,14 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
         while( !m_auth_state->m_done ) {
             if( m_auth_state->m_client_status != AUTH_SSL_HOLDING ) {
                 ouch("Trying to connect.\n");
-                m_auth_state->m_ssl_status = (*SSL_connect_ptr)( m_auth_state->m_ssl );
+                m_auth_state->m_ssl_status = SSL_connect_ptr( m_auth_state->m_ssl );
                 dprintf(D_SECURITY, "Tried to connect: %d\n", m_auth_state->m_ssl_status);
             }
             if( m_auth_state->m_ssl_status < 1 ) {
                 m_auth_state->m_client_status = AUTH_SSL_QUITTING;
                 m_auth_state->m_done = 1;
                 //ouch( "Error performing SSL authentication\n" );
-                m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl, m_auth_state->m_ssl_status );
+                m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl, m_auth_state->m_ssl_status );
                 switch( m_auth_state->m_err ) {
                 case SSL_ERROR_ZERO_RETURN:
                     ouch("SSL: connection has been closed.\n");
@@ -447,7 +514,7 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
                     ouch("SSL: Syscall.\n" );
                     break;
                 case SSL_ERROR_SSL:
-                    dprintf(D_SECURITY, "SSL: library failure: %s\n", (*ERR_error_string_ptr)((*ERR_get_error_ptr)(), NULL));
+                    dprintf(D_SECURITY, "SSL: library failure: %s\n", ERR_error_string_ptr((*ERR_get_error_ptr)(), NULL));
                     break;
                 default:
                     ouch("SSL: unknown error?\n" );
@@ -489,6 +556,9 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
             }
         }
         dprintf(D_SECURITY,"Client trying post connection check.\n");
+        dprintf(D_SECURITY, "Cipher used: %s.\n",
+            SSL_CIPHER_get_name_ptr((*SSL_get_current_cipher_ptr)(m_auth_state->m_ssl)));
+
         if((m_auth_state->m_err = post_connection_check(
                 m_auth_state->m_ssl, AUTH_SSL_ROLE_CLIENT )) != X509_V_OK ) {
             ouch( "Error on check of peer certificate\n" );
@@ -534,11 +604,11 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
                 break;
             }
             if( m_auth_state->m_client_status != AUTH_SSL_HOLDING) {
-                m_auth_state->m_ssl_status = (*SSL_read_ptr)(m_auth_state->m_ssl, 
+                m_auth_state->m_ssl_status = SSL_read_ptr(m_auth_state->m_ssl, 
 									  m_auth_state->m_session_key, AUTH_SSL_SESSION_KEY_LEN);
             }
             if(m_auth_state->m_ssl_status < 1) {
-                m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl,
+                m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl,
 					m_auth_state->m_ssl_status);
                 switch( m_auth_state->m_err ) {
                 case SSL_ERROR_WANT_READ:
@@ -606,11 +676,11 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
 				}
 
 				if( m_auth_state->m_client_status != AUTH_SSL_HOLDING) {
-					m_auth_state->m_ssl_status = (*SSL_write_ptr)(m_auth_state->m_ssl,
+					m_auth_state->m_ssl_status = SSL_write_ptr(m_auth_state->m_ssl,
 						&network_bytes[0], sizeof(network_size) + scitoken.size());
 				}
 				if(m_auth_state->m_ssl_status < 1) {
-					m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl,
+					m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl,
 						m_auth_state->m_ssl_status);
 					switch( m_auth_state->m_err ) {
 						case SSL_ERROR_WANT_READ:
@@ -678,12 +748,12 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
             ouch( "Error creating buffer for SSL authentication\n" );
             m_auth_state->m_server_status = AUTH_SSL_ERROR;
         }
-        if (!(m_auth_state->m_ssl = (*SSL_new_ptr)(m_auth_state->m_ctx))) {
+        if (!(m_auth_state->m_ssl = SSL_new_ptr(m_auth_state->m_ctx))) {
             ouch("Error creating SSL context\n");
             m_auth_state->m_server_status = AUTH_SSL_ERROR;
         } else {
             // SSL_set_accept_state(ssl); // Do I really have to do this?
-            (*SSL_set_bio_ptr)(m_auth_state->m_ssl, m_auth_state->m_conn_in,
+            SSL_set_bio_ptr(m_auth_state->m_ssl, m_auth_state->m_conn_in,
 				m_auth_state->m_conn_out);
         }
 		if( send_status( m_auth_state->m_server_status ) == AUTH_SSL_ERROR ) {
@@ -725,13 +795,13 @@ Condor_Auth_SSL::authenticate_server_connect(CondorError *errstack, bool non_blo
         while( !m_auth_state->m_done ) {
             if( m_auth_state->m_server_status != AUTH_SSL_HOLDING ) {
                 ouch("Trying to accept.\n");
-                m_auth_state->m_ssl_status = (*SSL_accept_ptr)( m_auth_state->m_ssl );
+                m_auth_state->m_ssl_status = SSL_accept_ptr( m_auth_state->m_ssl );
                 dprintf(D_SECURITY, "Accept returned %d.\n", m_auth_state->m_ssl_status);
             }
             if( m_auth_state->m_ssl_status < 1 ) {
                 m_auth_state->m_server_status = AUTH_SSL_QUITTING;
                 m_auth_state->m_done = 1;
-                m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl,
+                m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl,
 					m_auth_state->m_ssl_status );
                 switch( m_auth_state->m_err ) {
                 case SSL_ERROR_ZERO_RETURN:
@@ -758,7 +828,7 @@ Condor_Auth_SSL::authenticate_server_connect(CondorError *errstack, bool non_blo
                     ouch("SSL: Syscall.\n" );
                     break;
                 case SSL_ERROR_SSL:
-                    dprintf(D_SECURITY, "SSL: library failure: %s\n", (*ERR_error_string_ptr)((*ERR_get_error_ptr)(), NULL));
+                    dprintf(D_SECURITY, "SSL: library failure: %s\n", ERR_error_string_ptr((*ERR_get_error_ptr)(), NULL));
                     break;
                 default:
                     ouch("SSL: unknown error?\n" );
@@ -855,11 +925,11 @@ Condor_Auth_SSL::authenticate_server_key(CondorError *errstack, bool non_blockin
                 break;
             }
             if( m_auth_state->m_server_status != AUTH_SSL_HOLDING ) {
-                m_auth_state->m_ssl_status = (*SSL_write_ptr)(m_auth_state->m_ssl, 
+                m_auth_state->m_ssl_status = SSL_write_ptr(m_auth_state->m_ssl, 
 									   m_auth_state->m_session_key, AUTH_SSL_SESSION_KEY_LEN);
             }
             if(m_auth_state->m_ssl_status < 1) {
-                m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl,
+                m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl,
 					m_auth_state->m_ssl_status);
                 switch( m_auth_state->m_err ) {
                 case SSL_ERROR_WANT_READ:
@@ -951,13 +1021,13 @@ Condor_Auth_SSL::authenticate_server_scitoken(CondorError *errstack, bool non_bl
 			}
 			if (m_auth_state->m_token_length >= 0) {
 				token_contents.resize(m_auth_state->m_token_length + sizeof(uint32_t), 0);
-				m_auth_state->m_ssl_status = (*SSL_read_ptr)(m_auth_state->m_ssl,
+				m_auth_state->m_ssl_status = SSL_read_ptr(m_auth_state->m_ssl,
 					static_cast<void*>(&token_contents[0]),
 					m_auth_state->m_token_length + sizeof(uint32_t));
 			}
 		}
 		if(m_auth_state->m_ssl_status < 1) {
-			m_auth_state->m_err = (*SSL_get_error_ptr)( m_auth_state->m_ssl,
+			m_auth_state->m_err = SSL_get_error_ptr( m_auth_state->m_ssl,
 				m_auth_state->m_ssl_status);
 			switch( m_auth_state->m_err ) {
 			case SSL_ERROR_WANT_READ:
@@ -992,19 +1062,24 @@ Condor_Auth_SSL::authenticate_server_scitoken(CondorError *errstack, bool non_bl
 			//
 			// We can't delay this info authentication_finish() because we
 			// need to be able to tell the client that the authN failed.
-			std::string canonical_user;
-			Authentication::load_map_file();
-			auto global_map_file = Authentication::getGlobalMapFile();
-			bool mapFailed = true;
-			if( global_map_file != NULL ) {
-				mapFailed = global_map_file->GetCanonicalization( "SCITOKENS", m_scitokens_auth_name, canonical_user );
-			}
-			if( mapFailed ) {
-				dprintf(D_SECURITY, "Failed to map SCITOKENS authenticated identity '%s', failing authentication to give another authentication method a go.\n", m_scitokens_auth_name.c_str() );
+			if (m_auth_state->m_server_status == AUTH_SSL_HOLDING) {
+				std::string canonical_user;
+				Authentication::load_map_file();
+				auto global_map_file = Authentication::getGlobalMapFile();
+				bool mapFailed = true;
+				bool pluginsDefined = param_defined("SEC_SCITOKENS_PLUGIN_NAMES");
+				if( global_map_file != NULL ) {
+					mapFailed = global_map_file->GetCanonicalization( "SCITOKENS", m_scitokens_auth_name, canonical_user );
+				}
+				if (!global_map_file && pluginsDefined) {
+					dprintf(D_SECURITY|D_VERBOSE, "No map file, but SCITOKENS plugins defined, assuming authorization will succeed\n");
+				} else if( mapFailed ) {
+					dprintf(D_ERROR, "Failed to map SCITOKENS authenticated identity '%s', failing authentication to give another authentication method a go.\n", m_scitokens_auth_name.c_str() );
 
-				m_auth_state->m_server_status = AUTH_SSL_QUITTING;
-			} else {
-				dprintf(D_SECURITY|D_VERBOSE, "Mapped SCITOKENS authenticated identity '%s' to %s, assuming authorization will succeed.\n", m_scitokens_auth_name.c_str(), canonical_user.c_str() );
+					m_auth_state->m_server_status = AUTH_SSL_QUITTING;
+				} else {
+					dprintf(D_SECURITY|D_VERBOSE, "Mapped SCITOKENS authenticated identity '%s' to %s, assuming authorization will succeed.\n", m_scitokens_auth_name.c_str(), canonical_user.c_str() );
+				}
 			}
 		}
 		if(m_auth_state->m_round_ctr % 2 == 1) {
@@ -1111,7 +1186,7 @@ Condor_Auth_SSL::authenticate_finish(CondorError * /*errstack*/, bool /*non_bloc
 		setRemoteUser("scitokens");
 		setAuthenticatedName( m_scitokens_auth_name.c_str() );
 	} else {
-		X509 *peer = (*SSL_get_peer_certificate_ptr)(m_auth_state->m_ssl);
+		X509 *peer = SSL_get_peer_certificate_ptr(m_auth_state->m_ssl);
 		if (peer) {
 			X509_NAME_oneline(X509_get_subject_name(peer), subjectname, 1024);
 			(*X509_free)(peer);
@@ -1285,12 +1360,12 @@ Condor_Auth_SSL::unwrap(const char *   input,
 int Condor_Auth_SSL :: init_OpenSSL(void)
 {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-    if (!(*SSL_library_init_ptr)()) {
+    if (!SSL_library_init_ptr()) {
         return AUTH_SSL_ERROR;
     }
-    (*SSL_load_error_strings_ptr)();
+    SSL_load_error_strings_ptr();
 #else
-    if (!(*OPENSSL_init_ssl_ptr)(OPENSSL_INIT_LOAD_SSL_STRINGS \
+    if (!OPENSSL_init_ssl_ptr(OPENSSL_INIT_LOAD_SSL_STRINGS \
                                | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL)) {
         return AUTH_SSL_ERROR;
     }
@@ -1298,6 +1373,31 @@ int Condor_Auth_SSL :: init_OpenSSL(void)
     // seed_pnrg(); TODO: 
     return AUTH_SSL_A_OK;
 }
+
+
+std::string get_x509_encoded(X509 *cert)
+{
+	std::unique_ptr<BIO, decltype(&BIO_free)> b64( BIO_new(BIO_f_base64()), &BIO_free);
+	BIO_set_flags(b64.get(), BIO_FLAGS_BASE64_NO_NL);
+	if (!b64.get()) {return "";}
+
+	decltype(b64) mem(BIO_new(BIO_s_mem()), &BIO_free);
+	if (!mem.get()) {return "";}
+	BIO_push(b64.get(), mem.get());
+
+	if (1 != i2d_X509_bio(b64.get(), cert)) {
+		dprintf(D_SECURITY, "Failed to base64 encode certificate.\n");
+		return "";
+	}
+	// Ensure that the final base64 block is written to underlying memory.
+	BIO_flush(b64.get());
+
+	char* dt;
+	auto len = BIO_get_mem_data(mem.get(), &dt);
+
+	return std::string(dt, len);
+}
+
 
 int verify_callback(int ok, X509_STORE_CTX *store)
 {
@@ -1312,8 +1412,83 @@ int verify_callback(int ok, X509_STORE_CTX *store)
         X509_NAME_oneline( X509_get_issuer_name( cert ), data, 256 );
         dprintf( D_SECURITY, "  issuer   = %s\n", data );
         X509_NAME_oneline( X509_get_subject_name( cert ), data, 256 );
+	std::string dn(data);
         dprintf( D_SECURITY, "  subject  = %s\n", data );
         dprintf( D_SECURITY, "  err %i:%s\n", err, X509_verify_cert_error_string( err ) );
+
+		const SSL* ssl = (const SSL*)X509_STORE_CTX_get_ex_data_ptr(store, (*SSL_get_ex_data_X509_STORE_CTX_idx_ptr)());
+		Condor_Auth_SSL::LastVerifyError *verify_ptr = (Condor_Auth_SSL::LastVerifyError *)(g_last_verify_error_index >= 0 ? SSL_get_ex_data_ptr(ssl, g_last_verify_error_index) : nullptr);
+		if (verify_ptr) verify_ptr->m_skip_error = 0;
+
+		if (verify_ptr && ((err == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) ||
+			(err == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN) ||
+			(err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY) ||
+			(err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT)))
+		{
+			bool is_permitted;
+			std::string method, method_info;
+			auto encoded_cert = get_x509_encoded(cert);
+			bool is_ca_cert = (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY) || (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT) ||
+				(err == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN);
+
+			auto host_alias = *(verify_ptr->m_host_alias);
+			if (!encoded_cert.empty() &&
+				htcondor::get_known_hosts_first_match(host_alias, is_permitted,
+					method, method_info))
+			{
+				if (is_permitted && method == "SSL")
+				{
+					if (method_info == encoded_cert) {
+						dprintf(D_SECURITY, "Skipping validation error as this is a known host.\n");
+						verify_ptr->m_skip_error = err;
+						verify_ptr->m_used_known_host = true;
+						return 1;
+					} else {
+						// We aren't going to accept this - there's an earlier entry for this host;
+						// however, we want to record that we saw it.
+						dprintf(D_SECURITY, "Recording the SSL certificate in the known_hosts file.\n");
+						htcondor::add_known_hosts(host_alias, false, "SSL", encoded_cert);
+					}
+				}
+			} else if (!encoded_cert.empty()) {
+				bool permitted = param_boolean("BOOTSTRAP_SSL_SERVER_TRUST", false);
+				dprintf(D_SECURITY, "Adding remote host as known host with trust set to %s"
+					".\n", permitted ? "on" : "off");
+				// Provide an opportunity for users to manually confirm the SSL fingerprint.
+				if (!permitted && (get_mySubSystem()->isType(SUBSYSTEM_TYPE_TOOL) ||
+					get_mySubSystem()->isType(SUBSYSTEM_TYPE_SUBMIT)) && isatty(0))
+				{
+					unsigned char md[EVP_MAX_MD_SIZE];
+					auto digest = EVP_get_digestbyname("sha256");
+					unsigned int len;
+					if (1 != X509_digest_ptr(cert, digest, md, &len)) {
+						dprintf(D_SECURITY, "Failed to create a digest of the provided X.509 certificate.\n");
+						return ok;
+					}
+					std::stringstream ss;
+					ss << std::hex << std::setw(2) << std::setfill('0');
+					bool first = true;
+					for (unsigned idx = 0; idx < len; idx++) {
+						if (!first) ss << ":";
+						ss << std::setw(2) << static_cast<int>(md[idx]);
+						first = false;
+					}
+					std::string fingerprint = ss.str();
+
+					permitted = htcondor::ask_cert_confirmation(host_alias, fingerprint, dn, is_ca_cert);
+				}
+				htcondor::add_known_hosts(host_alias, permitted, "SSL", encoded_cert);
+				std::string method;
+				if (permitted && htcondor::get_known_hosts_first_match(host_alias,
+					permitted, method, encoded_cert) && method == "SSL")
+				{
+					dprintf(D_ALWAYS, "Skipping validation error as this is a known host.\n");
+					verify_ptr->m_skip_error = err;
+					verify_ptr->m_used_known_host = true;
+					return 1;
+				}
+			}
+		}
     }
  
     return ok;
@@ -1513,8 +1688,8 @@ int Condor_Auth_SSL :: client_exchange_messages( int client_status, char *buf, B
 long Condor_Auth_SSL :: post_connection_check(SSL *ssl, int role )
 {
 	X509      *cert;
-	bool success = false;
 	std::string fqdn;
+	bool success = false;
 	ouch("post_connection_check.\n");
 
  
@@ -1526,7 +1701,7 @@ long Condor_Auth_SSL :: post_connection_check(SSL *ssl, int role )
      * require a client certificate.
      * (Comment from book.  -Ian)
      */
-	cert = (*SSL_get_peer_certificate_ptr)(ssl);
+	cert = SSL_get_peer_certificate_ptr(ssl);
 	if( cert == NULL ) {
 		if (mySock_->isClient()) {
 			dprintf(D_SECURITY,"SSL_get_peer_certificate returned null.\n" );
@@ -1553,7 +1728,8 @@ long Condor_Auth_SSL :: post_connection_check(SSL *ssl, int role )
 	if(role == AUTH_SSL_ROLE_SERVER) {
 		X509_free( cert );
 		ouch("Server role: returning from post connection check.\n");
-		return (*SSL_get_verify_result_ptr)( ssl );
+
+		return SSL_get_verify_result_ptr( ssl );
 	} // else ROLE_CLIENT: check dns (arg 2) against CN and the SAN
 
 	if (param_boolean("SSL_SKIP_HOST_CHECK", false)) {
@@ -1562,18 +1738,7 @@ long Condor_Auth_SSL :: post_connection_check(SSL *ssl, int role )
 	}
 
 	// Client must know what host it is trying to talk to in order for us to verify the SAN / CN.
-	{
-		char const *connect_addr = mySock_->get_connect_addr();
-		if (connect_addr) {
-			Sinful s(connect_addr);
-			char const *alias = s.getAlias();
-			if (alias) {
-				dprintf(D_SECURITY|D_FULLDEBUG,"SSL host check: using host alias %s for peer %s\n", alias,
-					mySock_->peer_ip_str());
-				fqdn = alias;
-			}
-		}
-	}
+	fqdn = m_host_alias;
 	if (fqdn.empty()) {
 		dprintf(D_SECURITY, "No SSL host name specified.\n");
 		goto err_occured;
@@ -1666,7 +1831,17 @@ success:
 		ouch("Server checks out; returning SSL_get_verify_result.\n");
     
 		X509_free(cert);
-		return (*SSL_get_verify_result_ptr)(ssl);
+
+		auto verify_result = SSL_get_verify_result_ptr( ssl );
+
+		if ((verify_result == X509_V_OK) && mySock_->isClient() && !m_host_alias.empty() &&
+			!m_last_verify_error.m_used_known_host)
+		{
+			htcondor::add_known_hosts(m_host_alias, true, "SSL", "@trusted");
+		}
+
+		if (m_last_verify_error.m_skip_error == verify_result) return X509_V_OK;
+		return verify_result;
 	}
 
 err_occured:
@@ -1684,6 +1859,13 @@ SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
     char *keyfile      = NULL;
     char *cipherlist   = NULL;
     bool i_need_cert   = is_server;
+    const char *cafile_preferred = nullptr;
+    std::string cafile_preferred_str;
+
+		// Ensure the verification state is reset.
+	m_last_verify_error.m_used_known_host = false;
+	m_last_verify_error.m_skip_error = -1;
+	m_last_verify_error.m_host_alias = &m_host_alias;
 
 		// Not sure where we want to get these things from but this
 		// will do for now.
@@ -1726,48 +1908,103 @@ SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
     if (!m_scitokens_file.empty())
 	dprintf( D_SECURITY, "SCITOKENSFILE:   '%s'\n", m_scitokens_file.c_str()   );
         
-    ctx = (*SSL_CTX_new_ptr)( (*SSL_method_ptr)(  ) );
+    ctx = SSL_CTX_new_ptr( (*SSL_method_ptr)(  ) );
 	if(!ctx) {
 		ouch( "Error creating new SSL context.\n");
 		goto setup_server_ctx_err;
 	}
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-	(*SSL_CTX_ctrl_ptr)( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_SSLv2, NULL );
-	(*SSL_CTX_ctrl_ptr)( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_SSLv3, NULL );
+	SSL_CTX_ctrl_ptr( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_SSLv2, NULL );
+	SSL_CTX_ctrl_ptr( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_SSLv3, NULL );
 #if OPENSSL_VERSION_NUMBER >= 0x10000000L
-	(*SSL_CTX_ctrl_ptr)( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_TLSv1, NULL );
-	(*SSL_CTX_ctrl_ptr)( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_TLSv1_1, NULL );
+	SSL_CTX_ctrl_ptr( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_TLSv1, NULL );
+	SSL_CTX_ctrl_ptr( ctx, SSL_CTRL_OPTIONS, SSL_OP_NO_TLSv1_1, NULL );
 #endif
 #else
-	(*SSL_CTX_set_options_ptr)( ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
+	SSL_CTX_set_options_ptr( ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 #endif
 
 	// Only load the verify locations if they are explicitly specified;
 	// otherwise, we will use the system default.
-    if( (cafile || cadir) && (*SSL_CTX_load_verify_locations_ptr)( ctx, cafile, cadir ) != 1 ) {
-        dprintf(D_SECURITY, "SSL Auth: Error loading CA file (%s) and/or directory (%s) \n",
-		 cafile, cadir);
+
+    if (cafile) {
+        StringList cafile_list(cafile, ",");
+        cafile_list.rewind();
+        char *ca;
+        while ((ca = cafile_list.next())) {
+            std::string ca_str(ca);
+            trim(ca_str);
+            int fd = open(ca_str.c_str(), O_RDONLY);
+            if (fd < 0) {
+                continue;
+            }
+            close(fd);
+            cafile_preferred_str = std::string(ca);
+            cafile_preferred = cafile_preferred_str.c_str();
+        }
+    }
+    if( (cafile_preferred || cadir) && SSL_CTX_load_verify_locations_ptr( ctx, cafile_preferred, cadir ) != 1 ) {
+        auto error_number = ERR_get_error();
+		auto error_string = error_number ? ERR_error_string(error_number, nullptr) : "Unknown error";
+        dprintf(D_SECURITY, "SSL Auth: Error loading CA file (%s) and/or directory (%s): %s \n",
+			cafile_preferred, cadir, error_string);
 	goto setup_server_ctx_err;
     }
     {
-        TemporaryPrivSentry sentry(PRIV_ROOT);
-        if( certfile && (*SSL_CTX_use_certificate_chain_file_ptr)( ctx, certfile ) != 1 ) {
-            ouch( "Error loading certificate from file\n" );
-            goto setup_server_ctx_err;
-        }
-        if( keyfile && (*SSL_CTX_use_PrivateKey_file_ptr)( ctx, keyfile, SSL_FILETYPE_PEM) != 1 ) {
-            ouch( "Error loading private key from file\n" );
-            goto setup_server_ctx_err;
+        StringList certfile_list(certfile ? certfile : "", ",");
+        certfile_list.rewind();
+        StringList keyfile_list(keyfile ? keyfile : "", ",");
+        keyfile_list.rewind();
+        char *cert, *key;
+        while ((cert = certfile_list.next()))
+        {
+            if ((key = keyfile_list.next()) == nullptr) {
+                break;
+            }
+            std::string cert_str(cert);
+            trim(cert_str);
+            std::string key_str(key);
+            trim(key_str);
+            TemporaryPrivSentry sentry(PRIV_ROOT);
+            int fd = open(cert_str.c_str(), O_RDONLY);
+            if (fd < 0) {
+                continue;
+            }
+            close(fd);
+            fd = open(key_str.c_str(), O_RDONLY);
+            if (fd < 0) {
+                continue;
+            }
+            close(fd);
+
+            if( SSL_CTX_use_certificate_chain_file_ptr( ctx, cert_str.c_str() ) != 1 ) {
+                ouch( "Error loading certificate from file\n" );
+                goto setup_server_ctx_err;
+            }
+            if( SSL_CTX_use_PrivateKey_file_ptr( ctx, key_str.c_str(), SSL_FILETYPE_PEM) != 1 ) {
+                ouch( "Error loading private key from file\n" );
+                goto setup_server_ctx_err;
+            }
         }
     }
-		// TODO where's this?
+	if (g_last_verify_error_index < 0)
+		g_last_verify_error_index = CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_SSL, 0, const_cast<char *>("last verify error"), nullptr, nullptr, nullptr);
+
     (*SSL_CTX_set_verify_ptr)( ctx, SSL_VERIFY_PEER, verify_callback ); 
-    (*SSL_CTX_set_verify_depth_ptr)( ctx, 4 ); // TODO arbitrary?
-    if((*SSL_CTX_set_cipher_list_ptr)( ctx, cipherlist ) != 1 ) {
+    SSL_CTX_set_verify_depth_ptr( ctx, 4 ); // TODO arbitrary?
+    if(SSL_CTX_set_cipher_list_ptr( ctx, cipherlist ) != 1 ) {
         ouch( "Error setting cipher list (no valid ciphers)\n" );
         goto setup_server_ctx_err;
     }
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+		// Enable the automatic ephemeral ECDH setup.
+		// This is automatic in OpenSSL 1.1.0+ and this value has been
+		// removed there.
+	SSL_CTX_ctrl_ptr( ctx, SSL_CTRL_SET_ECDH_AUTO, 1, NULL );
+#endif
+
     if(cafile)          free(cafile);
     if(cadir)           free(cadir);
     if(certfile)        free(certfile);
@@ -1780,7 +2017,7 @@ SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
     if(certfile)        free(certfile);
     if(keyfile)         free(keyfile);
     if(cipherlist)      free(cipherlist);
-	if(ctx)		        (*SSL_CTX_free_ptr)(ctx);
+	if(ctx)		        SSL_CTX_free_ptr(ctx);
     return NULL;
 }
 
@@ -1806,24 +2043,338 @@ Condor_Auth_SSL::should_try_auth()
 		return false;
 	}
 
-	{
+	StringList certfile_list(certfile, ",");
+	certfile_list.rewind();
+	StringList keyfile_list(keyfile, ",");
+	keyfile_list.rewind();
+	char *cert, *key;
+	std::string last_error;
+	while ((cert = certfile_list.next())) {
+		key = keyfile_list.next();
+		if (key == nullptr) {
+			last_error = formatstr(last_error, "No key to match the certificate %s", cert);
+			break;
+		}
+		std::string cert_str(cert);
+		std::string key_str(key);
 		TemporaryPrivSentry sentry(PRIV_ROOT);
-		int fd = open(certfile.c_str(), O_RDONLY);
+		int fd = open(cert_str.c_str(), O_RDONLY);
 		if (fd < 0) {
-			dprintf(D_SECURITY, "Not trying SSL auth because server certificate"
-				" (%s) is not readable by HTCondor: %s.\n", certfile.c_str(), strerror(errno));
-			return false;
+			formatstr(last_error, "Not trying SSL auth because server certificate"
+				" (%s) is not readable by HTCondor: %s.\n", cert_str.c_str(), strerror(errno));
+			continue;
 		}
 		close(fd);
-		fd = open(keyfile.c_str(), O_RDONLY);
+		fd = open(key_str.c_str(), O_RDONLY);
 		if (fd < 0) {
-			dprintf(D_SECURITY, "Not trying SSL auth because server key"
-				" (%s) is not readable by HTCondor: %s.\n", certfile.c_str(), strerror(errno));
-			return false;
+			formatstr(last_error, "Not trying SSL auth because server key"
+				" (%s) is not readable by HTCondor: %s.\n", key_str.c_str(), strerror(errno));
+			continue;
 		}
 		close(fd);
+		m_cert_avail = true;
+		return true;
 	}
-	m_cert_avail = true;
-	return true;
+	dprintf(D_SECURITY, "%s", last_error.c_str());
+	return false;
 }
-#endif
+
+int
+Condor_Auth_SSL::StartScitokensPlugins(const std::string& input, std::string& result, CondorError* errstack)
+{
+	// TODO JEF should some of these be treated as errors?
+	if (!m_scitokens_mode || m_client_scitoken.empty() || getRemoteUser() == nullptr) {
+		m_pluginResult.clear();
+		m_pluginRC = 1;
+		return 1;
+	}
+
+	ASSERT(daemonCore);
+
+	if (m_pluginReaperId == -1) {
+		m_pluginReaperId = daemonCore->Register_Reaper(
+				"Condor_Auth_SSL::PluginReaper()",
+				&Condor_Auth_SSL::PluginReaper,
+				"Condor_Auth_SSL::PluginReaper()");
+	}
+
+		// TODO Maybe be less harsh here?
+	ASSERT(!m_pluginState);
+	ASSERT(m_pluginRC != 2);
+
+	m_pluginResult.clear();
+	m_pluginErrstack.clear();
+	m_pluginState.reset(new PluginState);
+
+	if (input == "*") {
+		// Use all plugins named in SEC_SCITOKENS_PLUGIN_NAMES
+		std::string names;
+		if (!param(names, "SEC_SCITOKENS_PLUGIN_NAMES") || names.empty()) {
+			dprintf(D_ALWAYS, "SEC_SCITOKENS_PLUGIN_NAMES isn't defined\n");
+			m_pluginState.reset();
+			m_pluginRC = 1;
+			return 1;
+		}
+		StringTokenIterator toker(names);
+		const std::string* next;
+		while ((next = toker.next_string())) {
+			m_pluginState->m_names.push_back(*next);
+		}
+	} else {
+		// TODO compare names to SEC_SCITOKENS_PLUGIN_NAMES?
+		StringTokenIterator toker(input, 5, ",");
+		const std::string* next;
+		while ((next = toker.next_string())) {
+			m_pluginState->m_names.push_back(*next);
+		}
+	}
+
+	auto jwt = jwt::decode(m_client_scitoken);
+	m_pluginState->m_stdin = jwt.get_payload();
+
+		// Merge current environment?
+		// iterate over jwt
+		// set BEARER_TOKEN_* variables in environment
+	std::string token_value;
+	std::string env_name;
+	token_value = jwt.get_issuer();
+	m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_ISSUER", token_value);
+	if (jwt.has_subject()) {
+		token_value = jwt.get_subject();
+		m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_SUBJECT", token_value);
+	}
+	auto claims = jwt.get_payload_claims();
+	for (const auto &pair : claims) {
+		switch (pair.second.get_type()) {
+		case jwt::json::type::string:
+			if (pair.first == "iss") {
+				m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_ISSUER", pair.second.as_string());
+			} else if (pair.first == "sub") {
+				m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_SUBJECT", pair.second.as_string());
+			} else if (pair.first == "aud") {
+				m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_AUDIENCE", pair.second.as_string());
+			} else if (pair.first == "scope") {
+				// StringTokenIterator doesn't copy its input, so we need
+				// to ensure the value is valid throughout the iteration
+				// process.
+				std::string value = pair.second.as_string();
+				StringTokenIterator toker(value, 2, " ");
+				int idx = 0;
+				const std::string* next;
+				while ((next = toker.next_string())) {
+					formatstr(env_name, "BEARER_TOKEN_0_SCOPE_%d", idx);
+					m_pluginState->m_env.SetEnv(env_name, *next);
+					idx++;
+				}
+			}
+			formatstr(env_name, "BEARER_TOKEN_0_CLAIM_%s_0", pair.first.c_str());
+			m_pluginState->m_env.SetEnv(env_name, pair.second.as_string());
+			break;
+		case jwt::json::type::array: {
+			int idx = 0;
+			bool is_groups = (pair.first == "wlcg.groups");
+			const picojson::array& values = pair.second.as_array();
+			for (const auto& next : values) {
+				//if (next.get_type() != jwt::json::type::string) {
+				//	continue;
+				//}
+				const std::string& next_str = next.get<std::string>();
+				if (idx == 0 && pair.first == "aud") {
+					m_pluginState->m_env.SetEnv("BEARER_TOKEN_0_AUDIENCE", next_str.c_str());
+				}
+				if (is_groups) {
+					formatstr(env_name, "BEARER_TOKEN_0_GROUP_%d", idx);
+					m_pluginState->m_env.SetEnv(env_name, next_str);
+				}
+				formatstr(env_name, "BEARER_TOKEN_0_CLAIM_%s_%d", pair.first.c_str(), idx);
+				m_pluginState->m_env.SetEnv(env_name, next_str);
+				idx++;
+			}
+			break;
+		}
+		default:
+			// skip
+			break;
+		}
+	}
+
+	m_pluginRC = 2;
+
+	return ContinueScitokensPlugins(result, errstack);
+}
+
+int
+Condor_Auth_SSL::ContinueScitokensPlugins(std::string& result, CondorError* errstack)
+{
+	if (m_pluginRC != 2) {
+		result = m_pluginResult;
+		if (!m_pluginErrstack.empty()) {
+			// This assumes we only put one entry in our local CondorError
+			errstack->push(m_pluginErrstack.subsys(), m_pluginErrstack.code(), m_pluginErrstack.message());
+		}
+		return m_pluginRC;
+	}
+
+	std::string param_name;
+
+	if (m_pluginState->m_pid > 0 && m_pluginState->m_exitStatus >= 0) {
+		const char* plugin_name = m_pluginState->m_names[m_pluginState->m_idx].c_str();
+		m_pluginState->m_pid = -1;
+		dprintf(D_SECURITY|D_VERBOSE, "AUTHENTICATE: Plugin %s stdout:%s\n", plugin_name, m_pluginState->m_stdout.c_str());
+		dprintf(D_SECURITY|D_VERBOSE, "AUTHENTICATE: Plugin %s stderr:%s\n", plugin_name, m_pluginState->m_stderr.c_str());
+		if (WIFEXITED(m_pluginState->m_exitStatus) && WEXITSTATUS(m_pluginState->m_exitStatus) == 0) {
+			dprintf(D_SECURITY|D_VERBOSE, "AUTHENTICATE: Plugin %s matched, extracting result\n", plugin_name);
+			formatstr(param_name, "SEC_SCITOKENS_PLUGIN_%s_MAPPING", plugin_name);
+			if (param(m_pluginResult, param_name.c_str())) {
+				dprintf(D_SECURITY, "AUTHENTICATE: Mapped identity in config file for plugin %s: %s\n", plugin_name, m_pluginResult.c_str());
+			} else {
+				// look at plugin's output for identity
+				// TODO recognize richer output format?
+				StringTokenIterator toker(m_pluginState->m_stdout);
+				const std::string* first = toker.next_string();
+				if (first != nullptr) {
+					m_pluginResult = *first;
+					dprintf(D_SECURITY, "AUTHENTICATE: Mapped identity from plugin %s: %s\n", plugin_name, m_pluginResult.c_str());
+				} else {
+					dprintf(D_SECURITY, "AUTHENTICATE: Plugin %s didn't print mapped identity\n", plugin_name);
+					errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Plugin '%s' didn't print mapped identity", plugin_name);
+					// TODO Consider calling addl plugins
+					m_pluginRC = 0;
+					goto cleanup;
+				}
+			}
+
+			// TODO Consider restricted authz for exotic token types?
+
+			result = m_pluginResult;
+			m_pluginRC = 1;
+		} else if (WIFEXITED(m_pluginState->m_exitStatus) && WEXITSTATUS(m_pluginState->m_exitStatus) == 1) {
+			dprintf(D_SECURITY, "AUTHENTICATE: Plugin %s did not match\n", plugin_name);
+			// TODO any other cleanup?
+			m_pluginState->m_stdout.clear();
+			m_pluginState->m_stderr.clear();
+			m_pluginState->m_exitStatus = -1;
+			m_pluginState->m_idx++;
+		} else {
+			dprintf(D_SECURITY, "AUTHENTICATE: Plugin %s exited with unexpected status %d\n", plugin_name, m_pluginState->m_exitStatus);
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Plugin %s failed (bad exit status)", plugin_name);
+			// TODO consider addl plugins?
+			m_pluginRC = 0;
+		}
+	}
+
+	if (m_pluginRC == 2 && m_pluginState->m_pid < 0) {
+		if (m_pluginState->m_idx >= m_pluginState->m_names.size()) {
+			dprintf(D_SECURITY, "No plugins matched, returning empty mapping\n");
+			m_pluginRC = 1;
+		}
+	}
+
+		// TODO add timeout for plugin
+	if (m_pluginRC == 2 && m_pluginState->m_pid < 0) {
+		const char* plugin_name = m_pluginState->m_names[m_pluginState->m_idx].c_str();
+		dprintf(D_SECURITY|D_VERBOSE, "AUTHENTICATE: Trying plugin %s\n", plugin_name);
+		std::string cmdline;
+		formatstr(param_name, "SEC_SCITOKENS_PLUGIN_%s_COMMAND", plugin_name);
+		if (!param(cmdline, param_name.c_str())) {
+			dprintf(D_ALWAYS, "AUTHENTICATE: Plugin %s has no command configured\n", plugin_name);
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Plugin %s failed (no command param)", plugin_name);
+			m_pluginRC = 0;
+			goto cleanup;
+		}
+		ArgList args;
+		std::string errmsg;
+		if (!args.AppendArgsV2Raw(cmdline.c_str(), errmsg)) {
+			dprintf(D_ALWAYS, "AUTHENTICATE: Failed to parse command for plugin %s: %s\n", plugin_name, errmsg.c_str());
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Plugin %s failed (invalid command param)", plugin_name);
+			m_pluginRC = 0;
+			goto cleanup;
+		}
+
+		int std_fds[3] = {DC_STD_FD_PIPE, DC_STD_FD_PIPE, DC_STD_FD_PIPE};
+
+		// Tell DaemonCore to register the process family so we can
+		// safely kill everything from the reaper.
+		FamilyInfo fi;
+		fi.max_snapshot_interval = param_integer("PID_SNAPSHOT_INTERVAL", 15);
+
+		int pid = daemonCore->Create_Process(args.GetArg(0), args,
+					PRIV_CONDOR_FINAL, m_pluginReaperId, FALSE,
+					FALSE, &m_pluginState->m_env, nullptr, &fi, nullptr,
+					std_fds);
+		if (pid == 0) {
+			dprintf(D_ALWAYS, "AUTHENTICATE: Failed to spawn plugin %s.\n", plugin_name);
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Plugin %s failed (failed to spawn)", plugin_name);
+			m_pluginRC = 0;
+			goto cleanup;
+		}
+		m_pluginState->m_pid = pid;
+		daemonCore->Write_Stdin_Pipe(pid, m_pluginState->m_stdin.c_str(),
+		                             m_pluginState->m_stdin.length());
+
+		dprintf(D_SECURITY, "AUTHENTICATE: Spawned plugin %s, pid=%d\n", plugin_name, pid);
+		m_pluginPidTable[pid] = this;
+	}
+
+ cleanup:
+	if (m_pluginRC != 2) {
+		m_pluginState.reset();
+	}
+	return m_pluginRC;
+}
+
+void
+Condor_Auth_SSL::CancelScitokensPlugins()
+{
+	if (!m_pluginState || m_pluginState->m_pid == -1) {
+		return;
+	}
+
+	daemonCore->Kill_Family(m_pluginState->m_pid);
+
+	m_pluginPidTable[m_pluginState->m_pid] = nullptr;
+	m_pluginState.reset();
+	m_pluginRC = 0;
+}
+
+int
+Condor_Auth_SSL::PluginReaper(int exit_pid, int exit_status)
+{
+	dprintf(D_SECURITY, "SciTokens plugin pid %d exited with status %d\n",
+	        exit_pid, exit_status);
+
+	// First, make sure the plugin didn't leak any processes.
+	daemonCore->Kill_Family(exit_pid);
+
+	auto it = m_pluginPidTable.find(exit_pid);
+	if (it == m_pluginPidTable.end()) {
+			// no such pid
+		dprintf(D_ALWAYS, "SciTokens plugin pid %d not found in table!\n", exit_pid);
+		return TRUE;
+	}
+
+	if (it->second == nullptr) {
+		dprintf(D_SECURITY, "SciTokens auth object was previously deleted, ignoring plugin\n");
+	} else if (!it->second->m_pluginState) {
+		dprintf(D_SECURITY, "SciTokens auth object has no plugin state, ignoring plugin\n");
+	} else {
+		MyString *output;
+		std::string result;
+		output = daemonCore->Read_Std_Pipe(exit_pid, 1);
+		if (output) {
+			it->second->m_pluginState->m_stdout = *output;
+		}
+		output = daemonCore->Read_Std_Pipe(exit_pid, 2);
+		if (output) {
+			it->second->m_pluginState->m_stderr = *output;
+		}
+		it->second->m_pluginState->m_exitStatus = exit_status;
+		if (it->second->ContinueScitokensPlugins(result, &it->second->m_pluginErrstack) != 2) {
+			dprintf(D_SECURITY, "SciTokens plugins done, triggering socket callback\n");
+			daemonCore->CallSocketHandler(it->second->mySock_);
+		}
+	}
+
+	m_pluginPidTable.erase(it);
+	return TRUE;
+}

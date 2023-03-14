@@ -55,6 +55,10 @@
 #include <sys/prctl.h>
 #endif
 
+#if HAVE_BACKTRACE
+#include <execinfo.h>
+#endif
+
 #include "condor_auth_passwd.h"
 #include "condor_auth_ssl.h"
 #include "authentication.h"
@@ -112,9 +116,6 @@ int condor_main_argc;
 char **condor_main_argv;
 time_t daemon_stop_time;
 
-/* ODBC object */
-//extern ODBC *DBObj;
-
 #ifdef WIN32
 int line_where_service_stopped = 0;
 #endif
@@ -133,10 +134,6 @@ bool	DynamicDirs = false;
 // time it has left before it exits. This can be used by a job's requirements
 // so that it can decide if it should run at a particular machine or not. 
 int runfor = 0; //allow cmd line option to exit after *runfor* minutes
-
-// This flag tells daemoncore whether to do the authorization initialization.
-// It can be set to false by calling the DC_Skip_Auth_Init() function.
-static bool doAuthInit = true;
 
 // This flag tells daemoncore whether to do the core limit initialization.
 // It can be set to false by calling the DC_Skip_Core_Init() function.
@@ -687,7 +684,7 @@ check_parent( )
 		dprintf(D_ALWAYS,
 			"Our parent process (pid %d) went away; shutting down fast\n",
 			daemonCore->getppid());
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGQUIT ); // SIGQUIT means shutdown fast
+		daemonCore->Signal_Myself(SIGQUIT); // SIGQUIT means shutdown fast
 	}
 }
 #endif
@@ -863,7 +860,7 @@ DC_Exit( int status, const char *shutdown_program )
 	if ( shutdown_program ) {
 #     if !defined(WIN32)
 		dprintf( D_ALWAYS, "**** %s (%s_%s) pid %lu EXITING BY EXECING %s\n",
-				 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+				 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 				 shutdown_program );
 		priv_state p = set_root_priv( );
 		int exec_status = execl( shutdown_program, shutdown_program, NULL );
@@ -873,7 +870,7 @@ DC_Exit( int status, const char *shutdown_program )
 #     else
 		dprintf( D_ALWAYS,
 				 "**** %s (%s_%s) pid %lu EXECING SHUTDOWN PROGRAM %s\n",
-				 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+				 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 				 shutdown_program );
 		priv_state p = set_root_priv( );
 		int exec_status = execl( shutdown_program, shutdown_program, NULL );
@@ -885,19 +882,17 @@ DC_Exit( int status, const char *shutdown_program )
 #     endif
 	}
 	dprintf( D_ALWAYS, "**** %s (%s_%s) pid %lu EXITING WITH STATUS %d\n",
-			 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+			 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 			 exit_status );
+
+	// Disable log rotation during process teardown (i.e. calling
+	// destructors of global or static objects).
+	dprintf_allow_log_rotation(false);
 
 		// Finally, exit with the appropriate status.
 	exit( exit_status );
 }
 
-
-void
-DC_Skip_Auth_Init()
-{
-	doAuthInit = false;
-}
 
 void
 DC_Skip_Core_Init()
@@ -936,7 +931,7 @@ drop_addr_file()
 	prefix += get_mySubSystem()->getName();
 
 	// Fill in addrFile[0] and addr[0] with info about regular command port
-	sprintf( addr_file, "%s_ADDRESS_FILE", prefix.c_str() );
+	snprintf( addr_file, sizeof(addr_file), "%s_ADDRESS_FILE", prefix.c_str() );
 	if( addrFile[0] ) {
 		free( addrFile[0] );
 	}
@@ -949,7 +944,7 @@ drop_addr_file()
 	}
 
 	// Fill in addrFile[1] and addr[1] with info about superuser command port
-	sprintf( addr_file, "%s_SUPER_ADDRESS_FILE", prefix.c_str() );
+	snprintf( addr_file, sizeof(addr_file), "%s_SUPER_ADDRESS_FILE", prefix.c_str() );
 	if( addrFile[1] ) {
 		free( addrFile[1] );
 	}
@@ -1009,7 +1004,6 @@ do_kill()
 	FILE	*PID_FILE;
 	pid_t 	pid = 0;
 	unsigned long tmp_ul_int = 0;
-	char	*log, *tmp;
 
 	if( !pidFile ) {
 		fprintf( stderr, 
@@ -1017,13 +1011,12 @@ do_kill()
 		exit( 1 );
 	}
 	if( pidFile[0] != '/' ) {
-			// There's no absolute path, append the LOG directory
-		if( (log = param("LOG")) ) {
-			tmp = (char*)malloc( (strlen(log) + strlen(pidFile) + 2) * 
-								 sizeof(char) );
-			sprintf( tmp, "%s/%s", log, pidFile );
-			free( log );
-			pidFile = tmp;
+			// There's no absolute path, prepend the LOG directory
+		std::string log;
+		if (param(log, "LOG")) {
+			log += '/';
+			log += pidFile;
+			pidFile = strdup(log.c_str());
 		}
 	}
 	if( (PID_FILE = safe_fopen_wrapper_follow(pidFile, "r")) ) {
@@ -1112,20 +1105,15 @@ handle_log_append( char* append_str )
 	if( ! append_str ) {
 		return;
 	}
-	char *tmp1, *tmp2;
+	std::string fname;
 	char buf[100];
-	sprintf( buf, "%s_LOG", get_mySubSystem()->getName() );
-	if( !(tmp1 = param(buf)) ) { 
+	snprintf( buf, sizeof(buf), "%s_LOG", get_mySubSystem()->getName() );
+	if( !param(fname, buf) ) {
 		EXCEPT( "%s not defined!", buf );
 	}
-	tmp2 = (char*)malloc( (strlen(tmp1) + strlen(append_str) + 2)
-						  * sizeof(char) );
-	if( !tmp2 ) {	
-		EXCEPT( "Out of memory!" );
-	}
-	sprintf( tmp2, "%s.%s", tmp1, append_str );
-	config_insert( buf, tmp2 );
-	free( tmp1 );
+	fname += '.';
+	fname += append_str;
+	config_insert( buf, fname.c_str() );
 
 	if (get_mySubSystem()->getLocalName()) {
 		std::string fullParamName;
@@ -1134,9 +1122,8 @@ handle_log_append( char* append_str )
 		fullParamName.append(get_mySubSystem()->getName());
 		fullParamName.append("_LOG");
 
-		config_insert( fullParamName.c_str(), tmp2 );
+		config_insert( fullParamName.c_str(), fname.c_str() );
 	}
-	free( tmp2 );
 }
 
 
@@ -1198,9 +1185,7 @@ set_dynamic_dir( const char* param_name, const char* append_str )
 
 	// Finally, insert the _condor_<param_name> environment
 	// variable, so our children get the right configuration.
-	MyString env_str( "_" );
-	env_str += myDistro->Get();
-	env_str += "_";
+	MyString env_str( "_condor_" );
 	env_str += param_name;
 	env_str += "=";
 	env_str += newdir;
@@ -1236,7 +1221,7 @@ handle_dynamic_dirs()
 	int mypid = daemonCore->getpid();
 	char buf[256];
 	// TODO: Picking IPv4 arbitrarily.
-	sprintf( buf, "%s-%d", get_local_ipaddr(CP_IPV4).to_ip_string().c_str(), mypid );
+	snprintf( buf, sizeof(buf), "%s-%d", get_local_ipaddr(CP_IPV4).to_ip_string().c_str(), mypid );
 
 	dprintf(D_DAEMONCORE | D_VERBOSE, "Using dynamic directories with suffix: %s\n", buf);
 	set_dynamic_dir( "LOG", buf );
@@ -1247,9 +1232,9 @@ handle_dynamic_dirs()
 		// variable, so that the startd will have a unique name. 
 	std::string cur_startd_name;
 	if(param(cur_startd_name, "STARTD_NAME")) {
-		sprintf( buf, "_%s_STARTD_NAME=%d@%s", myDistro->Get(), mypid, cur_startd_name.c_str());
+		snprintf( buf, sizeof(buf), "_condor_STARTD_NAME=%d@%s", mypid, cur_startd_name.c_str());
 	} else {
-		sprintf( buf, "_%s_STARTD_NAME=%d", myDistro->Get(), mypid );
+		snprintf( buf, sizeof(buf), "_condor_STARTD_NAME=%d", mypid );
 	}
 
 		// insert modified startd name
@@ -1499,7 +1484,7 @@ handle_off_fast(int, Stream* stream)
 		return FALSE;
 	}
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGQUIT );
+		daemonCore->Signal_Myself(SIGQUIT);
 	}
 	return TRUE;
 }
@@ -1513,7 +1498,7 @@ handle_off_graceful(int, Stream* stream)
 		return FALSE;
 	}
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGTERM );
+		daemonCore->Signal_Myself(SIGTERM);
 	}
 	return TRUE;
 }
@@ -1540,7 +1525,7 @@ handle_off_force(int, Stream* stream)
 	if (daemonCore) {
 		daemonCore->SetPeacefulShutdown( false );
 		SigtermContinue::sigterm_should_continue();
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGTERM );
+		daemonCore->Signal_Myself(SIGTERM);
 	}
 	return TRUE;
 }
@@ -1557,7 +1542,7 @@ handle_off_peaceful(int, Stream* stream)
 	}
 	if (daemonCore) {
 		daemonCore->SetPeacefulShutdown(true);
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGTERM );
+		daemonCore->Signal_Myself(SIGTERM);
 	}
 	return TRUE;
 }
@@ -1748,12 +1733,8 @@ handle_fetch_log_history(ReliSock *stream, char *name) {
 
 	free(name);
 
-	int numHistoryFiles = 0;
-	const char **historyFiles = 0;
-
-	historyFiles = findHistoryFiles(history_file_param, &numHistoryFiles);
-
-	if (!historyFiles) {
+	std::string history_file;
+	if (!param(history_file, history_file_param)) {
 		dprintf( D_ALWAYS, "DaemonCore: handle_fetch_log_history: no parameter named %s\n", history_file_param);
 		if (!stream->code(result)) {
 				dprintf(D_ALWAYS,"DaemonCore: handle_fetch_log: and the remote side hung up\n");
@@ -1762,16 +1743,17 @@ handle_fetch_log_history(ReliSock *stream, char *name) {
 		return FALSE;
 	}
 
+	std::vector<std::string> historyFiles = findHistoryFiles(history_file.c_str());
+
 	result = DC_FETCH_LOG_RESULT_SUCCESS;
 	if (!stream->code(result)) {
 		dprintf(D_ALWAYS, "DaemonCore: handle_fetch_log_history: client hung up before we could send result back\n");
 	}
 
-	for (int f = 0; f < numHistoryFiles; f++) {
+	for (auto histFile : historyFiles) {
 		filesize_t size;
-		stream->put_file(&size, historyFiles[f]);
+		stream->put_file(&size, histFile.c_str());
 	}
-	freeHistoryFilesList(historyFiles);
 
 	stream->end_of_message();
 
@@ -2381,7 +2363,6 @@ handle_dc_approve_token_request(int, Stream* stream)
 		result_ad.InsertAttr(ATTR_ERROR_CODE, error_code);
 		result_ad.InsertAttr(ATTR_ERROR_STRING, error_string);
 	} else {
-#if defined(HAVE_EXT_OPENSSL)
 		auto &token_request = *(iter->second);
 		CondorError err;
 		std::string token;
@@ -2401,10 +2382,6 @@ handle_dc_approve_token_request(int, Stream* stream)
 			token_request.setToken(token);
 			result_ad.InsertAttr(ATTR_ERROR_CODE, 0);
 		}
-#else
-		result_ad.InsertAttr(ATTR_ERROR_STRING, "Support for tokens not available");
-		result_ad.InsertAttr(ATTR_ERROR_CODE, 3);
-#endif
 	}
 
 	if (!putClassAd(stream, result_ad) || !stream->end_of_message())
@@ -2708,7 +2685,6 @@ handle_dc_session_token(int, Stream* stream)
 	}
 	else
 	{
-#if defined(HAVE_EXT_OPENSSL)
 		std::string token;
 		if (!Condor_Auth_Passwd::generate_token(
 			auth_user,
@@ -2724,10 +2700,6 @@ handle_dc_session_token(int, Stream* stream)
 		} else {
 			result_ad.InsertAttr(ATTR_SEC_TOKEN, token);
 		}
-#else
-		result_ad.InsertAttr(ATTR_ERROR_STRING, "Not implemented");
-		result_ad.InsertAttr(ATTR_ERROR_CODE, 1);
-#endif
 	}
 
 	stream->encode();
@@ -2827,11 +2799,11 @@ handle_config_val(int idCmd, Stream* stream )
 		if (is_arg_colon_prefix(param_name, "?names", &pcolon, -1)) {
 			const char * restr = ".*";
 			if (pcolon) { restr = ++pcolon; }
-			Regex re; int err = 0; const char * pszMsg = 0;
+			Regex re; int errcode = 0, erroffset = 0;
 
-			if ( ! re.compile(restr, &pszMsg, &err, PCRE_CASELESS)) {
+			if ( ! re.compile(restr, &errcode, &erroffset, PCRE2_CASELESS)) {
 				dprintf( D_ALWAYS, "Can't compile regex for DC_CONFIG_VAL ?names query\n" );
-				MyString errmsg; errmsg.formatstr("!error:regex:%d: %s", err, pszMsg ? pszMsg : "");
+				MyString errmsg; errmsg.formatstr("!error:regex:%d: error code %d", erroffset, errcode);
 				if (!stream->code(errmsg)) {
 						dprintf( D_ALWAYS, "and remote side disconnected from use\n" );
 				}
@@ -3091,7 +3063,7 @@ void
 unix_sighup(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGHUP );
+		daemonCore->Signal_Myself(SIGHUP);
 	}
 }
 
@@ -3100,7 +3072,7 @@ void
 unix_sigterm(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGTERM );
+		daemonCore->Signal_Myself(SIGTERM);
 	}
 }
 
@@ -3109,7 +3081,7 @@ void
 unix_sigquit(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGQUIT );
+		daemonCore->Signal_Myself(SIGQUIT);
 	}
 }
 
@@ -3118,7 +3090,7 @@ void
 unix_sigchld(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGCHLD );
+		daemonCore->Signal_Myself(SIGCHLD);
 	}
 }
 
@@ -3127,7 +3099,7 @@ void
 unix_sigusr1(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGUSR1 );
+		daemonCore->Signal_Myself(SIGUSR1);
 	}
 	
 }
@@ -3136,7 +3108,7 @@ void
 unix_sigusr2(int)
 {
 	if (daemonCore) {
-		daemonCore->Send_Signal( daemonCore->getpid(), SIGUSR2 );
+		daemonCore->Signal_Myself(SIGUSR2);
 	}
 }
 
@@ -3255,16 +3227,16 @@ TimerHandler_main_shutdown_fast()
 int
 handle_dc_sigterm(int )
 {
+	const char * xful = daemonCore->GetPeacefulShutdown() ? "peaceful" : "graceful";
 		// Introduces a race condition.
 		// What if SIGTERM received while we are here?
 	if( !SigtermContinue::should_sigterm_continue() ) {
-		dprintf( D_FULLDEBUG, 
-				 "Got SIGTERM, but we've already done graceful shutdown.  Ignoring.\n" );
+		dprintf(D_STATUS, "Got SIGTERM, but we've already started %s shutdown.  Ignoring.\n", xful );
 		return TRUE;
 	}
 	SigtermContinue::sigterm_should_not_continue(); // After this
 
-	dprintf(D_ALWAYS, "Got SIGTERM. Performing graceful shutdown.\n");
+	dprintf(D_STATUS, "Got SIGTERM. Performing %s shutdown.\n", xful);
 
 #if defined(WIN32) && 0
 	if ( line_where_service_stopped != 0 ) {
@@ -3387,7 +3359,7 @@ int dc_main( int argc, char** argv )
 	int		command_port = -1;
 	char const *daemon_sock_name = NULL;
 	int		dcargs = 0;		// number of daemon core command-line args found
-	char	*ptmp, *ptmp1;
+	char	*ptmp;
 	int		i;
 	int		wantsKill = FALSE, wantsQuiet = FALSE;
 	bool	done;
@@ -3452,11 +3424,6 @@ int dc_main( int argc, char** argv )
 				// we don't have anything reliable, so forget it.  
 			myFullName = NULL;
 		}
-	}
-
-	myDistro->Init( argc, argv );
-	if ( EnvInit() < 0 ) {
-		exit( 1 );
 	}
 
 		// call out to the handler for pre daemonCore initialization
@@ -3539,13 +3506,7 @@ int dc_main( int argc, char** argv )
 				ptmp = *ptr;
 				dcargs += 2;
 
-				ptmp1 = 
-					(char *)malloc( strlen(ptmp) + myDistro->GetLen() + 10 );
-				if ( ptmp1 ) {
-					sprintf(ptmp1,"%s_CONFIG=%s", myDistro->GetUc(), ptmp);
-					SetEnv(ptmp1);
-					free(ptmp1);
-				}
+				SetEnv("CONDOR_CONFIG", ptmp);
 			} else {
 				fprintf( stderr, 
 						 "DaemonCore: ERROR: -config needs another argument.\n" );
@@ -3733,12 +3694,6 @@ int dc_main( int argc, char** argv )
 	if (wantsQuiet) { config_options |= CONFIG_OPT_WANT_QUIET; }
 	config_ex(config_options);
 
-
-    // call dc_config_GSI to set GSI related parameters so that all
-    // the daemons will know what to do.
-	if ( doAuthInit ) {
-		condor_auth_config( true );
-	}
 
 		// See if we're supposed to be allowing core files or not
 	if ( doCoreInit ) {
@@ -3948,7 +3903,7 @@ int dc_main( int argc, char** argv )
 		// configured now, so the dprintf()s will work.
 	dprintf(D_ALWAYS,"******************************************************\n");
 	dprintf(D_ALWAYS,"** %s (%s_%s) STARTING UP\n",
-			myName,myDistro->GetUc(), get_mySubSystem()->getName() );
+			myName, MY_CONDOR_NAME_UC, get_mySubSystem()->getName() );
 	if( myFullName ) {
 		dprintf( D_ALWAYS, "** %s\n", myFullName );
 		free( myFullName );
@@ -3991,7 +3946,7 @@ int dc_main( int argc, char** argv )
 		dprintf(D_ALWAYS, "Using config source: %s\n", 
 				global_config_source.c_str());
 	} else {
-		const char* env_name = EnvGetName( ENV_CONFIG );
+		const char* env_name = ENV_CONDOR_CONFIG;
 		char* env = getenv( env_name );
 		if( env ) {
 			dprintf(D_ALWAYS, 
@@ -4021,6 +3976,14 @@ int dc_main( int argc, char** argv )
 		// where it goes.  We also do some NT-specific stuff in here.
 	drop_core_in_log();
 
+#if defined(HAVE_BACKTRACE)
+	// On linux, the first call to backtrace() may trigger a dlopen() of
+	// libgcc, which includes a malloc(). This is not safe in a signal
+	// handler triggered by memory corruption, so call it here.
+	void* trace[10];
+	backtrace(trace, 10);
+#endif
+
 	// write dprintf's contribution to the daemon header.
 	dprintf_print_daemon_header();
 
@@ -4049,6 +4012,28 @@ int dc_main( int argc, char** argv )
 		 fcntl(daemonCore->async_pipe[1],F_SETFL,O_NONBLOCK) == -1 ) {
 			EXCEPT("Failed to create async pipe");
 	}
+#ifdef LINUX
+	// By default, Linux now allocates 16 4kbyte pages for each pipe,
+	// until the sum of all pages used for pipe buffers for a user hits
+	// /proc/sys/fs/pipe-user-pages-soft , which defaults to 16k.
+	// We create one of these pipes to forward signals
+	// for each daemon core process, which means that once 1,000 shadows
+	// are running for a user, Linux will switch to using one 4k page
+	// per pipe.  This particular pipe we just created to forward signals
+	// from a signal handler to the select loop doesn't need to be that
+	// big, especially as we just turned on non-blocking i/o above.
+	// Reduce the size of this pipe to one page, to save pages for
+	// other pipes which really need bigger buffers.
+
+	int defaultPipeSize = 0;
+	int smallPipeSize = 256; // probably will get rounded up to 4096
+
+	defaultPipeSize = fcntl(daemonCore->async_pipe[0], F_GETPIPE_SZ);
+	fcntl(daemonCore->async_pipe[0], F_SETPIPE_SZ, smallPipeSize);
+	smallPipeSize = fcntl(daemonCore->async_pipe[0], F_GETPIPE_SZ);
+	dprintf(D_FULLDEBUG, "Internal pipe for signals resized to %d from %d\n", smallPipeSize, defaultPipeSize);
+#endif
+
 #else
 	if ( daemonCore->async_pipe[1].connect_socketpair(daemonCore->async_pipe[0])==false )
 	{
@@ -4197,12 +4182,12 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_Command( DC_CONFIG_PERSIST, "DC_CONFIG_PERSIST",
 								  handle_config,
 								  "handle_config()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms);
+								  false, 0, &allow_perms);
 
 	daemonCore->Register_Command( DC_CONFIG_RUNTIME, "DC_CONFIG_RUNTIME",
 								  handle_config,
 								  "handle_config()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms);
+								  false, 0, &allow_perms);
 
 	daemonCore->Register_Command( DC_OFF_FAST, "DC_OFF_FAST",
 								  handle_off_fast,
@@ -4320,7 +4305,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_GET_SESSION_TOKEN, "DC_GET_SESSION_TOKEN",
 								handle_dc_session_token,
 								"handle_dc_session_token()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// Start a token request workflow.
@@ -4328,7 +4313,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_START_TOKEN_REQUEST, "DC_START_TOKEN_REQUEST",
 								handle_dc_start_token_request,
 								"handle_dc_start_token_request()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// Poll for token request completion.
@@ -4336,7 +4321,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_FINISH_TOKEN_REQUEST, "DC_FINISH_TOKEN_REQUEST",
 								handle_dc_finish_token_request,
 								"handle_dc_finish_token_request()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// List the outstanding token requests.
@@ -4346,7 +4331,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_LIST_TOKEN_REQUEST, "DC_LIST_TOKEN_REQUEST",
 		handle_dc_list_token_request,
-		"handle_dc_list_token_request", DAEMON, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_list_token_request", DAEMON, true, 0, &allow_perms );
 
 		//
 		// Approve a token request.
@@ -4357,7 +4342,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_APPROVE_TOKEN_REQUEST, "DC_APPROVE_TOKEN_REQUEST",
 		handle_dc_approve_token_request,
-		"handle_dc_approve_token_request", DAEMON, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_approve_token_request", DAEMON, true, 0, &allow_perms );
 
 		//
 		// Install an auto-approval rule
@@ -4371,7 +4356,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_EXCHANGE_SCITOKEN, "DC_EXCHANGE_SCITOKEN",
 		handle_dc_exchange_scitoken,
-		"handle_dc_exchange_scitoken", WRITE, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_exchange_scitoken", WRITE, true, 0, &allow_perms );
 
 	// Call daemonCore's reconfig(), which reads everything from
 	// the config file that daemonCore cares about and initializes
@@ -4380,7 +4365,7 @@ int dc_main( int argc, char** argv )
 
 	// zmiller
 	// look in the env for ENV_PARENT_ID
-	const char* envName = EnvGetName ( ENV_PARENT_ID );
+	const char* envName = ENV_CONDOR_PARENT_ID;
 	MyString parent_id;
 
 	GetEnv( envName, parent_id );

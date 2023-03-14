@@ -78,6 +78,7 @@ class ArcJob : public BaseJob
 	char *remoteJobId;
 	std::string remoteJobState;
 
+	std::string m_tokenFile;
 	Proxy *jobProxy;
 	ArcResource *myResource;
 	GahpClient *gahp;
@@ -94,7 +95,6 @@ class ArcJob : public BaseJob
 	StringList *stageLocalList;
 
 	bool buildJobADL();
-	bool buildSubmitRSL();
 	StringList *buildStageInList();
 	StringList *buildStageOutList();
 	StringList *buildStageOutLocalList( StringList *stage_list );

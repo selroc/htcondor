@@ -748,7 +748,7 @@ static bool test_xml() {
 	classad::ClassAdXMLUnParser unparser;
 	classad::ClassAdXMLParser parser;
 	ClassAd classad, *classadAfter;
-	MyString before, after;
+	std::string before, after;
 	std::string xml;
 	initAdFromString(classad_string, classad);
 	sPrintAd(before, classad);
@@ -763,8 +763,8 @@ static bool test_xml() {
 	emit_param("Before", classad_string);
 	emit_param("After", classad_string);
 	emit_output_actual_header();
-	emit_param("Before", before.Value());
-	emit_param("After", after.Value());
+	emit_param("Before", before.c_str());
+	emit_param("After", after.c_str());
 	if(!classad.SameAs(classadAfter)) {
 		delete classadAfter;
 		FAIL;
@@ -900,7 +900,7 @@ static bool test_lookup_expr_error_or_false() {
 	const char* attribute_name = "E";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -927,7 +927,7 @@ static bool test_lookup_expr_error_and() {
 	const char* attribute_name = "L";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -954,7 +954,7 @@ static bool test_lookup_expr_error_and_true() {
 	const char* attribute_name = "M";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -1394,12 +1394,13 @@ static bool test_expr_tree_to_string_big() {
 		"classad.");
 	emit_comment("The attribute name and string are not printed here due to "
 		"the large size of the strings.");
-	char* expect = (char *) malloc(25000 + 2 + 1);
+	size_t expect_sz = 25000 + 2 +1;
+	char* expect = (char *) malloc(expect_sz);
 	if ( ! expect) { FAIL; }
 	char* attribute_name, *expectString;
 	make_big_string(15000, &attribute_name, NULL);
 	make_big_string(25000, &expectString, NULL);
-	sprintf(expect, "\"%s\"", expectString);
+	snprintf(expect, expect_sz, "\"%s\"", expectString);
 	ClassAd classad;
 	classad.Assign(attribute_name, expectString);
 	ExprTree* expr = classad.LookupExpr(attribute_name);
@@ -2652,7 +2653,7 @@ static bool test_init_from_string_formattime() {
 	emit_output_expected_header();
 	emit_param("Classad != NULL", "TRUE");
 	emit_output_actual_header();
-	emit_param("Classad != NULL", tfstr(classad != NULL));
+	emit_param("Classad != NULL", "%s", tfstr(classad != NULL));
 	if(classad == NULL) {
 		delete classad;
 		FAIL;
@@ -3040,7 +3041,7 @@ static bool test_real_invalid() {
     const char* classad_string = "\tB=real(\"this is not a number\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0;
+	double actual = -1.0;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3063,7 +3064,7 @@ static bool test_real_false() {
     const char* classad_string = "\tB=real(false)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 0;
+	double actual = -1.0, expect = 0;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3088,7 +3089,7 @@ static bool test_real_true() {
     const char* classad_string = "\tB=real(true)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 1;
+	double actual = -1.0, expect = 1;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3114,7 +3115,7 @@ static bool test_real_float_negative_quotes() {
     const char* classad_string = "\tB=real(\"-3.4\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0f, expect = -3.4f;
+	double actual = -1.0f, expect = -3.4f;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3139,7 +3140,7 @@ static bool test_real_float_negative() {
     const char* classad_string = "\tB=real(-3.4)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0f, expect = -3.4f;
+	double actual = -1.0f, expect = -3.4f;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3164,7 +3165,7 @@ static bool test_real_float_positive() {
     const char* classad_string = "\tB=real(3.4)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0f, expect = 3.4f;
+	double actual = -1.0f, expect = 3.4f;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3189,7 +3190,7 @@ static bool test_real_int_positive() {
     const char* classad_string = "\tB=real(3)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 3;
+	double actual = -1.0, expect = 3;
 	int retVal = classad.LookupFloat("B", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3799,7 +3800,7 @@ static bool test_string_list_sum_empty() {
 	const char* classad_string = "\tA1=stringlistsum(\"\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 0.0;
+	double actual = -1.0, expect = 0.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -3851,7 +3852,7 @@ static bool test_string_list_sum_both() {
 	const char* classad_string = "\tA1=stringlistsum(\"1,2.0,3\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 6.0;
+	double actual = -1.0, expect = 6.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4008,7 +4009,7 @@ static bool test_string_list_min_both() {
 	const char* classad_string = "\tA1=stringlistmin(\"1,-2.0,3\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = -2.0;
+	double actual = -1.0, expect = -2.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4165,7 +4166,7 @@ static bool test_string_list_max_negatve() {
 	const char* classad_string = "\tA1=stringlistmax(\"1 , 4.5, -5\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 4.5;
+	double actual = -1.0, expect = 4.5;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4213,11 +4214,11 @@ static bool test_string_list_max_positive() {
 static bool test_string_list_max_both() {
 	emit_test("Test that LookupFloat() returns 1 and sets the correct actual "
 		"for an attribute using stringlistmax() on a StringList that contains "
-		"both integers and floats.");
+		"both integers and double.");
 	const char* classad_string = "\tA1=stringlistmax(\"1,-2.0,3.0\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 3.0;
+	double actual = -1.0, expect = 3.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4374,7 +4375,7 @@ static bool test_string_list_avg_default() {
 	const char* classad_string = "\tA1=stringlistavg(\"10, 20, 30, 40\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 25.0;
+	double actual = -1.0, expect = 25.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4399,7 +4400,7 @@ static bool test_string_list_avg_empty() {
 	const char* classad_string = "\tA1=stringlistavg(\"\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 0.0;
+	double actual = -1.0, expect = 0.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4425,7 +4426,7 @@ static bool test_string_list_avg_non_default() {
 	const char* classad_string = "\tA1=stringlistavg(\"1;2;3\",\";\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 2.0;
+	double actual = -1.0, expect = 2.0;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -4451,7 +4452,7 @@ static bool test_string_list_avg_both() {
 	const char* classad_string = "\tA1=stringlistavg(\"1,-2.0,3.0\")";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0f, expect = 0.666667f;
+	double actual = -1.0f, expect = 0.666667f;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -5146,7 +5147,7 @@ static bool test_random() {
 	const char* classad_string = "\tA1=random()";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 1;
+	double actual = -1.0, expect = 1;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -5171,7 +5172,7 @@ static bool test_random_float() {
 	const char* classad_string = "\tA1=random(3.5)";
 	ClassAd classad;
 	initAdFromString(classad_string, classad);
-	float actual = -1.0, expect = 3.5;
+	double actual = -1.0, expect = 3.5;
 	int retVal = classad.LookupFloat("A1", actual);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
@@ -6157,7 +6158,7 @@ static bool test_formattime_int() {
 	const char* expect = "03/24/07";
 	int retVal = classad.LookupString("A1", actual);
 	emit_input_header();
-	emit_param("ClassAd", classad_string);
+	emit_param("ClassAd", "%s", classad_string);
 	emit_param("Attribute", "A1");
 	emit_param("Target", "NULL");
 	emit_param("STRING", "");
@@ -7278,7 +7279,7 @@ static bool test_random_range() {
 
 static bool test_equality() {
 	emit_test("Test equality after parsing a classad string into an ExprTree "
-		"and MyString.");
+		"and std::string.");
 	const char* classad_string = "\tFoo = 3";
 	ExprTree *e1, *e2;
 	std::string n1, n2;
@@ -7288,10 +7289,10 @@ static bool test_equality() {
 	emit_param("STRING", classad_string);
 	emit_output_expected_header();
 	emit_param("ExprTree Equality", "TRUE");
-	emit_param("MyString Equality", "TRUE");
+	emit_param("std::string Equality", "TRUE");
 	emit_output_actual_header();
 	emit_param("ExprTree Equality", tfstr((*e1) == (*e2)));
-	emit_param("MyString Equality", tfstr(n1 == n2));
+	emit_param("std::string Equality", tfstr(n1 == n2));
 	emit_param("n1", n1.c_str());
 	emit_param("n2", n2.c_str());
 	if(!((*e1) == (*e2)) || !(n1 == n2)) {
@@ -7304,7 +7305,7 @@ static bool test_equality() {
 
 static bool test_inequality() {
 	emit_test("Test inequality after parsing a classad string into an "
-		"ExprTree and MyString.");
+		"ExprTree and std::string.");
 	const char* classad_string1  = "Foo = 3";
 	const char* classad_string2  = "Bar = 5";
 	ExprTree *e1, *e2;
@@ -7316,10 +7317,10 @@ static bool test_inequality() {
 	emit_param("STRING 2", classad_string2);
 	emit_output_expected_header();
 	emit_param("ExprTree Inequality", "TRUE");
-	emit_param("MyString Inequality", "TRUE");
+	emit_param("std::string Inequality", "TRUE");
 	emit_output_actual_header();
 	emit_param("ExprTree Inequality", tfstr(!((*e1) == (*e2))));
-	emit_param("MyString Inequality", tfstr(!(n1 == n2)));
+	emit_param("std::string Inequality", tfstr(!(n1 == n2)));
 	if(((*e1) == (*e2)) || (n1 == n2)) {
 		delete e1; delete e2;
 		FAIL;
@@ -7915,6 +7916,11 @@ static bool test_nested_ads()
 	}
 	ad.Insert( "C", tree );
 
+	if ( !parser.ParseExpression( "B[0][\"ZZZ\"]", tree ) ) {
+		FAIL;
+	}
+	ad.Insert( "D", tree );
+
 	std::string str;
 	unparser.Unparse( str, &ad );
 	emit_input_header();
@@ -7922,6 +7928,7 @@ static bool test_nested_ads()
 	emit_output_expected_header();
 	emit_param("A =", "4");
 	emit_param("C =", "4");
+	emit_param("D =", "undefined");
 	
 	int result;
 	if ( !ad.EvaluateAttrInt( "A", result ) || result != 4 ) {
@@ -7932,6 +7939,12 @@ static bool test_nested_ads()
 		FAIL;
 	}
 	
+	classad::Value val;
+	EvalExprToScalar(tree, &ad, NULL, val);
+	if (val.GetType() != classad::Value::UNDEFINED_VALUE) {
+		FAIL;
+	}
+
 	PASS;
 }
 

@@ -21,7 +21,6 @@
 #include "condor_common.h"
 #include "CondorError.h"
 
-#if defined(HAVE_EXT_OPENSSL)
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/hmac.h>
@@ -40,7 +39,7 @@
 #include "classad/source.h"
 #include "condor_attributes.h"
 #include "condor_base64.h"
-#include "Regex.h"
+#include "condor_regex.h"
 #include "directory.h"
 #include "subsystem_info.h"
 #include "secure_file.h"
@@ -220,8 +219,7 @@ findTokens(const std::string &issuer,
 	}
 	dprintf(D_FULLDEBUG, "Looking for tokens in directory %s for issuer %s\n", dirpath.c_str(), issuer.c_str());
 
-	const char* _errstr;
-	int _erroffset;
+	int _errcode, _erroffset;
 	std::string excludeRegex;
 		// We simply fail invalid regex as the config subsys should have EXCEPT'd
 		// in this case.
@@ -230,11 +228,11 @@ findTokens(const std::string &issuer,
 		return false;
 	}
 	Regex excludeFilesRegex;
-	if (!excludeFilesRegex.compile(excludeRegex, &_errstr, &_erroffset)) {
+	if (!excludeFilesRegex.compile(excludeRegex, &_errcode, &_erroffset)) {
 		dprintf(D_FULLDEBUG, "LOCAL_CONFIG_DIR_EXCLUDE_REGEXP "
 			"config parameter is not a valid "
-			"regular expression.  Value: %s,  Error: %s",
-			excludeRegex.c_str(), _errstr ? _errstr : "");
+			"regular expression.  Value: %s,  Error Code: %d",
+			excludeRegex.c_str(), _errcode);
 		return false;
 	}
 	if(!excludeFilesRegex.isInitialized() ) {
@@ -523,7 +521,6 @@ Condor_Auth_Passwd::fetchLogin()
 			// Check to see if we have access to the master key and generate a token accordingly.
 			std::string issuer;
 			param(issuer, "TRUST_DOMAIN");
-			issuer = issuer.substr(0, issuer.find_first_of(", \t"));
 			if (m_server_issuer == issuer && !m_server_keys.empty()) {
 				CondorError err;
 				std::string match_key;
@@ -898,15 +895,16 @@ Condor_Auth_Passwd::setup_shared_keys(struct sk_buf *sk, const std::string &init
 			}
 
 			const std::string& algo = jwt.get_algorithm();
+			std::error_code ec;
 			if (algo == "HS256") {
 				auto signer = jwt::algorithm::hs256{jwt_key_str};
-				signature = signer.sign(init_text);
+				signature = signer.sign(init_text, ec);
 			} else if (algo == "HS384") {
 				auto signer = jwt::algorithm::hs384{jwt_key_str};
-				signature = signer.sign(init_text);
+				signature = signer.sign(init_text, ec);
 			} else if (algo == "HS512") {
 				auto signer = jwt::algorithm::hs512{jwt_key_str};
-				signature = signer.sign(init_text);
+				signature = signer.sign(init_text, ec);
 			}
 		} catch (...) {
 			dprintf(D_SECURITY, "Failed to deserialize JWT.\n");
@@ -944,7 +942,7 @@ Condor_Auth_Passwd::setup_shared_keys(struct sk_buf *sk, const std::string &init
 
 
 bool
-Condor_Auth_Passwd::isTokenRevoked(const jwt::decoded_jwt &jwt)
+Condor_Auth_Passwd::isTokenRevoked(const jwt::decoded_jwt<jwt::traits::kazuho_picojson> &jwt)
 {
 	if (!m_token_revocation_expr) {
 		return false;
@@ -955,24 +953,24 @@ Condor_Auth_Passwd::isTokenRevoked(const jwt::decoded_jwt &jwt)
 		bool inserted = true;
 		const auto &claim = pair.second;
 		switch (claim.get_type()) {
-		case jwt::claim::type::null:
-			inserted = ad.InsertLiteral(pair.first, classad::Literal::MakeUndefined());
-			break;
-		case jwt::claim::type::boolean:
+		//case jwt::json::type::null:
+		//	inserted = ad.InsertLiteral(pair.first, classad::Literal::MakeUndefined());
+		//	break;
+		case jwt::json::type::boolean:
 			inserted = ad.InsertAttr(pair.first, pair.second.as_bool());
 			break;
-		case jwt::claim::type::int64:
+		case jwt::json::type::integer:
 			inserted = ad.InsertAttr(pair.first, pair.second.as_int());
 			break;
-		case jwt::claim::type::number:
+		case jwt::json::type::number:
 			inserted = ad.InsertAttr(pair.first, pair.second.as_number());
 			break;
-		case jwt::claim::type::string:
+		case jwt::json::type::string:
 			inserted = ad.InsertAttr(pair.first, pair.second.as_string());
 			break;
 		// TODO: these are not currently supported
-		case jwt::claim::type::array: // fallthrough
-		case jwt::claim::type::object: // fallthrough
+		case jwt::json::type::array: // fallthrough
+		case jwt::json::type::object: // fallthrough
 		default:
 			break;
 		}
@@ -1536,16 +1534,13 @@ Condor_Auth_Passwd::hkdf(const unsigned char *sk, size_t sk_len,
 #ifdef EVP_PKEY_HKDF
 	// I had to fix two simple syntax errors in this code before
 	// it would build.  I rather suspect it's never been tested.
-	// Also had to insert four const_cast<>s, which is worrisome.
-	// The last three may have been correctable by changing the
-	// argument types, but we can worry about that later.
 	// See ticket #6962.
 	EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
 	if (EVP_PKEY_derive_init(pctx) <= 0) {goto fail;}
-	if (EVP_PKEY_CTX_set_hkdf_md(pctx, const_cast<void *>((const void *)EVP_sha256())) <= 0) {goto fail;}
-	if (EVP_PKEY_CTX_set1_hkdf_salt(pctx, const_cast<void *>((const void *)salt), salt_len) <= 0) {goto fail;}
-	if (EVP_PKEY_CTX_set1_hkdf_key(pctx, const_cast<void *>((const void *)sk), sk_len) <= 0) {goto fail;}
-	if (EVP_PKEY_CTX_add1_hkdf_info(pctx, const_cast<void *>((const void *)info), info_len) <= 0) {goto fail;}
+	if (EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256()) <= 0) {goto fail;}
+	if (EVP_PKEY_CTX_set1_hkdf_salt(pctx, salt, salt_len) <= 0) {goto fail;}
+	if (EVP_PKEY_CTX_set1_hkdf_key(pctx, sk, sk_len) <= 0) {goto fail;}
+	if (EVP_PKEY_CTX_add1_hkdf_info(pctx, info, info_len) <= 0) {goto fail;}
 	if (EVP_PKEY_derive(pctx, result, &result_len) <= 0) {goto fail;}
 	EVP_PKEY_CTX_free(pctx);
 	return 0;
@@ -1603,7 +1598,10 @@ Condor_Auth_Passwd::generate_token(const std::string & id,
 		if (err) err->push("PASSWD", 1, "Issuer namespace is not set");
 		return false;
 	}
-	issuer = issuer.substr(0, issuer.find_first_of(", \t"));
+	if (issuer.find_first_of(", \t") != std::string::npos) {
+		if (err) err->push("PASSWD", 1, "Issuer namespace may not contain spaces or commas");
+		return false;
+	}
 
 	std::string jwt_key_str(reinterpret_cast<const char *>(jwt_key.data()), key_strength_bytes_v2());
 	auto jwt_builder = jwt::create()
@@ -1619,7 +1617,7 @@ Condor_Auth_Passwd::generate_token(const std::string & id,
 			ss << authz_full << " ";
 		}
 		const std::string &authz_set = ss.str();
-		jwt_builder.set_payload_claim("scope", authz_set.substr(0, authz_set.size()-1));
+		jwt_builder.set_payload_claim("scope", jwt::claim(authz_set.substr(0, authz_set.size()-1)));
 	}
 	if (lifetime >= 0) {
 		jwt_builder.set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds(lifetime));
@@ -3028,5 +3026,3 @@ Condor_Auth_Passwd::set_remote_keys(const std::vector<std::string> &keys) {
 		m_server_keys.insert(key);
 	}
 }
-
-#endif	// of if defined(HAVE_EXT_OPENSSL)

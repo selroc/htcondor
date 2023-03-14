@@ -136,8 +136,8 @@ WriteEventLog( const char *event_log, int &num_events )
 
 	SubmitEvent submit;
 	submit.setSubmitHost("<127.0.0.1:1234>");
-	submit.submitEventLogNotes = dupstr("Log info");
-	submit.submitEventUserNotes = dupstr("User info");
+	submit.submitEventLogNotes = "Log info";
+	submit.submitEventUserNotes = "User info";
 	if ( !writer.writeEvent(&submit) ) {
 		fprintf( stderr, "Failed to write submit event\n");
 		errors++;
@@ -178,7 +178,7 @@ WriteEventLog( const char *event_log, int &num_events )
 	jobterminated.sent_bytes = 400000;
 	jobterminated.total_recvd_bytes = 800000;
 	jobterminated.total_sent_bytes = 900000;
-	jobterminated.setCoreFile( "core" );
+	jobterminated.core_file = "core";
 	if ( !writer.writeEvent(&jobterminated) ) {
 		fprintf( stderr, "Failed to write execute event\n");
 		errors++;

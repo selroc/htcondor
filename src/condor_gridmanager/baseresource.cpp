@@ -26,6 +26,8 @@
 #include "gridmanager.h"
 #include "gahp-client.h"
 
+#include <algorithm>
+
 #define DEFAULT_MAX_SUBMITTED_JOBS_PER_RESOURCE		1000
 #define DEFAULT_JOB_POLL_RATE 5
 #define DEFAULT_JOB_POLL_INTERVAL 60
@@ -46,6 +48,7 @@ BaseResource::BaseResource( const char *resource_name )
 								"BaseResource::Ping", (Service*)this );
 	lastPing = 0;
 	lastStatusChange = 0;
+	m_pingErrCode = GRU_PING_FAILED;
 
 	jobLimit = DEFAULT_MAX_SUBMITTED_JOBS_PER_RESOURCE;
 
@@ -115,15 +118,13 @@ void BaseResource::Reconfig()
 		param_value = param( "GRIDMANAGER_MAX_SUBMITTED_JOBS_PER_RESOURCE" );
 	}
 	if ( param_value != NULL ) {
-		char *tmp1;
-		char *tmp2;
-		StringList limits( param_value );
-		limits.rewind();
-		if ( limits.number() > 0 ) {
-			jobLimit = atoi( limits.next() );
-			while ( (tmp1 = limits.next()) && (tmp2 = limits.next()) ) {
-				if ( strstr( resourceName, tmp1 ) != 0 ) {
-					jobLimit = atoi( tmp2 );
+		const char* tmp;
+		StringTokenIterator limits(param_value);
+		if ( (tmp = limits.next()) ) {
+			jobLimit = atoi(tmp);
+			while ( (tmp = limits.next()) ) {
+				if (strstr(resourceName, tmp) != 0 && (tmp = limits.next())) {
+					jobLimit = atoi(tmp);
 				}
 			}
 		}
@@ -308,6 +309,12 @@ void BaseResource::PublishResourceAd( ClassAd *resource_ad )
 	if ( resourceDown ) {
 		resource_ad->Assign( ATTR_GRID_RESOURCE_UNAVAILABLE_TIME,
 							 (int)lastStatusChange );
+		if (!m_pingErrMsg.empty()) {
+			resource_ad->Assign(ATTR_GRID_RESOURCE_UNAVAILABLE_REASON,
+			                    m_pingErrMsg);
+		}
+		resource_ad->Assign(ATTR_GRID_RESOURCE_UNAVAILABLE_REASON_CODE,
+		                    m_pingErrCode);
 	}
 
 	int num_idle = 0;
@@ -361,7 +368,11 @@ void BaseResource::UnregisterJob( BaseJob *job )
 
 	pingRequesters.Delete( job );
 	registeredJobs.Delete( job );
-	leaseUpdates.Delete( job );
+
+	// Some of our platforms don't support std::erase()
+	//std::erase(leaseUpdates, job);
+	auto it = std::remove(leaseUpdates.begin(), leaseUpdates.end(), job);
+	leaseUpdates.erase(it, leaseUpdates.end());
 
 	if ( IsEmpty() ) {
 		int delay = param_integer( "GRIDMANAGER_EMPTY_RESOURCE_DELAY", 5*60 );
@@ -447,7 +458,10 @@ void BaseResource::CancelSubmit( BaseJob *job )
 		submitsWanted.Delete( job );
 	}
 
-	leaseUpdates.Delete( job );
+	// Some of our platforms don't support std::erase()
+	//std::erase(leaseUpdates, job);
+	auto it = std::remove(leaseUpdates.begin(), leaseUpdates.end(), job);
+	leaseUpdates.erase(it, leaseUpdates.end());
 
 	SetJobPollInterval();
 
@@ -497,6 +511,9 @@ void BaseResource::Ping()
 
 	pingActive = false;
 	lastPing = time(NULL);
+	if (ping_succeeded) {
+		m_pingErrMsg.clear();
+	}
 
 	if ( ping_succeeded != resourceDown && firstPingDone == true ) {
 		// State of resource hasn't changed. Notify ping requesters only.
@@ -535,6 +552,8 @@ void BaseResource::Ping()
 		while ( pingRequesters.Next( job ) ) {
 			pingRequesters.DeleteCurrent();
 		}
+		// TODO trigger ad update here
+		//   UpdateCollector() doesn't allow more frequent updates currently
 	}
 
 	if ( resourceDown ) {
@@ -639,7 +658,7 @@ dprintf(D_FULLDEBUG,"    UpdateLeases: nothing to renew, resetting timer for %ld
 					if ( curr_job->jobAd->LookupString( ATTR_GRID_JOB_ID, job_id ) &&
 						 curr_job->jobAd->LookupInteger( ATTR_JOB_LEASE_DURATION, tmp )
 					) {
-						leaseUpdates.Append( curr_job );
+						leaseUpdates.emplace_back(curr_job);
 					}
 				}
 			}
@@ -651,7 +670,7 @@ dprintf(D_FULLDEBUG,"    new shared lease expiration at %ld, performing renewal.
 
 	unsigned update_delay = 0;
 	bool update_complete;
-	SimpleList<PROC_ID> update_succeeded;
+	std::vector<PROC_ID> update_succeeded;
 	bool update_success;
 dprintf(D_FULLDEBUG,"    UpdateLeases: calling DoUpdateLeases\n");
 	if ( m_hasSharedLeases ) {
@@ -694,17 +713,15 @@ dprintf(D_FULLDEBUG,"    UpdateLeases: DoUpdateLeases complete, processing resul
 		}
 	} else {
 std::string msg = "    update_succeeded:";
-		BaseJob *curr_job;
-		PROC_ID curr_id;
-		update_succeeded.Rewind();
-		while ( update_succeeded.Next( curr_id ) ) {
+		for (auto& curr_id: update_succeeded) {
 formatstr_cat(msg, " %d.%d", curr_id.cluster, curr_id.proc);
-			if ( BaseJob::JobsByProcId.lookup( curr_id, curr_job ) == 0 ) {
-				curr_job->UpdateJobLeaseSent( m_sharedLeaseExpiration );
+			auto itr = BaseJob::JobsByProcId.find(curr_id);
+			if (itr != BaseJob::JobsByProcId.end()) {
+				itr->second->UpdateJobLeaseSent(m_sharedLeaseExpiration);
 			}
 		}
 dprintf(D_FULLDEBUG,"%s\n",msg.c_str());
-		leaseUpdates.Clear();
+		leaseUpdates.clear();
 	}
 
 	updateLeasesActive = false;
@@ -714,8 +731,8 @@ dprintf(D_FULLDEBUG,"    UpdateLeases: lease update complete, resetting timer fo
 }
 
 void BaseResource::DoUpdateLeases( unsigned& update_delay,
-								   bool& update_complete,
-								   SimpleList<PROC_ID>& /* update_succeeded */ )
+                                   bool& update_complete,
+                                   std::vector<PROC_ID>& /* update_succeeded */ )
 {
 dprintf(D_FULLDEBUG,"*** BaseResource::DoUpdateLeases called\n");
 	update_delay = 0;

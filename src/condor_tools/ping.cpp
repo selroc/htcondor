@@ -32,8 +32,6 @@
 #include "dc_collector.h"
 #include "my_hostname.h"
 
-using namespace std;
-
 void
 usage( char *cmd )
 {
@@ -328,7 +326,7 @@ int getSomeCommandFromString ( const char * cmdstring ) {
 	res = atoi ( cmdstring );
 	if (res > 0 || (strcmp("0", cmdstring) == 0)) {
 		char compare_conversion[20];
-		sprintf(compare_conversion, "%i", res);
+		snprintf(compare_conversion, sizeof(compare_conversion), "%i", res);
 		if (strcmp(cmdstring, compare_conversion) == 0) {
 			dprintf( D_ALWAYS, "recognized %i as command number.\n", res );
 			return res;
@@ -388,7 +386,6 @@ int main( int argc, char *argv[] )
 	std::vector<int> worklist_number;
 	Daemon * daemon = NULL;
 
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 

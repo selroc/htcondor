@@ -136,7 +136,7 @@ UniShadow::init( ClassAd* job_ad, const char* schedd_addr, const char *xfer_queu
 	daemonCore->
 		Register_Command( CREDD_GET_CRED, "CREDD_GET_CRED",
 						  &cred_get_cred_handler,
-						  "cred_get_cred_handler", DAEMON, D_COMMAND,
+						  "cred_get_cred_handler", DAEMON,
 						  true /*force authentication*/ );
 }
 
@@ -174,10 +174,6 @@ UniShadow::logExecuteEvent( void )
 	remRes->getStartdAddress( sinful );
 	event.setExecuteHost( sinful );
 	free( sinful );
-	char* remote_name = NULL;
-	remRes->getStartdName(remote_name);
-	event.setRemoteName(remote_name);
-	free( remote_name );
 	if( !uLog.writeEvent(&event, getJobAd()) ) {
 		dprintf( D_ALWAYS, "Unable to log ULOG_EXECUTE event: "
 				 "can't write to UserLog!\n" );
@@ -197,16 +193,8 @@ UniShadow::cleanUp( bool graceful )
 void
 UniShadow::gracefulShutDown( void )
 {
-	if (remRes) {
-		int remain = remRes->remainingLeaseDuration();
-		if (!remain) {
-			// Only attempt to deactivate (gracefully) the claim if
-			// there's no lease or it has already expired.
-			remRes->killStarter(true);
-		} else {
-			DC_Exit( JOB_SHOULD_REQUEUE );
-		}
-	}
+	remRes->setExitReason(JOB_SHOULD_REQUEUE);
+	remRes->killStarter(true);
 }
 
 
@@ -236,7 +224,7 @@ void
 UniShadow::emailTerminateEvent( int exitReason, update_style_t kind )
 {
 	Email mailer;
-	float recvd_bytes = 0, sent_bytes = 0;
+	double recvd_bytes = 0, sent_bytes = 0;
 
 	if (kind == US_TERMINATE_PENDING) {
 		/* I don't have a remote resource, so get the values directly from
@@ -515,14 +503,14 @@ void
 UniShadow::logDisconnectedEvent( const char* reason )
 {
 	JobDisconnectedEvent event;
-	event.setDisconnectReason( reason );
+	event.disconnect_reason = reason;
 
 	DCStartd* dc_startd = remRes->getDCStartd();
 	if( ! dc_startd ) {
 		EXCEPT( "impossible: remRes::getDCStartd() returned NULL" );
 	}
-	event.setStartdAddr( dc_startd->addr() );
-	event.setStartdName( dc_startd->name() );
+	event.startd_addr = dc_startd->addr();
+	event.startd_name = dc_startd->name();
 
 	if( !uLog.writeEventNoFsync(&event,getJobAd()) ) {
 		dprintf( D_ALWAYS, "Unable to log ULOG_JOB_DISCONNECTED event\n" );
@@ -539,12 +527,12 @@ UniShadow::logReconnectedEvent( void )
 	if( ! dc_startd ) {
 		EXCEPT( "impossible: remRes::getDCStartd() returned NULL" );
 	}
-	event.setStartdAddr( dc_startd->addr() );
-	event.setStartdName( dc_startd->name() );
+	event.startd_addr = dc_startd->addr();
+	event.startd_name = dc_startd->name();
 
 	char* starter = NULL;
 	remRes->getStarterAddress( starter );
-	event.setStarterAddr( starter );
+	event.starter_addr = starter;
 	free( starter );
 	starter = NULL;
 
@@ -559,13 +547,13 @@ UniShadow::logReconnectFailedEvent( const char* reason )
 {
 	JobReconnectFailedEvent event;
 
-	event.setReason( reason );
+	event.reason = reason;
 
 	DCStartd* dc_startd = remRes->getDCStartd();
 	if( ! dc_startd ) {
 		EXCEPT( "impossible: remRes::getDCStartd() returned NULL" );
 	}
-	event.setStartdName( dc_startd->name() );
+	event.startd_name = dc_startd->name();
 
 	if( !uLog.writeEventNoFsync(&event,getJobAd()) ) {
 		dprintf( D_ALWAYS, "Unable to log ULOG_JOB_RECONNECT_FAILED event\n" );

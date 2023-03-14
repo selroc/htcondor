@@ -50,7 +50,6 @@ INDEXED_KEYWORD_ATTRS = {
     "GlideinFrontendName",
     "GlideinName",
     "GlobalJobId",
-    "GlobusRSL",
     "GridJobId",
     "GridJobStatus",
     "GridResource",
@@ -76,7 +75,6 @@ INDEXED_KEYWORD_ATTRS = {
     "MATCH_EXP_JOB_GLIDEIN_SiteWMS_Queue",
     "MATCH_EXP_JOB_GLIDEIN_SiteWMS_Slot",
     "MyType",
-    "NordugridRSL",
     "NTDomain",
     "OAuthServicesNeeded",
     "Owner",
@@ -418,11 +416,19 @@ BOOL_ATTRS = {
     "WantResAd",
 }
 
+NESTED_ATTRS = {
+    "TransferInputStats",
+    "TransferOutputStats",
+    "NumHoldsByReason",
+    "ToE",
+    "DAG_Stats",
+    "metadata",
+}
+
 IGNORE_ATTRS = {
     "AzureAdminKey",
     "AzureAdminUsername",
     "AzureAuthFile",
-    "BoincAuthenticatorFile",
     "ClaimId",
     "CmdHash",
     "EC2AccessKeyId",
@@ -557,6 +563,7 @@ KNOWN_ATTRS = (
         | INT_ATTRS
         | DATE_ATTRS
         | BOOL_ATTRS
+        | NESTED_ATTRS
         | IGNORE_ATTRS
 )
 KNOWN_ATTRS_MAP = {x.casefold(): x for x in KNOWN_ATTRS}
@@ -663,6 +670,15 @@ def bulk_convert_ad_data(ad, result):
                 )
                 key = f"{key}_STRING"
                 value = str(value)
+        elif key in NESTED_ATTRS:
+            try:
+                value = dict(value)
+            except ValueError:
+                logging.warning(
+                    f"Failed to convert {key} with value {json.dumps(value)} to dict for a nested field"
+                )
+                key = f"{key}_STRING"
+                value = json.dumps(value)
         else:
             value = str(value)
 

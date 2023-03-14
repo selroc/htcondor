@@ -168,7 +168,7 @@ undefined or error types. The syntax of these literals is as follows:
     Two sequences of continuous digits separated by a period (i.e.,
     [0-9]+.[0-9]+).
  String
-    A double quote character, followed by an list of characters
+    A double quote character, followed by a list of characters
     terminated by a double quote character. A backslash character inside
     the string causes the following character to be considered as part
     of the string, irrespective of what that character is.
@@ -1609,6 +1609,8 @@ example where they are permitted.
 .. code-block:: doscon
 
     > condor_status -constraint " OpSys == ""WINDOWS"" "
+
+.. _extending-classads:
 
 Extending ClassAds with User-written Functions
 ----------------------------------------------

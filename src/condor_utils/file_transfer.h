@@ -23,7 +23,6 @@
 #include "condor_common.h"
 #include "condor_classad.h"
 #include "condor_daemon_core.h"
-#include "MyString.h"
 #include "HashTable.h"
 #ifdef WIN32
 #include "perm.h"
@@ -60,9 +59,9 @@ struct CatalogEntry {
 };
 
 
-typedef HashTable <MyString, FileTransfer *> TranskeyHashTable;
+typedef HashTable <std::string, FileTransfer *> TranskeyHashTable;
 typedef HashTable <int, FileTransfer *> TransThreadHashTable;
-typedef HashTable <MyString, CatalogEntry *> FileCatalogHashTable;
+typedef HashTable <std::string, CatalogEntry *> FileCatalogHashTable;
 typedef HashTable <std::string, std::string> PluginHashTable;
 
 typedef int		(Service::*FileTransferHandlerCpp)(FileTransfer *);
@@ -78,7 +77,8 @@ enum FileTransferStatus {
 enum class TransferPluginResult {
 	Success = 0,
 	Error = 1,
-	InvalidCredentials = 2
+	InvalidCredentials = 2,
+	TimedOut = 3,
 };
 
 namespace htcondor {
@@ -186,7 +186,7 @@ class FileTransfer final: public Service {
 	int UploadFiles(bool blocking=true, bool final_transfer=true);
 
 	/** @return 1 on success, 0 on failure */
-	int UploadCheckpointFiles( bool blocking = true );
+	int UploadCheckpointFiles( int checkpointNumber, bool blocking = true );
 
 	/** @return 1 on success, 0 on failure */
 	int UploadFailureFiles( bool blocking = true );
@@ -228,11 +228,11 @@ class FileTransfer final: public Service {
 		int hold_code;
 		int hold_subcode;
 		ClassAd stats;
-		MyString error_desc;
+		std::string error_desc;
 			// List of files we created in remote spool.
 			// This is intended to become SpooledOutputFiles.
-		MyString spooled_files;
-		MyString tcp_stats;
+		std::string spooled_files;
+		std::string tcp_stats;
 	};
 
 	FileTransferInfo GetInfo() {
@@ -266,15 +266,38 @@ class FileTransfer final: public Service {
 
 	float TotalBytesReceived() const { return bytesRcvd; };
 
-		/** Add the given filename to our list of output files to
-			transfer back.  If we're not managing a list of output
-			files, we return failure.  If we already have this file,
-			we immediately return success.  Otherwise, we append the
-			given filename to our list and return success.
-			@param filename Name of file to add to our list
-			@return false if we don't have a list, else true
-		*/
-	bool addOutputFile( const char* filename );
+	//
+	// Add the given filename to the list of "output" files.  Will
+	// create the empty list of output files if necessary; never
+	// fails (unless the sytem is out of memory).
+	//
+	void addOutputFile( const char* filename );
+
+	//
+	// Add the given path or URL to the list of checkpoint files.  The file
+	// will be transferred to the named destination* in the sandbox.
+	//
+	// *: At present, the basename of the destination must be the same
+	//    as the basename of the source.
+	//
+	// This function should only ever be
+	// called by the shadow during initial file transfer to the starter.
+	//
+	// The caller must ensure that pathsAlreadyPreserved is empty the
+	// first time and is preserved between calls.
+	//
+	void addCheckpointFile(
+		const std::string & source, const std::string & destination,
+		std::set< std::string > & pathsAlreadyPreserved
+	);
+
+	//
+	// As addCheckpointFile(), but for input files.
+	//
+	void addInputFile(
+		const std::string & source, const std::string & destination,
+		std::set< std::string > & pathsAlreadyPreserved
+	);
 
 		/** Add the given filename to our list of exceptions.  These
 			files to will not be transfer back, even if they meet the
@@ -289,7 +312,7 @@ class FileTransfer final: public Service {
 			*/
 	bool addFileToExceptionList( const char* filename );
 
-		/** Allows the client side of the filetransfer object to 
+		/** Allows the client side of the filetransfer object to
 			point to a different server.
 			@param transkey Value of ATTR_TRANSFER_KEY set by server
 			@param transsock Value of ATTR_TRANSFER_SOCKET set by server
@@ -323,7 +346,7 @@ class FileTransfer final: public Service {
 	std::string DetermineFileTransferPlugin( CondorError &error, const char* source, const char* dest );
 	TransferPluginResult InvokeFileTransferPlugin(CondorError &e, const char* URL, const char* dest, ClassAd* plugin_stats, const char* proxy_filename = NULL);
 	TransferPluginResult InvokeMultipleFileTransferPlugin(CondorError &e, const std::string &plugin_path, const std::string &transfer_files_string, const char* proxy_filename, bool do_upload, std::vector<std::unique_ptr<ClassAd>> *);
-	TransferPluginResult InvokeMultiUploadPlugin(const std::string &plugin_path, const std::string &transfer_files_string, ReliSock &sock, bool send_trailing_eom, CondorError &err,  long &upload_bytes);
+	TransferPluginResult InvokeMultiUploadPlugin(const std::string &plugin_path, const std::string &transfer_files_string, ReliSock &sock, bool send_trailing_eom, CondorError &err,  long long &upload_bytes);
     int RecordFileTransferStats( ClassAd &stats );
 	std::string GetSupportedMethods(CondorError &err);
 	void DoPluginConfiguration();
@@ -336,7 +359,7 @@ class FileTransfer final: public Service {
 		// Returns false on failure and sets error_msg.
 	static bool ExpandInputFileList( ClassAd *job, std::string &error_msg );
 		// use this function when you don't want to party on the job ad like the above function does 
-	static bool ExpandInputFileList( char const *input_list, char const *iwd, MyString &expanded_list, std::string &error_msg );
+	static bool ExpandInputFileList( char const *input_list, char const *iwd, std::string &expanded_list, std::string &error_msg );
 
 	// When downloading files, store files matching source_name as the name
 	// specified by target_name.
@@ -370,6 +393,13 @@ class FileTransfer final: public Service {
 
   protected:
 
+	// Because FileTransferItem doesn't store the destination file name
+	// (only the directory), this doesn't actually work right.
+	void addSandboxRelativePath( const std::string & source,
+		const std::string & destination, FileTransferList & ftl,
+		std::set< std::string > & pathsAlreadyPreserved
+	);
+
 	// There's three places where we need to know this.
 	bool shouldSendStderr();
 	bool shouldSendStdout();
@@ -387,6 +417,43 @@ class FileTransfer final: public Service {
 		*/
 	int DoDownload( filesize_t *total_bytes, ReliSock *s);
 	int DoUpload( filesize_t *total_bytes, ReliSock *s);
+	int DoCheckpointUploadFromStarter( filesize_t * total_bytes, ReliSock * s );
+	int DoCheckpointUploadFromShadow( filesize_t * total_bytes, ReliSock * s );
+	int DoNormalUpload( filesize_t * total_bytes, ReliSock * s );
+
+	typedef struct _ft_protocol_bits_struct {
+		filesize_t peer_max_transfer_bytes = {-1};
+		bool I_go_ahead_always = {false};
+		bool peer_goes_ahead_always = {false};
+		bool socket_default_crypto = {true};
+	} _ft_protocol_bits;
+
+	// Do the final computation of which files we'll be transferring.  This
+	// _includes_ starting the file-transfer protocol and executing the
+	// data reuse and S3 URL signing/conversion routines.
+	//
+	// This is the first half of the old DoUpload().
+	int computeFileList(
+	    ReliSock * s, FileTransferList & filelist,
+	    std::unordered_set<std::string> & skip_files,
+	    filesize_t & sandbox_size,
+	    DCTransferQueue & xfer_queue,
+	    _ft_protocol_bits & protocolState,
+	    bool using_output_destination
+	);
+
+	// Execute the CEDAR file-transfer protocol and call plug-ins as
+	// appropriate.
+	//
+	// This is the second half of the old DoUpload().
+	int uploadFileList(
+	    ReliSock * s, const FileTransferList & filelist,
+	    std::unordered_set<std::string> & skip_files,
+	    const filesize_t & sandbox_size,
+	    DCTransferQueue & xfer_queue,
+	    _ft_protocol_bits & protocolState,
+	    filesize_t * total_bytes_ptr
+	);
 
 	double uploadStartTime{-1}, uploadEndTime{-1};
 	double downloadStartTime{-1}, downloadEndTime{-1};
@@ -404,8 +471,10 @@ class FileTransfer final: public Service {
 
   private:
 
+	int checkpointNumber{-1};
 	bool uploadCheckpointFiles{false};
 	bool uploadFailureFiles{false};
+    bool inHandleCommands{false};
 	bool TransferFilePermissions{false};
 	bool DelegateX509Credentials{false};
 	bool PeerDoesTransferAck{false};
@@ -478,10 +547,10 @@ class FileTransfer final: public Service {
 	bool simple_init{true};
 	ReliSock *simple_sock{nullptr};
 	ReliSock *m_syscall_socket{nullptr};
-	MyString download_filename_remaps;
+	std::string download_filename_remaps;
 	bool m_use_file_catalog{true};
 	TransferQueueContactInfo m_xfer_queue_contact_info;
-	MyString m_jobid; // what job we are working on, for informational purposes
+	std::string m_jobid; // what job we are working on, for informational purposes
 	char *m_sec_session_id{nullptr};
 	std::string m_cred_dir;
 	std::string m_job_ad;
@@ -490,7 +559,7 @@ class FileTransfer final: public Service {
 	filesize_t MaxDownloadBytes{-1};
 
 	// stores the path to the proxy after one is received
-	MyString LocalProxyName;
+	std::string LocalProxyName;
 
 	// Object to manage reuse of any data locally.
 	htcondor::DataReuseDirectory *m_reuse_dir{nullptr};
@@ -508,7 +577,7 @@ class FileTransfer final: public Service {
 	void SendTransferAck(Stream *s,bool success,bool try_again,int hold_code,int hold_subcode,char const *hold_reason);
 
 	// Receive acknowledgment of success/failure after downloading files.
-	void GetTransferAck(Stream *s,bool &success,bool &try_again,int &hold_code,int &hold_subcode,MyString &error_desc);
+	void GetTransferAck(Stream *s,bool &success,bool &try_again,int &hold_code,int &hold_subcode,std::string &error_desc);
 
 	// Stash transfer success/failure info that will be propagated back to
 	// caller of file transfer operation, using GetInfo().
@@ -519,7 +588,7 @@ class FileTransfer final: public Service {
 	bool ReceiveTransferGoAhead(Stream *s,char const *fname,bool downloading,bool &go_ahead_always,filesize_t &peer_max_transfer_bytes);
 
 	// Receive message indicating that the peer is ready to receive the file.
-	bool DoReceiveTransferGoAhead(Stream *s,char const *fname,bool downloading,bool &go_ahead_always,filesize_t &peer_max_transfer_bytes,bool &try_again,int &hold_code,int &hold_subcode,MyString &error_desc, int alive_interval);
+	bool DoReceiveTransferGoAhead(Stream *s,char const *fname,bool downloading,bool &go_ahead_always,filesize_t &peer_max_transfer_bytes,bool &try_again,int &hold_code,int &hold_subcode,std::string &error_desc, int alive_interval);
 
 	// Obtain permission to receive a file download and then tell our
 	// peer to go ahead and send it.
@@ -563,13 +632,13 @@ class FileTransfer final: public Service {
 		//      paths of files stored in SPOOL, whether from
 		//      self-checkpointing, ON_EXIT_OR_EVICT, or remote input
 		//      file spooling.
-	static bool ExpandFileTransferList( char const *src_path, char const *dest_dir, char const *iwd, int max_depth, FileTransferList &expanded_list, bool preserveRelativePaths, char const *SpoolSpace );
+	static bool ExpandFileTransferList( char const *src_path, char const *dest_dir, char const *iwd, int max_depth, FileTransferList &expanded_list, bool preserveRelativePaths, char const *SpoolSpace, std::set<std::string> & pathsAlreadyPreserved );
 
-        // Function internal to ExpandFileTransferList() -- called twice there.
-        // The SpoolSpace argument is only necessary because this function
-        // calls back into  ExpandFileTransferList(); see that function
-        // for details.
-    static bool ExpandParentDirectories( const char *src_path, const char *iwd, FileTransferList & expanded_list, const char *SpoolSpace );
+		// Function internal to ExpandFileTransferList() -- called twice there.
+		// The SpoolSpace argument is only necessary because this function
+		// calls back into  ExpandFileTransferList(); see that function
+		// for details.
+	static bool ExpandParentDirectories( const char *src_path, const char *iwd, FileTransferList & expanded_list, const char *SpoolSpace, std::set<std::string> & pathsAlreadyPreserved );
 
 		// Returns true if path is a legal path for our peer to tell us it
 		// wants us to write to.  It must be a relative path, containing
@@ -624,6 +693,19 @@ class FileTransfer final: public Service {
 	// Returns true on success; false otherwise.  In the case of a failure, the
 	// err object is filled in with an appropriate error message.
 	bool ParseDataManifest();
+
+    // We need a little more control over checkpoint files than we do
+    // for normal input URLs.  Because of the design of the rest of the
+    // code, this list still can't directly specify an arbitrary file
+    // name for a URL, but we don't need that for checkpoints.
+    //
+    // (It might be possible to _fake_ such a targeting using input file
+    // but I'm quite sure we don't tell the multi-file downloaders about
+    // the remaps, which means it's impossible in the general case to
+    // collisions.)
+    FileTransferList checkpointList;
+
+    FileTransferList inputList;
 };
 
 // returns 0 if no expiration

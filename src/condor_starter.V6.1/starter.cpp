@@ -42,19 +42,21 @@
 #include "perm.h"
 #include "filename_tools.h"
 #include "directory.h"
+#include "tmp_dir.h"
 #include "exit.h"
-#include "condor_auth_x509.h"
 #include "setenv.h"
 #include "condor_claimid_parser.h"
 #include "condor_version.h"
 #include "sshd_proc.h"
 #include "condor_base64.h"
 #include "my_username.h"
-#include <Regex.h>
+#include "condor_regex.h"
 #include "starter_util.h"
 #include "condor_random_num.h"
 #include "data_reuse.h"
 #include "authentication.h"
+
+#include <sstream>
 
 extern void main_shutdown_fast();
 
@@ -91,7 +93,6 @@ Starter::Starter() :
 	deferral_tid(-1),
 	pre_script(NULL),
 	post_script(NULL),
-	m_privsep_helper(NULL),
 	m_configured(false),
 	m_job_environment_is_ready(false),
 	m_all_jobs_done(false),
@@ -142,6 +143,7 @@ Starter::Init( JobInfoCommunicator* my_jic, const char* original_cwd,
 	starter_stderr_fd = stderr_fd;
 
 	Config();
+
 
 		// Now that we know what Execute is, we can figure out what
 		// directory the starter will be working in and save that,
@@ -271,11 +273,6 @@ void
 Starter::StarterExit( int code )
 {
 	FinalCleanup();
-#if !defined(WIN32)
-	if ( GetEnv( "CONDOR_GLEXEC_STARTER_CLEANUP_FLAG" ) ) {
-		exitAfterGlexec( code );
-	}
-#endif
 	// Once libc starts calling global destructors, we can't reliably
 	// notify anyone of an EXCEPT().
 	_EXCEPT_Cleanup = NULL;
@@ -284,6 +281,14 @@ Starter::StarterExit( int code )
 
 void Starter::FinalCleanup()
 {
+#if defined(LINUX)
+		// Not useful to have the volume management code trigger
+		// while we are trying to cleanup.
+	if (m_lvm_poll_tid >= 0) {
+		daemonCore->Cancel_Timer(m_lvm_poll_tid);
+	}
+#endif
+
 	RemoveRecoveryFile();
 	removeTempExecuteDir();
 #ifdef WIN32
@@ -311,21 +316,6 @@ Starter::Config()
 			Execute = strdup( orig_cwd );
 		} else {
 			EXCEPT("Execute directory not specified in config file.");
-		}
-	}
-	if (!m_configured) {
-		bool gl = param_boolean("GLEXEC_JOB", false);
-#if !defined(LINUX)
-		dprintf(D_ALWAYS,
-		        "GLEXEC_JOB not supported on this platform; "
-		            "ignoring\n");
-		gl = false;
-#endif
-		if (gl) {
-#if defined(LINUX)
-			m_privsep_helper = new GLExecPrivSepHelper;
-			ASSERT(m_privsep_helper != NULL);
-#endif
 		}
 	}
 
@@ -630,7 +620,7 @@ Starter::createJobOwnerSecSession( int /*cmd*/, Stream* s )
 	}
 
 	char *session_id = Condor_Crypt_Base::randomHexKey();
-	char *session_key = Condor_Crypt_Base::randomHexKey();
+	char *session_key = Condor_Crypt_Base::randomHexKey(SEC_SESSION_KEY_LENGTH_V9);
 
 	std::string session_info;
 	input.LookupString(ATTR_SESSION_INFO,session_info);
@@ -961,17 +951,14 @@ Starter::peek(int /*cmd*/, Stream *sock)
 
 	classad::Value transfer_list_value;
 	std::vector<std::string> transfer_list;
-	classad_shared_ptr<classad::ExprList> transfer_list_ptr;
-	if (input.EvaluateAttr("TransferFiles", transfer_list_value) && transfer_list_value.IsSListValue(transfer_list_ptr))
+	const classad::ExprList * plst;
+	if (input.EvaluateAttr("TransferFiles", transfer_list_value) && transfer_list_value.IsListValue(plst))
 	{
-		transfer_list.reserve(transfer_list_ptr->size());
-		for (classad::ExprList::const_iterator it = transfer_list_ptr->begin();
-			it != transfer_list_ptr->end();
-			it++)
+		transfer_list.reserve(plst->size());
+		for (auto it : *plst)
 		{
 			std::string transfer_entry;
-			classad::Value transfer_value;
-			if (!(*it)->Evaluate(transfer_value) || !transfer_value.IsStringValue(transfer_entry))
+			if (!ExprTreeIsLiteralString(it, transfer_entry))
 			{
 				return PeekFailed(s, "Could not evaluate transfer list.");
 			}
@@ -982,16 +969,13 @@ Starter::peek(int /*cmd*/, Stream *sock)
 	std::vector<off_t> transfer_offsets; transfer_offsets.reserve(transfer_list.size());
 	for (size_t idx = 0; idx < transfer_list.size(); idx++) transfer_offsets.push_back(-1);
 
-	if (input.EvaluateAttr("TransferOffsets", transfer_list_value) && transfer_list_value.IsSListValue(transfer_list_ptr))
+	if (input.EvaluateAttr("TransferOffsets", transfer_list_value) && transfer_list_value.IsListValue(plst))
 	{
 		size_t idx = 0;
-		for (classad::ExprList::const_iterator it = transfer_list_ptr->begin();
-			it != transfer_list_ptr->end() && idx < transfer_list.size();
-			it++, idx++)
+		for (auto it : *plst) 
 		{
-			classad::Value transfer_value;
-			off_t transfer_entry;
-			if ((*it)->Evaluate(transfer_value) && transfer_value.IsIntegerValue(transfer_entry))
+			long long transfer_entry;
+			if (ExprTreeIsLiteralNumber(it, transfer_entry))
 			{
 				transfer_offsets[idx] = transfer_entry;
 			}
@@ -1373,10 +1357,32 @@ Starter::startSSHD( int /*cmd*/, Stream* s )
 		setup_env.SetEnv("_CONDOR_SLOT_NAME",slot_name.c_str());
 	}
 
-    int setup_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
-    if (!param_boolean("JOB_INHERITS_STARTER_ENVIRONMENT",false)) {
-        setup_opt_mask |= DCJOBOPT_NO_ENV_INHERIT;
-    }
+	int setup_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
+	bool inherit_starter_env = false;
+	auto_free_ptr envlist(param("JOB_INHERITS_STARTER_ENVIRONMENT"));
+	if (envlist && ! string_is_boolean_param(envlist, inherit_starter_env)) {
+		WhiteBlackEnvFilter filter(envlist);
+		setup_env.Import(filter);
+		inherit_starter_env = false; // make sure that CreateProcess doesn't inherit again
+	}
+	if ( ! inherit_starter_env) {
+		setup_opt_mask |= DCJOBOPT_NO_ENV_INHERIT;
+	}
+		// Use LD_PRELOAD to force an implementation of getpwnam
+		// into the setup process 
+#ifdef LINUX
+	if(param_boolean("CONDOR_SSH_TO_JOB_FAKE_PASSWD_ENTRY", true)) {
+		std::string lib;
+		param(lib, "LIB");
+		std::string getpwnampath = lib + "/libgetpwnam.so";
+		if (access(getpwnampath.c_str(), F_OK) == 0) {
+			dprintf(D_ALWAYS, "Setting LD_PRELOAD=%s for sshd\n", getpwnampath.c_str());
+			setup_env.SetEnv("LD_PRELOAD", getpwnampath.c_str());
+		} else {
+			dprintf(D_ALWAYS, "Not setting LD_PRELOAD=%s for sshd, as file does not exist\n", getpwnampath.c_str());
+		}
+	}
+#endif
 
 	if( !preferred_shells.empty() ) {
 		dprintf(D_FULLDEBUG,
@@ -1400,46 +1406,27 @@ Starter::startSSHD( int /*cmd*/, Stream* s )
 	setup_args.AppendArg(sshd_config_template.c_str());
 	setup_args.AppendArg(ssh_keygen_cmd.c_str());
 
-		// Would like to use my_popen here, but we need to support glexec.
+		// Would like to use my_popen here, but we needed to support glexec.
 		// Use the default reaper, even though it doesn't know anything
 		// about this task.  We avoid needing to know the final exit status
 		// by checking for a magic success string at the end of the output.
 	int setup_reaper = 1;
-	if( privSepHelper() ) {
-	    std::string error_msg;
-		privSepHelper()->create_process(
-			ssh_to_job_sshd_setup.c_str(),
-			setup_args,
-			setup_env,
-			GetWorkingDir(0),
-			setup_std_fds,
-			NULL,
-			0,
-			NULL,
-			setup_reaper,
-			setup_opt_mask,
-			NULL,
-			NULL,
-			error_msg);
-	}
-	else {
-		daemonCore->Create_Process(
-			ssh_to_job_sshd_setup.c_str(),
-			setup_args,
-			PRIV_USER_FINAL,
-			setup_reaper,
-			FALSE,
-			FALSE,
-			&setup_env,
-			GetWorkingDir(0),
-			NULL,
-			NULL,
-			setup_std_fds,
-			NULL,
-			0,
-			NULL,
-			setup_opt_mask);
-	}
+	daemonCore->Create_Process(
+		ssh_to_job_sshd_setup.c_str(),
+		setup_args,
+		PRIV_USER_FINAL,
+		setup_reaper,
+		FALSE,
+		FALSE,
+		&setup_env,
+		GetWorkingDir(0),
+		NULL,
+		NULL,
+		setup_std_fds,
+		NULL,
+		0,
+		NULL,
+		setup_opt_mask);
 
 	daemonCore->Close_Pipe(setup_pipe_fds[1]); // write-end of pipe
 
@@ -1600,21 +1587,8 @@ Starter::startSSHD( int /*cmd*/, Stream* s )
 		// to restore the environment that was saved by sshd_setup.
 		// However, we may as well pass the desired environment.
 
-		// Use LD_PRELOAD to force an implementation of getpwnam
-		// into the process that returns a valid shell
 #ifdef LINUX
-	if(param_boolean("CONDOR_SSH_TO_JOB_FAKE_PASSWD_ENTRY", true)) {
-		std::string lib;
-		param(lib, "LIB");
-		std::string getpwnampath = lib + "/libgetpwnam.so";
-		if (access(getpwnampath.c_str(), F_OK) == 0) {
-			dprintf(D_ALWAYS, "Setting LD_PRELOAD=%s for sshd\n", getpwnampath.c_str());
-			setup_env.SetEnv("LD_PRELOAD", getpwnampath.c_str());
-		} else {
-			dprintf(D_ALWAYS, "Not setting LD_PRELOAD=%s for sshd, as file does not exist\n", getpwnampath.c_str());
-		}
-	}
-	if( !setup_env.InsertEnvIntoClassAd(sshd_ad, error_msg,NULL,&ver_info) ) {
+	if( !setup_env.InsertEnvIntoClassAd(*sshd_ad, error_msg) ) {
 		return SSHDFailed(s,
 			"Failed to insert environment into sshd job description: %s",
 			error_msg.c_str());
@@ -1858,10 +1832,6 @@ Starter::createTempExecuteDir( void )
 	priv_state priv = set_condor_priv();
 #endif
 
-	// we might be using glexec.  glexec relies on being able to read the
-	// contents of the execute directory as a non-condor user, so in that
-	// case, use 0755.  for all other cases, use the more-restrictive 0700.
-
 	int dir_perms = 0700;
 
 	// Parameter JOB_EXECDIR_PERMISSIONS can be user / group / world and
@@ -1876,11 +1846,6 @@ Starter::createTempExecuteDir( void )
 			dir_perms = 0755;
 		free(who);
 
-#if defined(LINUX)
-		if(glexecPrivSepHelper()) {
-			dir_perms = 0755;
-		}
-#endif
 		if( mkdir(WorkingDir.c_str(), dir_perms) < 0 ) {
 			dprintf( D_FAILURE|D_ALWAYS,
 			         "couldn't create dir %s: %s\n",
@@ -1994,6 +1959,40 @@ Starter::createTempExecuteDir( void )
 
 #endif /* WIN32 */
 
+#ifdef LINUX
+	const char *thinpool = getenv("_CONDOR_THINPOOL");
+	const char *thinpool_vg = getenv("_CONDOR_THINPOOL_VG");
+	const char *thinpool_size = getenv("_CONDOR_THINPOOL_SIZE_KB");
+	if (thinpool && thinpool_vg && thinpool_size) {
+		try {
+			m_lvm_max_size_kb = std::stol(thinpool_size);
+		} catch (...) {
+			m_lvm_max_size_kb = -1;
+		}
+		if (m_lvm_max_size_kb > 0) {
+			CondorError err;
+                        std::string thinpool_str(thinpool), slot_name(getMySlotName());
+                        bool do_encrypt = thinpool_str.substr(thinpool_str.size() - 4, 4) == "-enc";
+                        if (do_encrypt) {
+                            slot_name += "-enc";
+                            thinpool_str = thinpool_str.substr(0, thinpool_str.size() - 4);
+                        }
+			m_volume_mgr.reset(new VolumeManager::Handle(WorkingDir, slot_name, thinpool_str, thinpool_vg, m_lvm_max_size_kb, err));
+			if (!err.empty()) {
+				dprintf(D_ALWAYS, "Failure when setting up filesystem for job: %s\n", err.getFullText().c_str());
+				m_volume_mgr.reset();
+			}
+			m_lvm_thin_volume = slot_name;
+			m_lvm_thin_pool = thinpool_str;
+			m_lvm_volume_group = thinpool_vg;
+			m_lvm_poll_tid = daemonCore->Register_Timer(10, 10,
+				(TimerHandlercpp)&Starter::CheckDiskUsage,
+				"check disk usage", this);
+		}
+	}
+#endif // LINUX
+
+
 	// switch to user priv -- it's the owner of the directory we just made
 	priv_state ch_p = set_user_priv();
 	int chdir_result = chdir(WorkingDir.c_str());
@@ -2021,54 +2020,6 @@ Starter::createTempExecuteDir( void )
 int
 Starter::jobEnvironmentReady( void )
 {
-#if defined(LINUX)
-		//
-		// For the GLEXEC_JOB case, we should now be able to
-		// initialize our helper object.
-		//
-	GLExecPrivSepHelper* gpsh = glexecPrivSepHelper();
-	if (gpsh != NULL) {
-		std::string proxy_path;
-		if (!jic->jobClassAd()->LookupString(ATTR_X509_USER_PROXY,
-		                                     proxy_path))
-		{
-			EXCEPT("configuration specifies use of glexec, "
-			           "but job has no proxy");
-		}
-		const char* proxy_name = condor_basename(proxy_path.c_str());
-		gpsh->initialize(proxy_name, WorkingDir.c_str());
-	}
-#endif
-
-		//
-		// Now that we are done preparing the job's environment,
-		// change the sandbox ownership to the user before spawning
-		// any job processes. VM universe jobs are special-cased
-		// here: chowning of the sandbox occurs in the VMGahp after
-		// it has had a chance to operate on the VM description
-		// file(s)
-		//
-	if (m_privsep_helper != NULL) {
-		int univ = -1;
-		if (!jic->jobClassAd()->LookupInteger(ATTR_JOB_UNIVERSE, univ) ||
-		    (univ != CONDOR_UNIVERSE_VM))
-		{
-			PrivSepError err;
-			if( !m_privsep_helper->chown_sandbox_to_user(err) ) {
-				jic->notifyStarterError(
-					err.holdReason(),
-					true,
-					err.holdCode(),
-					err.holdSubCode());
-				EXCEPT("failed to chown sandbox to user");
-			}
-		}
-		else if( univ == CONDOR_UNIVERSE_VM ) {
-				// the vmgahp will chown the sandbox to the user
-			m_privsep_helper->set_sandbox_owned_by_user();
-		}
-	}
-
 	m_job_environment_is_ready = true;
 
 		//
@@ -2421,6 +2372,8 @@ Starter::SpawnJob( void )
 		// kind of job we're starting up, instantiate the appropriate
 		// userproc class, and actually start the job.
 	ClassAd* jobAd = jic->jobClassAd();
+	ClassAd * mad = jic->machClassAd();
+
 	if ( ! jobAd->LookupInteger( ATTR_JOB_UNIVERSE, jobUniverse ) || jobUniverse < 1 ) {
 		dprintf( D_ALWAYS, 
 				 "Job doesn't specify universe, assuming VANILLA\n" ); 
@@ -2451,8 +2404,12 @@ Starter::SpawnJob( void )
 			std::string docker_image;
 			jobAd->LookupString(ATTR_DOCKER_IMAGE, docker_image);
 
-			// If they give us a docker repo, use docker universe
-			if (wantContainer && wantDockerRepo) {
+			bool hasDocker = false;
+			mad->LookupBool(ATTR_HAS_DOCKER, hasDocker);
+
+			// If they give us a docker repo and we have a working
+			// docker runtime, use docker universe
+			if (wantContainer && wantDockerRepo && hasDocker) {
 				wantDocker = true;
 			}
 
@@ -2954,25 +2911,6 @@ Starter::allJobsDone( void )
 	m_all_jobs_done = true;
 	bool bRet=false;
 
-		// now that all user processes are complete, change the
-		// sandbox ownership back over to condor. if this is a VM
-		// universe job, this chown will have already been
-		// performed by the VMGahp, since it does some post-
-		// processing on files in the sandbox
-	if (m_privsep_helper != NULL) {
-		if (jobUniverse != CONDOR_UNIVERSE_VM) {
-			PrivSepError err;
-			if( !m_privsep_helper->chown_sandbox_to_condor(err) ) {
-				jic->notifyStarterError(
-					err.holdReason(),
-					false,
-					err.holdCode(),
-					err.holdSubCode());
-				EXCEPT("failed to chown sandbox to condor after job completed");
-			}
-		}
-	}
-
 		// No more jobs, notify our JobInfoCommunicator.
 	if (jic->allJobsDone()) {
 			// JIC::allJobsDone returned true: we're ready to move on.
@@ -3141,6 +3079,73 @@ Starter::publishPostScriptUpdateAd( ClassAd* ad )
 	return false;
 }
 
+FILE *
+Starter::OpenManifestFile( const char * filename )
+{
+	// We should be passed in a filename that is a relavtive path
+	ASSERT(filename != NULL);
+	ASSERT(!IS_ANY_DIR_DELIM_CHAR(filename[0]));
+
+	// Makes no sense if we don't have a job info communicator or job ad
+	const ClassAd *job_ad = NULL;
+	if (jic) {
+		job_ad = jic->getJobAd();
+	}
+	if (!job_ad) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): invoked without a job classad\n",
+			filename);
+		return NULL;
+	}
+
+	// Confirm we really are in user priv before continuing; perhaps
+	// we are still in condor priv if, for insatnce, thus method is invoked
+	// before initializing the user ids.
+	TemporaryPrivSentry sentry(PRIV_USER);
+	if ( get_priv_state() != PRIV_USER ) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to switch to PRIV_USER\n",
+			filename);
+		return NULL;
+
+	}
+
+	// The rest of this method assumes we are in the job sandbox,
+	// so set cwd to the sandbox (but reset the cwd when we return)
+	std::string errMsg;
+	TmpDir tmpDir;
+	if (!tmpDir.Cd2TmpDir(GetWorkingDir(0),errMsg)) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to cd to job sandbox %s\n",
+			filename, GetWorkingDir(0));
+		return NULL;
+
+	}
+
+	std::string dirname = "_condor_manifest";
+	int cluster, proc;
+	if( job_ad->LookupInteger( ATTR_CLUSTER_ID, cluster ) && job_ad->LookupInteger( ATTR_PROC_ID, proc ) ) {
+		formatstr( dirname, "%d_%d_manifest", cluster, proc );
+	}
+	job_ad->LookupString( ATTR_JOB_MANIFEST_DIR, dirname );
+	int r = mkdir( dirname.c_str(), 0700 );
+	if (r < 0 && errno != 17) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to make directory %s: (%d) %s\n",
+			filename, dirname.c_str(), errno, strerror(errno));
+		return NULL;
+	}
+	jic->addToOutputFiles( dirname.c_str() );
+	std::string f = dirname + DIR_DELIM_CHAR + filename;
+
+	FILE * file = fopen( f.c_str(), "w" );
+	if( file == NULL ) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to open log '%s': %d (%s)\n",
+			filename, f.c_str(), errno, strerror(errno) );
+		return NULL;
+	}
+
+	dprintf(D_STATUS, "Writing into manifest file '%s'\n", f.c_str() );
+
+	return file;
+}
+
 bool
 Starter::GetJobEnv( ClassAd *jobad, Env *job_env, std::string & env_errors )
 {
@@ -3237,10 +3242,7 @@ Starter::PublishToEnv( Env* proc_env )
 
 		// now, stuff the starter knows about, instead of individual
 		// procs under its control
-	std::string base;
-	base = "_";
-	base += myDistro->GetUc();
-	base += '_';
+	const char * base = "_CONDOR_";
  
 	std::string env_name;
 
@@ -3490,12 +3492,14 @@ static void SetEnvironmentForAssignedRes(Env* proc_env, const char * proto, cons
 		std::string pat;
 		pat.insert(0, pre, 0, (psub - pre));
 
-		const char * errstr = NULL; int erroff= 0;
-		int re_opts = 0;
-		pcre *re = pcre_compile(pat.c_str(), re_opts, &errstr, &erroff, NULL);
+		//const char * errstr = NULL; int erroff= 0;
+		int errcode = 0; PCRE2_SIZE erroff = 0;
+
+		PCRE2_SPTR pat_pcre2str = reinterpret_cast<const unsigned char *>(pat.c_str());
+		pcre2_code *re = pcre2_compile(pat_pcre2str, PCRE2_ZERO_TERMINATED, 0, &errcode, &erroff, NULL);
 		if ( ! re) {
-			dprintf(D_ALWAYS | D_FAILURE, "Assigned%s environment '%s' regex error %s at offset %d in: %s\n",
-				tag, env_name.c_str(), errstr ? errstr : "", erroff, pat.c_str());
+			dprintf(D_ALWAYS | D_FAILURE, "Assigned%s environment '%s' regex PCRE2 error code %d at offset %d in: %s\n",
+				tag, env_name.c_str(), errcode, static_cast<int>(erroff), pat.c_str());
 			break;
 		}
 
@@ -3507,10 +3511,7 @@ static void SetEnvironmentForAssignedRes(Env* proc_env, const char * proto, cons
 			}
 		} else {
 			const char * resid;
-			int cGroups = 0;
-			pcre_fullinfo(re, NULL, PCRE_INFO_CAPTURECOUNT, &cGroups);
-			int ovecsize = 3 * (cGroups + 1); // +1 for the string itself
-			int * ovector = (int *) malloc(ovecsize * sizeof(int));
+			pcre2_match_data * matchdata = pcre2_match_data_create_from_pattern(re, NULL);
 
 			dprintf(D_ALWAYS | D_FULLDEBUG, "Assigned%s environment '%s' pattern: %s\n", tag, env_name.c_str(), peq);
 
@@ -3519,9 +3520,11 @@ static void SetEnvironmentForAssignedRes(Env* proc_env, const char * proto, cons
 			while ((resid = ids.next())) {
 				if ( ! rhs.empty()) { rhs += env_id_separator; }
 				int cchresid = (int)strlen(resid);
-				int status = pcre_exec(re, NULL, resid, cchresid, 0, 0, ovector, ovecsize);
+				PCRE2_SPTR resid_pcre2str = reinterpret_cast<const unsigned char *>(resid);
+				int status = pcre2_match(re, resid_pcre2str, static_cast<PCRE2_SIZE>(cchresid), 0, 0, matchdata, NULL);
 				if (status >= 0) {
-					const struct _pcre_vector { int start; int end; } * groups = (const struct _pcre_vector*)ovector;
+					const struct _pcre_vector { int start; int end; } * groups
+						= (const struct _pcre_vector*) pcre2_get_ovector_pointer(matchdata);
 					dprintf(D_ALWAYS | D_FULLDEBUG, "Assigned%s environment '%s' match at %d,%d of pattern: %s\n", tag, env_name.c_str(), groups[0].start, groups[0].end, pat.c_str());
 					if (groups[0].start > 0) { rhs.append(resid, 0, groups[0].start); }
 					const char * ps = psub;
@@ -3539,10 +3542,10 @@ static void SetEnvironmentForAssignedRes(Env* proc_env, const char * proto, cons
 					rhs += resid;
 				}
 			}
-			free(ovector);
+			pcre2_match_data_free(matchdata);
 		}
 
-		pcre_free(re);
+		pcre2_code_free(re);
 
 		proc_env->SetEnv(env_name.c_str(), rhs.c_str());
 
@@ -3740,18 +3743,6 @@ Starter::removeTempExecuteDir( void )
 	std::string dir_name = "dir_";
 	dir_name += std::to_string( daemonCore->getpid() );
 
-#if defined(LINUX)
-	if (glexecPrivSepHelper() != NULL && m_job_environment_is_ready == true &&
-		m_all_jobs_done == false) {
-
-		PrivSepError err;
-		if( !m_privsep_helper->chown_sandbox_to_condor(err) ) {
-			dprintf(D_ALWAYS, "Failed to chown glexec sandbox to condor on shutdown\n");
-			return false;
-		}
-	}
-#endif
-
 	bool has_failed = false;
 
 	// since we chdir()'d to the execute directory, we can't
@@ -3793,34 +3784,6 @@ Starter::removeTempExecuteDir( void )
 	}
 	return !has_failed;
 }
-
-#if !defined(WIN32)
-void
-Starter::exitAfterGlexec( int code )
-{
-	// tell Daemon Core to uninitialize its process family tracking
-	// subsystem. this will make sure that we tell our ProcD to exit,
-	// if we started one
-	daemonCore->Proc_Family_Cleanup();
-
-	// now we blow away the directory that the startd set up for us
-	// using glexec. this directory will be the parent directory of
-	// EXECUTE. we first "cd /", so that our working directory
-	// is not in the directory we're trying to delete
-	if (chdir( "/" )) {
-		dprintf(D_ALWAYS, "Error: chdir(\"/\") failed: %s\n", strerror(errno));
-	}
-	char* glexec_dir_path = condor_dirname( Execute );
-	ASSERT( glexec_dir_path );
-	Directory glexec_dir( glexec_dir_path );
-	glexec_dir.Remove_Entire_Directory();
-	rmdir( glexec_dir_path );
-	free( glexec_dir_path );
-
-	// all done
-	exit( code );
-}
-#endif
 
 bool
 Starter::WriteAdFiles() const
@@ -3959,4 +3922,59 @@ Starter::RecordJobExitStatus(int status) {
     // cares about this, but we've asked to track it (perhaps to see if
     // anything else in HTCondor should care).  See HTCONDOR-861.
     jic->notifyExecutionExit();
+}
+
+void
+Starter::CheckDiskUsage(void)
+{
+#ifdef LINUX
+		// Avoid repeatedly triggering
+	if (m_lvm_held_job) return;
+		// Logic error?
+	if (m_lvm_max_size_kb < 0) return;
+
+	// When the job exceeds its disk usage, there are three possibilities:
+	// 1. The backing pool has space remaining, we don't exhaust the extra allocated space (2GB by default),
+	//    and this polling catches the over-usage.  In that case, the job goes on hold and everyone's happy.
+	// 2. The backing pool has space remaining, the job DOES exhaust the extra allocated space, and the
+	//    job gets an ENOSPC before this polling can trigger.  The job may not go on hold and the user
+	//    doesn't get a reasonable indication without examining their stderr.  No one's happy.
+	// 3. The backing pool fills up due to overcommits.  All writes to othe device pause until enough
+	//    space is cleared up.
+	//
+	// In case (3), even well-behaved jobs will notice the issue; after a minute, if not enough space is
+	// available we start evicting even those jobs in oroder to prevent a deadlock.
+	//
+	// If you really want to avoid case (2), set THINPOOL_EXTRA_SIZE_MB to a value larger than the backing pool.
+
+	CondorError err;
+	uint64_t used_bytes;
+	bool out_of_space;
+	if (!VolumeManager::GetThinVolumeUsage(m_lvm_thin_volume, m_lvm_thin_pool, m_lvm_volume_group, used_bytes, out_of_space, err)) {
+		dprintf(D_ALWAYS, "Failed to poll managed volume (may not put job on hold correctly): %s\n", err.getFullText().c_str());
+		return;
+	}
+	if (used_bytes >= static_cast<uint64_t>(m_lvm_max_size_kb*1024)) {
+		std::stringstream ss;
+		ss << "Job is using " << (used_bytes/1024) << "KB of space, over the limit of " << m_lvm_max_size_kb << "KB";
+		dprintf(D_ALWAYS, "%s\n", ss.str().c_str());
+		jic->holdJob(ss.str().c_str(), CONDOR_HOLD_CODE::JobOutOfResources, 0);
+		m_lvm_held_job = true;
+	}
+	if (out_of_space) {
+		auto now = time(NULL);
+		if ((m_lvm_last_space_issue > 0) && (now - m_lvm_last_space_issue > 60)) {
+			dprintf(D_ALWAYS, "ERROR: Underlying thin pool is out of space and not recovering; evicting this job but not holding it.\n");
+			jic->holdJob("Underlying thin pool is out of space and not recovering", 0, 0);
+			m_lvm_held_job = true;
+			return;
+		} else if (m_lvm_last_space_issue < 0) {
+			dprintf(D_ALWAYS, "WARNING: Thin pool used by startd (%s) is out of space; writes will be paused until this is resolved.\n",
+				m_lvm_thin_pool.c_str());
+			m_lvm_last_space_issue = now;
+		}
+	} else {
+		m_lvm_last_space_issue = -1;
+	}
+#endif // LINUX
 }

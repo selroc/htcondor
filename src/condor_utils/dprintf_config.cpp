@@ -57,29 +57,23 @@ dprintf_config_ContinueOnFailure ( int fContinue )
 // configure tool_on_error output from cat_and_flags, or if cat_and_flags is 0
 // configure it from the TOOL_ON_ERROR_DEBUG parameter.
 int
-dprintf_config_tool_on_error(int cat_and_flags)
+dprintf_config_tool_on_error(const char * flags)
 {
 	dprintf_output_settings tool_output[1];
 	int cOutputs = 0;
 
-	if (cat_and_flags) {
-		extern void _condor_set_debug_flags_ex(const char *, int, unsigned int &, DebugOutputChoice &, DebugOutputChoice &);
-		tool_output[cOutputs].logPath = ">BUFFER";
-		tool_output[cOutputs].HeaderOpts = 0;
-		tool_output[cOutputs].choice = 0;
-		tool_output[cOutputs].VerboseCats = 0;
-		_condor_set_debug_flags_ex(NULL, cat_and_flags,
-			tool_output[cOutputs].HeaderOpts,
-			tool_output[cOutputs].choice,
-			tool_output[cOutputs].VerboseCats);
-		if (tool_output[cOutputs].choice & 1<<D_ALWAYS) tool_output[cOutputs].accepts_all = true;
-		++cOutputs;
-	} else {
-		char * pval = param("TOOL_DEBUG_ON_ERROR");
+	char * pval = nullptr; 
+	if (flags) {
+		pval = expand_param(flags);
+	}
+	if ( ! pval) {
+		pval = param("TOOL_DEBUG_ON_ERROR");
+	}
+	{ // this brace is to avoid re-indenting the code below
 		if (pval) {
 			tool_output[cOutputs].logPath = ">BUFFER";
 			tool_output[cOutputs].HeaderOpts = 0;
-			tool_output[cOutputs].choice |= (1<<D_ALWAYS | 1<<D_ERROR);
+			tool_output[cOutputs].choice |= (1<<D_ALWAYS) | (1<<D_ERROR) | (1<<D_STATUS);
 			tool_output[cOutputs].VerboseCats = 0;
 			tool_output[cOutputs].accepts_all = true;
 			_condor_parse_merge_debug_flags( pval, 0,
@@ -98,17 +92,14 @@ dprintf_config_tool_on_error(int cat_and_flags)
 }
 
 int
-dprintf_config_tool(const char* subsys, int /*flags*/, const char * logfile /*=NULL*/)
+dprintf_config_tool(const char* subsys, const char * flags, const char * logfile /*=NULL*/)
 {
 	char *pval = NULL;
-	char pname[ BUFSIZ ];
 	unsigned int HeaderOpts = 0;
 	DebugOutputChoice verbose = 0;
 
-	//PRAGMA_REMIND("TJ: allow callers of dprintf_config_tool to pass logging verbosity and flags");
-
 	dprintf_output_settings tool_output[2];
-	tool_output[0].choice = 1<<D_ALWAYS | 1<<D_ERROR;
+	tool_output[0].choice = (1<<D_ALWAYS) | (1<<D_ERROR) | (1<<D_STATUS);
 	tool_output[0].accepts_all = true;
 	
 	/*
@@ -123,14 +114,19 @@ dprintf_config_tool(const char* subsys, int /*flags*/, const char * logfile /*=N
 	/*
 	**  Then, add flags set by the subsys_DEBUG parameters
 	*/
-	(void)sprintf(pname, "%s_DEBUG", subsys);
-	pval = param(pname);//dprintf_param_funcs->param(pname);
-	if ( ! pval) {
-		pval = param("DEFAULT_DEBUG");//dprintf_param_funcs->param("DEFAULT_DEBUG");
+	if (flags) {
+		pval = expand_param(flags);
+	} else {
+		std::string pname;
+		formatstr(pname, "%s_DEBUG", subsys);
+		pval = param(pname.c_str());
+		if ( ! pval) {
+			pval = param("DEFAULT_DEBUG");
+		}
 	}
-	if( pval ) {
-		_condor_parse_merge_debug_flags( pval, 0, HeaderOpts, tool_output[0].choice, verbose);
-		free( pval );
+	if (pval) {
+		_condor_parse_merge_debug_flags(pval, 0, HeaderOpts, tool_output[0].choice, verbose);
+		free(pval);
 	}
 
 	/*
@@ -275,7 +271,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 	//PRAGMA_REMIND("TJ: move verbose into choice")
 
 	std::vector<struct dprintf_output_settings> DebugParams(1);
-	DebugParams[0].choice = 1<<D_ALWAYS | 1<<D_ERROR;
+	DebugParams[0].choice = (1<<D_ALWAYS) | (1<<D_ERROR) | (1<<D_STATUS);
 	DebugParams[0].accepts_all = true;
 
 	/*
@@ -312,7 +308,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 	/*
 	**  Then, add flags set by the subsys_DEBUG parameters
 	*/
-	(void)sprintf(pname, "%s_DEBUG", subsys);
+	(void)snprintf(pname, sizeof(pname), "%s_DEBUG", subsys);
 	pval = param(pname);//dprintf_param_funcs->param(pname);
 	if ( ! pval) {
 		pval = param("DEFAULT_DEBUG");//dprintf_param_funcs->param("DEFAULT_DEBUG");
@@ -340,7 +336,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 	DebugLockIsMutex = FALSE;
 #endif
 
-	(void)sprintf(pname, "%s_LOCK", subsys);
+	(void)snprintf(pname, sizeof(pname), "%s_LOCK", subsys);
 	if (DebugLock) {
 		free(DebugLock);
 	}
@@ -354,7 +350,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 #endif
 
 	if(!DebugLock) {
-		(void)sprintf(pname, "%s_LOG_KEEP_OPEN", subsys);
+		(void)snprintf(pname, sizeof(pname), "%s_LOG_KEEP_OPEN", subsys);
 		log_keep_open = param_boolean(pname, log_open_default);//dprintf_param_funcs->param_boolean(pname, log_open_default);
 	}
 
@@ -406,7 +402,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			param_index = (int)DebugParams.size();
 		}
 
-		(void)sprintf(pname, "%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "%s_LOG", subsys_and_level.c_str());
 
 		char *logPathParam = NULL;
 		if(debug_level == D_ALWAYS)
@@ -508,19 +504,19 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			logPathParam = NULL;
 		}
 
-		(void)sprintf(pname, "TRUNC_%s_LOG_ON_OPEN", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "TRUNC_%s_LOG_ON_OPEN", subsys_and_level.c_str());
 		DebugParams[param_index].want_truncate = param_boolean(pname, DebugParams[param_index].want_truncate) ? 1 : 0;//dprintf_param_funcs->param_boolean(pname, DebugParams[param_index].want_truncate) ? 1 : 0;
 
 		//PRAGMA_REMIND("TJ: move initialization of DebugLock")
 		if (debug_level == D_ALWAYS) {
-			(void)sprintf(pname, "%s_LOCK", subsys);
+			(void)snprintf(pname, sizeof(pname), "%s_LOCK", subsys);
 			if (DebugLock) {
 				free(DebugLock);
 			}
 			DebugLock = param(pname);
 		}
 
-		(void)sprintf(pname, "MAX_%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "MAX_%s_LOG", subsys_and_level.c_str());
 		pval = param(pname);
 		if (pval != NULL) {
 			long long maxlog = 0;
@@ -536,7 +532,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			free(pval);
 		}
 
-		(void)sprintf(pname, "MAX_NUM_%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "MAX_NUM_%s_LOG", subsys_and_level.c_str());
 		pval = param(pname);
 		if (pval != NULL) {
 			DebugParams[param_index].maxLogNum = param_integer(pname, 1, 0);

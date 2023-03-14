@@ -23,9 +23,6 @@ Quick Links:
    If you are upgrading an existing pool from 8.9.X to 9.0.X, please visit
    https://htcondor-wiki.cs.wisc.edu/index.cgi/wiki?p=UpgradingFromEightNineToNineZero
 
-   If you are upgrading an existing pool from 8.8.X to 9.0.X, please visit
-   :doc:`/version-history/upgrading-from-88-to-90-series`.
-
    If you are installing a new HTCondor pool from scratch, please read
    about :doc:`/getting-htcondor/index`
 
@@ -465,18 +462,21 @@ described.
     advertise a *condor_master* daemon to the collector. Any setting
     for this access level that is not defined will default to the
     corresponding setting in the ``DAEMON`` access level.
+    The ``ADVERTISE_MASTER`` level of access implies ``READ`` access. 
 
 ``ADVERTISE_STARTD``
     This access level is used specifically for commands used to
     advertise a *condor_startd* daemon to the collector. Any setting
     for this access level that is not defined will default to the
     corresponding setting in the ``DAEMON`` access level.
+    The ``ADVERTISE_STARTD`` level of access implies ``READ`` access. 
 
 ``ADVERTISE_SCHEDD``
     This access level is used specifically for commands used to
     advertise a *condor_schedd* daemon to the collector. Any setting
     for this access level that is not defined will default to the
     corresponding setting in the ``DAEMON`` access level.
+    The ``ADVERTISE_SCHEDD`` level of access implies ``READ`` access. 
 
 ``CLIENT``
     This access level is different from all the others. Whereas all of
@@ -981,7 +981,8 @@ SSL Authentication
 
 :index:`SSL<single: SSL; authentication>`
 
-SSL authentication utilizes X.509 certificates.
+SSL authentication utilizes X.509 certificates to establish trust between
+a client and a server.
 
 SSL authentication may be mutual or server-only.
 That is, the server always needs a certificate that can be verified by
@@ -992,7 +993,7 @@ configuration variable ``AUTH_SSL_REQUIRE_CLIENT_CERTIFICATE``
 that defaults to ``False``.
 If the value is ``False``, then the client may present a certificate
 to be verified by the server.
-if the client doesn't have a certificate, then its identity is set to
+If the client doesn't have a certificate, then its identity is set to
 ``unauthenticated`` by the server.
 If the value is ``True`` and the client doesn't have a certificate, then
 the SSL authentication fails (other authentication methods may then be
@@ -1012,7 +1013,7 @@ respectively. Similarly, the configuration variables
 ``AUTH_SSL_CLIENT_KEYFILE`` :index:`AUTH_SSL_CLIENT_KEYFILE` and
 ``AUTH_SSL_SERVER_KEYFILE`` :index:`AUTH_SSL_SERVER_KEYFILE`
 specify the locations for keys.  If no client certificate is used,
-the client with authenticate as user ``anonymous@ssl``.
+the client will authenticate as user ``anonymous@ssl``.
 
 The configuration variables ``AUTH_SSL_SERVER_CAFILE``
 :index:`AUTH_SSL_SERVER_CAFILE` and ``AUTH_SSL_CLIENT_CAFILE``
@@ -1024,6 +1025,68 @@ issued by trusted certificate authorities. Similarly,
 specify a directory with one or more files, each which may contain a
 single CA certificate. The directories must be prepared using the
 OpenSSL ``c_rehash`` utility.
+
+Bootstrapping SSL Authentication
+''''''''''''''''''''''''''''''''
+HTCondor daemons exposed to the Internet may utilize server certificates provided
+by well-known authorities; however, SSL can be difficult to bootstrap for non-public
+hosts.
+
+Accordingly, on first startup, if
+``COLLECTOR_BOOTSTRAP_SSL_CERTIFICATE`` is ``True``,
+the *condor_collector* generates a new CA and key
+in the locations pointed to by ``TRUST_DOMAIN_CAFILE`` :index:`TRUST_DOMAIN_CAFILE`
+and ``TRUST_DOMAIN_CAKEY`` :index:`TRUST_DOMAIN_CAKEY`,
+respectively.  If ``AUTH_SSL_SERVER_CERTFILE`` or ``AUTH_SSL_SERVER_KEYFILE`` does
+not exist, the collector will generate a host certificate and key using the generated
+CA and write them to the respective locations.
+
+The first time an unknown CA is encountered by tool such as ``condor_status``, the tool
+will prompt the user on whether it should trust the CA; the prompt looks like the following:
+
+.. code-block:: text
+
+   $ condor_status
+   The remote host collector.wisc.edu presented an untrusted CA certificate with the following fingerprint:
+   SHA-256: 781b:1d:1:ca:b:f7:ab:b6:e4:a3:31:80:ae:28:9d:b0:a9:ee:1b:c1:63:8b:62:29:83:1f:e7:88:29:75:6:
+   Subject: /O=condor/CN=hcc-briantest7.unl.edu
+   Would you like to trust this server for current and future communications?
+   Please type 'yes' or 'no':
+
+The result will be persisted in a file at ``.condor/known_hosts`` inside the user's home directory.
+
+Similarly, a daemon authenticating as a client against a remote server will record the result
+of the authentication in a system-wide trust whose location is kept in the configuration variable
+``SEC_SYSTEM_KNOWN_HOSTS`` :index:`SEC_SYSTEM_KNOWN_HOSTS`.  Since a daemon cannot prompt the
+administrator for a decision, it will always deny unknown CAs _unless_ ``BOOTSTRAP_SSL_SERVER_TRUST``
+:index:`BOOTSTRAP_SSL_SERVER_TRUST` is set to ``true``.
+
+The first time any daemon is authenticated, even if it's not through SSL, it will be noted in the
+``known_hosts`` file.
+
+The format of the ``known_hosts`` file is line-oriented and has three fields,
+
+.. code-block:: text
+
+   HOSTNAME METHOD CERTIFICATE_DATA
+
+Any blank line or line prefixed with ``#`` will be ignored.
+Any line prefixed with ``!`` will result in the CA certificate to _not_ be trusted.  To easily switch
+an untrusted CA to be trusted, simply delete the ``!`` prefix.
+
+For example, collector.wisc.edu would be trusted with this file entry using SSL:
+
+.. code-block:: text
+
+   collector.wisc.edu SSL MIIBvjCCAWSgAwIBAgIJAJRheVnN5ZDyMAoGCCqGSM49BAMCMDIxDzANBgNVBAoMBmNvbmRvcjEfMB0GA1UEAwwWaGNjLWJyaWFudGVzdDcudW5sLmVkdTAeFw0yMTA1MTcxOTQ3MjRaFw0zMTA1MTUxOTQ3MjNaMDIxDzANBgNVBAoMBmNvbmRvcjEfMB0GA1UEAwwWaGNjLWJyaWFudGVzdDcudW5sLmVkdTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPN7qu+qdsfP6WR++UucrZYvMhssre8jvgWsnPBdzCYU/EqHYp+wri/aAKyDrLM5R1lWX44jSykgIpTOCLJUS/ajYzBhMB0GA1UdDgQWBBRBPe8Ga9Q7X3F198fWBSg6VT1DZDAfBgNVHSMEGDAWgBRBPe8Ga9Q7X3F198fWBSg6VT1DZDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwICBDAKBggqhkjOPQQDAgNIADBFAiARfW+suELxSzSdi9u20hFs/aSXpd+gwJ6Ne8jjG+y/2AIhAO6f3ff9nnYRmesFbvt1lv+LosOMbeiUdVoaKFOGIyuJ
+
+
+The following line would cause collector.wisc.edu to _not_ be trusted:
+
+.. code-block:: text
+
+   !collector.wisc.edu SSL MIIBvjCCAWSgAwIBAgIJAJRheVnN5ZDyMAoGCCqGSM49BAMCMDIxDzANBgNVBAoMBmNvbmRvcjEfMB0GA1UEAwwWaGNjLWJyaWFudGVzdDcudW5sLmVkdTAeFw0yMTA1MTcxOTQ3MjRaFw0zMTA1MTUxOTQ3MjNaMDIxDzANBgNVBAoMBmNvbmRvcjEfMB0GA1UEAwwWaGNjLWJyaWFudGVzdDcudW5sLmVkdTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPN7qu+qdsfP6WR++UucrZYvMhssre8jvgWsnPBdzCYU/EqHYp+wri/aAKyDrLM5R1lWX44jSykgIpTOCLJUS/ajYzBhMB0GA1UdDgQWBBRBPe8Ga9Q7X3F198fWBSg6VT1DZDAfBgNVHSMEGDAWgBRBPe8Ga9Q7X3F198fWBSg6VT1DZDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwICBDAKBggqhkjOPQQDAgNIADBFAiARfW+suELxSzSdi9u20hFs/aSXpd+gwJ6Ne8jjG+y/2AIhAO6f3ff9nnYRmesFbvt1lv+LosOMbeiUdVoaKFOGIyuJ
+
 
 Kerberos Authentication
 '''''''''''''''''''''''
@@ -1263,9 +1326,9 @@ from a pool signing key.  It also allows the administrator to install what are
 effectively multiple passwords. As tokens are derived from a specific signing key,
 if an administrator removes the signing key from the directory specified in ``SEC_PASSWORD_DIRECTORY``,
 then all derived tokens are immediately invalid.  Most simple installs will
-utilize a single signing key, kept in ``SEC_TOKEN_POOL_SIGNING_KEY``.  On Linux the same file
+utilize a single signing key, kept in ``SEC_TOKEN_POOL_SIGNING_KEY_FILE``.  On Linux the same file
 can be both the pool signing key and the pool password if ``SEC_PASSWORD_FILE``
-and ``SEC_TOKEN_POOL_SIGNING_KEY`` to refer to the same file.  However this is not preferred
+and ``SEC_TOKEN_POOL_SIGNING_KEY_FILE`` to refer to the same file.  However this is not preferred
 because in order to properly interoperate with older versions of HTCondor the pool password will
 be read as a text file and truncated at the first NULL character.  This differs from
 the pool signing key which is read as binary in HTCondor 9.0.  Some 8.9 releases
@@ -1275,7 +1338,7 @@ interoperate with 9.0 if the pool signing key file contains NULL characters.
 The pool password in the ``SEC_PASSWORD_FILE`` can be created utilizing ``condor_store_cred``
 (as specified in
 :ref:`admin-manual/security:password authentication`).  Alternately, the *condor_collector*
-process will automatically generate a pool signing key in ``SEC_TOKEN_POOL_SIGNING_KEY`` on startup
+process will automatically generate a pool signing key in ``SEC_TOKEN_POOL_SIGNING_KEY_FILE`` on startup
 if that file does not exist
 
 To generate a token, the administrator may utilize the ``condor_token_create``
@@ -1468,6 +1531,29 @@ NTSSPI is best-used in a way similar to file system authentication in
 Unix, and probably should not be used for authentication between two
 computers.
 
+SciTokens Authentication
+''''''''''''''''''''''''
+
+A SciToken is a form of JSON Web Token (JWT) that the client can present
+that the server can verify. Authentication of the server by the client
+is done via an SSL host certificate (the same as with SSL authentication).
+More information about SciTokens can be found at
+`https://scitokens.org <https://scitokens.org>`_.
+
+Some other JWT token types can be used with the SciTokens
+authentication method. WLCG tokens are accepted automatically.
+Other token types, such as EGI CheckIn tokens, require some relaxation
+of the SciTokens validation checks.
+Configuration parameter ``SEC_SCITOKENS_ALLOW_FOREIGN_TOKEN_TYPES``
+determines whether any tokens will be accepted under these relaxed
+checks. It's a boolean value that defaults to ``True``.
+Configuration parameter ``SEC_SCITOKENS_FOREIGN_TOKEN_ISSUERS``
+determines which issuers' tokens will be accepted under these relaxed
+checks. It's a list of issuer URLs that defaults to the EGI CheckIn
+issuer.
+These parameters should be used with caution, as they disable some
+security checks.
+
 Ask MUNGE for Authentication
 ''''''''''''''''''''''''''''
 
@@ -1573,6 +1659,10 @@ the following mappings, with some additional logic noted below:
     MUNGE (.*) \1
     CLAIMTOBE (.*) \1
     PASSWORD (.*) \1
+    SCITOKENS .* PLUGIN:*
+
+For SciTokens, the authenticated name is the ``iss`` and ``sub``
+claims of the token, separated by a comma.
 
 For Kerberos, if ``KERBEROS_MAP_FILE`` :index:`KERBEROS_MAP_FILE`
 is specified, the domain portion of the name is obtained by mapping the
@@ -1584,14 +1674,76 @@ See the :ref:`admin-manual/security:authentication` section for details.
 If authentication did not happen or failed and was not required, then
 the user is given the name unauthenticated@unmapped.
 
-With the integration of VOMS for authentication, the interpretation
-of the regular expression representing the authenticated name may
-change. First, the full serialized DN and FQAN are used in attempting a
-match. If no match is found using the full DN and FQAN, then the DN is
-then used on its own without the FQAN. Using this, roles or user names
-from the VOMS attributes may be extracted to be used as the target for
-mapping. And, in this case the FQAN are verified, permitting reliance on
-their authenticity.
+SciTokens Mapping Plugins
+'''''''''''''''''''''''''
+
+For SciTokens, the ``iss`` and ``sub`` claims of the token may not be
+sufficient to map the token to the appropriate canonical HTCondor user
+name.
+For these situations, a series of plugins can be employed to perform
+the mapping based on the full token payload.
+Each plugin can accept the token and provide a mapped identity or
+decline the token.
+If the plugin declines, then additional plugins are consulted.
+If all plugins decline the token, then the mapped identity
+``scitokens@unmapped`` is used.
+
+Each plugin is given a name consisting of alphanumeric characters.
+To use a set of plugins to perform a mapping, the third field of the
+matching line in the map file (the canonical name) should be the text
+``PLUGIN:`` followed by a comma-separated list of plugin names. Note
+that no spaces should be used within the list.
+
+For each plugin, the configuration paramater
+``SEC_SCITOKENS_PLUGIN_<name>_COMMAND`` gives the executable and
+optional command line arguments needed to invoke the plugin.
+The optional configuration parameter
+``SEC_SCITOKENS_PLUGIN_<name>_MAPPING`` specifies the mapped identity
+if the plugin accepts the token. If this paramater isn't set, then the
+plugin must write the mapped identity to its stdout.
+If the special value ``PLUGIN:*`` is given in the map file, then the
+configuration parameter ``SEC_SCITOKENS_PLUGIN_NAMES`` is consulted to
+determine the names of the plugins to run.
+
+When a plugin is invoked, the given binary is run. The payload of the
+token is provided via stdin and a series of environment variables
+(compatible with those set by ARC CE for its token plugins).
+If the plugin exits with status 0, then it accepts the token.
+If the plugin exits with status 1, then it declines the token and
+other plugins may be consulted.
+If the plugin exits with any other status, the entire mapping
+procedure fails and the client is rejected.
+
+Here's an example where one plugin is used for tokens from a specific
+issuer, and two other plugins are used for tokens from all other
+issuers. The first plugin has a fixed mapping given via configuration,
+while the other plugins will write the mapping to their stdout.
+The last plugin uses a command-line argument.
+
+First, this would appear in the map file:
+
+.. code-block:: condor-config
+
+    # Mapfile snippet:
+    # Plugin for specific token issuer
+    SCITOKENS ^https://phys.uz.edu, PLUGIN:A
+
+    # Plugins for all other token issuers
+    SCITOKENS .* PLUGIN:B,C
+
+Then, this would appear in the configuration files:
+
+.. code-block:: condor-config
+
+    # Configuration file snippet:
+    # Plugin A for specific issuer with fixed mapping result
+    SEC_SCITOKENS_PLUGIN_A_COMMAND = $(LIBEXEC)/A.plugin
+    SEC_SCITOKENS_PLUGIN_A_MAPPING = physgrp
+
+    # Plugins B,C for all other tokens
+    SEC_SCITOKENS_PLUGIN_B_COMMAND = $(LIBEXEC)/B.plugin 
+    SEC_SCITOKENS_PLUGIN_C_COMMAND = $(LIBEXEC)/C.plugin -A
+
 
 Encryption
 ----------
@@ -2862,7 +3014,7 @@ Under Unix, HTCondor runs jobs as one of
       machine that will run the job. Its default value is ``True`` on
       Unix platforms and ``False`` on Windows platforms.
    #. If the job's ClassAd has the attribute ``RunAsOwner``, it must be
-      set to ``True`; if unset, the job must be run on a Unix system.
+      set to ``True``; if unset, the job must be run on a Unix system.
       This attribute can be set up for all users by adding an attribute
       to configuration variable ``SUBMIT_ATTRS``
       :index:`SUBMIT_ATTRS`. If this were the only attribute to be

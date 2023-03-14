@@ -1,6 +1,6 @@
 /***************************************************************
  *
- * Copyright (C) 1990-2007, Condor Team, Computer Sciences Department,
+ * Copyright (C) 1990-2022, Condor Team, Computer Sciences Department,
  * University of Wisconsin-Madison, WI.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License"); you
@@ -164,16 +164,52 @@ printClassAd( void )
 
 	// Singularity support
 	if (htcondor::Singularity::enabled()) {
-		printf("%s = True\n", ATTR_HAS_SINGULARITY);
-		printf("%s = True\n", ATTR_HAS_CONTAINER);
-		printf("%s = \"%s\"\n", ATTR_SINGULARITY_VERSION, htcondor::Singularity::version());
 
-		if (htcondor::Singularity::canRunSandbox())  {
-			printf("%s = True\n", ATTR_HAS_SANDBOX_IMAGE);
+		bool can_run_sandbox = false;
+		bool can_use_pidnamespaces = true;
+		if (htcondor::Singularity::canRunSandbox(can_use_pidnamespaces))  {
+			can_run_sandbox = true;
 		}
+		bool can_run_sif = false;
 		if (htcondor::Singularity::canRunSIF())  {
-			printf("%s = True\n", ATTR_HAS_SIF);
+			can_run_sif = true;
 		}
+
+		// To consider Singularity operational, we needed it to pass
+		// running something... either sandbox or sif...
+		if (can_run_sandbox || can_run_sif) {
+			printf("%s = True\n", ATTR_HAS_SINGULARITY);
+			printf("%s = True\n", ATTR_HAS_CONTAINER);
+			// We can't test a download, so assume we can...
+			printf("%s = True\n", ATTR_HAS_DOCKER_URL);
+			if (can_run_sandbox) {
+				printf("%s = True\n", ATTR_HAS_SANDBOX_IMAGE);
+			}
+			if (can_run_sif) {
+				printf("%s = True\n", ATTR_HAS_SIF);
+			}
+			// So canRunSandbox() determined if this Singularity install can use pid namespaces.
+			// Use the result to set ATTR_HAS_SINGULARITY_PIDNAMESPACES explicitly to True or False for
+			// insertion into the slot ad, as subsequent invocations of the condor_starter
+			// will lookup this slot attribute to determine if pid namesapces are available.
+			printf("%s = %s\n", ATTR_HAS_SINGULARITY_PIDNAMESPACES, can_use_pidnamespaces ? "True" : "False");
+		}
+		else {
+			// If we made it here, we cannot run either sif or sandbox images.
+			// In this case, return HasSingularity=False, which means it is
+			// present on the EP but broken.
+			// In this case, add in SingularityOfflineReason attr to help explain why,
+			// just like we do for Docker.
+			printf("%s = False\n", ATTR_HAS_SINGULARITY);
+			std::string offline_reason = "Both SIF and Sandbox tests on startup failed";
+			if (!htcondor::Singularity::m_lastSingularityErrorLine.empty()) {
+				offline_reason += " : " + htcondor::Singularity::m_lastSingularityErrorLine;
+			}
+			printf("SingularityOfflineReason = \"%s\"\n",
+				EscapeChars(offline_reason.c_str(), "\"", '\\').c_str() // escape quotes in classad str
+			);
+		}
+		printf("%s = \"%s\"\n", ATTR_SINGULARITY_VERSION, htcondor::Singularity::version());
 	}
 
 	// Detect ability to encrypt execute directory
@@ -200,6 +236,25 @@ printClassAd( void )
 #if defined(WIN32)
 		// Advertise our ability to run jobs as the submitting user
 	printf("%s = True\n", ATTR_HAS_WIN_RUN_AS_OWNER);
+#endif
+
+#ifndef WIN32
+	// Many site intentionally remove /usr/sbin/ssh, which will
+	// break condor_ssh_to_job.  Let's advertise if it exists
+	// as if it doesn't, there's no hope of running condor_ssh_to_job
+
+	std::string sshd;
+	bool hasSshd = false;
+
+	param(sshd,"SSH_TO_JOB_SSHD", "/usr/sbin/sshd");
+	if (!sshd.empty()) {
+		int rc = access(sshd.c_str(), X_OK);
+		if (rc == 0) {
+			hasSshd = true;
+		}
+
+	}
+	printf("HasSshd = %s\n", hasSshd ? "true" : "false");
 #endif
 }
 
@@ -826,7 +881,7 @@ int exception_cleanup(int,int,const char*errmsg)
 int
 main( int argc, char **argv )
 {
-	set_mySubSystem( NULL, SUBSYSTEM_TYPE_STARTER );
+	set_mySubSystem( NULL, true, SUBSYSTEM_TYPE_STARTER );
 
 	dc_main_init = main_init;
 	dc_main_config = main_config;

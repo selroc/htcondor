@@ -24,7 +24,10 @@
 #include "classad/sink.h"
 #include "classad/classadCache.h"
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+
 
 extern "C" void to_lower (char *);	// from util_lib (config.c)
 
@@ -110,16 +113,6 @@ void SetOldClassAdSemantics(bool enable)
 		getSpecialAttrNames().erase( ATTR_CURRENT_TIME );
 	}
 }
-
-ClassAd::
-ClassAd ()
-{
-	parentScope = NULL;
-	do_dirty_tracking = false;
-	chained_parent_ad = NULL;
-	alternateScope = NULL;
-}
-
 
 ClassAd::
 ClassAd (const ClassAd &ad)
@@ -698,22 +691,6 @@ find(string const& attrName) const
 // --- end STL-like functions
 
 // --- begin lookup methods
-ExprTree *ClassAd::
-Lookup( const string &name ) const
-{
-	ExprTree *tree;
-	AttrList::const_iterator itr;
-
-	itr = attrList.find( name );
-	if (itr != attrList.end()) {
-		tree = itr->second;
-	} else if (chained_parent_ad != NULL) {
-		tree = chained_parent_ad->Lookup(name);
-	} else {
-		tree = NULL;
-	}
-	return tree;
-}
 
 ExprTree *ClassAd::
 LookupIgnoreChain( const string &name ) const
@@ -870,21 +847,23 @@ Remove( const string &name )
 		tree->SetParentScope( NULL );
 	}
 
-	// If the attribute is in the chained parent, we delete define it
-	// here as undefined, whether or not it was defined here.  This is
-	// behavior copied from old ClassAds. It's also one reason you
-	// probably don't want to use this feature in the future.
-	if (chained_parent_ad != NULL &&
-		chained_parent_ad->Lookup(name) != NULL) {
-
-		if (tree == NULL) {
-			tree = chained_parent_ad->Lookup(name);
+	// If there is a chained parent ad, we have to check to see if removing
+	// the attribute from the child caused the parent attribute to become visible.
+	// If it did, then we have to set the child attribute to the UNDEFINED value explicitly
+	// so that the parent attribute will not show through.
+	if (chained_parent_ad) {
+		ExprTree * parent_expr = chained_parent_ad->Lookup(name);
+		if (parent_expr) {
+			// If there was no attribute in the child ad
+			// we want to return a copy of the parent's expr-tree
+			// as if we had removed it from the child.
+			if ( ! tree) {
+				tree = parent_expr->Copy();
+				tree->SetParentScope( NULL );
+			}
+			ExprTree* plit  = Literal::MakeUndefined();
+			Insert(name, plit);
 		}
-		
-		Value undefined_value;
-		undefined_value.SetUndefinedValue();
-		ExprTree* plit  = Literal::MakeLiteral( undefined_value );
-		Insert(name, plit);
 	}
 	return tree;
 }
@@ -1108,48 +1087,35 @@ _GetDeepScope( ExprTree *tree ) const
 
 
 bool ClassAd::
-EvaluateAttr( const string &attr , Value &val ) const
+EvaluateAttr( const string &attr , Value &val, Value::ValueType mask ) const
 {
+	bool successfully_evaluated = false;
 	EvalState	state;
 	ExprTree	*tree;
 
 	state.SetScopes( this );
-	switch( LookupInScope( attr, tree, state ) ) {	
-		case EVAL_FAIL:
-			return false;
-
+	switch( LookupInScope( attr, tree, state ) ) {
 		case EVAL_OK:
-			return( tree->Evaluate( state, val ) );
+			successfully_evaluated = tree->Evaluate( state, val );
+			if ( ! val.SafetyCheck(state, mask)) {
+				successfully_evaluated = false;
+			}
+			break;
 
 		case EVAL_UNDEF:
+			successfully_evaluated = true;
 			val.SetUndefinedValue( );
-			return( true );
+			break;
 
 		case EVAL_ERROR:
+			successfully_evaluated = true;
 			val.SetErrorValue( );
-			return( true );
+			break;
 
+		case EVAL_FAIL:
 		default:
-			return false;
-	}
-}
-
-bool ClassAd::
-EvaluateExpr( const string& buf, Value &result ) const
-{
-	bool           successfully_evaluated;
-	ExprTree       *tree;
-	ClassAdParser  parser;
-
-	tree = NULL;
-	if (parser.ParseExpression(buf, tree)) {
-		successfully_evaluated = EvaluateExpr(tree, result);
-	} else {
-		successfully_evaluated = false;
-	}
-
-	if (NULL != tree) {
-		delete tree;
+			successfully_evaluated = false;
+			break;
 	}
 
 	return successfully_evaluated;
@@ -1157,13 +1123,47 @@ EvaluateExpr( const string& buf, Value &result ) const
 
 
 bool ClassAd::
-EvaluateExpr( const ExprTree *tree , Value &val ) const
+EvaluateExpr( const string& buf, Value &result ) const
+{
+	bool           successfully_evaluated = false;
+	ExprTree       *tree = nullptr;
+	ClassAdParser  parser;
+	EvalState      state;
+
+	if (parser.ParseExpression(buf, tree)) {
+		state.AddToDeletionCache(tree);
+		state.SetScopes( this );
+		successfully_evaluated = tree->Evaluate( state , result );
+		if (successfully_evaluated && ! result.SafetyCheck(state, Value::ValueType::SAFE_VALUES)) {
+			successfully_evaluated = false;
+		}
+	}
+
+	return successfully_evaluated;
+}
+
+
+// mask is a hint about what types are wanted back, but a mismatch between tye mask
+// and the evaluated type will not result in the function returning false.
+// this is for backward compatibility
+//
+bool ClassAd::
+EvaluateExpr( const ExprTree *tree , Value &val, Value::ValueType mask ) const
 {
 	EvalState	state;
 
 	state.SetScopes( this );
-	return( tree->Evaluate( state , val ) );
+	bool res = tree->Evaluate( state , val );
+	if ( ! res) {
+		return res;
+	}
+	if ( ! val.SafetyCheck(state, mask)) {
+		res = false;
+	}
+
+	return res;
 }
+
 
 bool ClassAd::
 EvaluateExpr( const ExprTree *tree , Value &val , ExprTree *&sig ) const
@@ -1171,91 +1171,95 @@ EvaluateExpr( const ExprTree *tree , Value &val , ExprTree *&sig ) const
 	EvalState	state;
 
 	state.SetScopes( this );
-	return( tree->Evaluate( state , val , sig ) );
+	bool res = tree->Evaluate( state , val , sig );
+	if (res && ! val.SafetyCheck(state, Value::ValueType::SAFE_VALUES)) {
+		res = false;
+	}
+	return res;
 }
 
 bool ClassAd::
 EvaluateAttrInt( const string &attr, int &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsIntegerValue( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsIntegerValue( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrInt( const string &attr, long &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsIntegerValue( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsIntegerValue( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrInt( const string &attr, long long &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsIntegerValue( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsIntegerValue( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrReal( const string &attr, double &r )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsRealValue( r ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsRealValue( r ) );
 }
 
 bool ClassAd::
 EvaluateAttrNumber( const string &attr, int &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsNumber( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsNumber( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrNumber( const string &attr, long &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsNumber( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsNumber( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrNumber( const string &attr, long long &i )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsNumber( i ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsNumber( i ) );
 }
 
 bool ClassAd::
 EvaluateAttrNumber( const string &attr, double &r )  const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsNumber( r ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsNumber( r ) );
 }
 
 bool ClassAd::
 EvaluateAttrString( const string &attr, char *buf, int len ) const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsStringValue( buf, len ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::STRING_VALUE ) && val.IsStringValue( buf, len ) );
 }
 
 bool ClassAd::
 EvaluateAttrString( const string &attr, string &buf ) const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsStringValue( buf ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::STRING_VALUE ) && val.IsStringValue( buf ) );
 }
 
 bool ClassAd::
 EvaluateAttrBool( const string &attr, bool &b ) const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsBooleanValue( b ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsBooleanValue( b ) );
 }
 
 bool ClassAd::
 EvaluateAttrBoolEquiv( const string &attr, bool &b ) const
 {
 	Value val;
-	return( EvaluateAttr( attr, val ) && val.IsBooleanValueEquiv( b ) );
+	return( EvaluateAttr( attr, val, Value::ValueType::NUMBER_VALUES ) && val.IsBooleanValueEquiv( b ) );
 }
 
 #if 0
@@ -1423,7 +1427,13 @@ _GetExternalReferences( const ExprTree *expr, const ClassAd *ad,
 
             ((const FunctionCall*)expr)->GetComponents( fnName, args );
             for( itr = args.begin( ); itr != args.end( ); itr++ ) {
-                if( !_GetExternalReferences( *itr, ad, state, refs, fullNames ) ) {
+				if( state.depth_remaining <= 0 ) {
+					return false;
+				}
+				state.depth_remaining--;
+				bool rval=_GetExternalReferences(*itr, ad, state, refs, fullNames);
+				state.depth_remaining++;
+				if( ! rval) {
 					return( false );
 				}
             }

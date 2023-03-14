@@ -43,6 +43,11 @@ Machine ClassAd Attributes
     ``"X86_64"``
         AMD/Intel 64-bit X86
 
+:classad-attribute:`Microarch`
+    On X86_64 Linux machines, this advertises the x86_64 microarchitecture,
+    like `x86_64-v2`.  See https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels
+    for details.
+
 :classad-attribute:`CanHibernate`
     The *condor_startd* has the capability to shut down or hibernate a
     machine when certain configurable criteria are met. However, before
@@ -193,9 +198,29 @@ Machine ClassAd Attributes
     This is useful for Vanilla universe jobs which require remote file
     access.
 
+:classad-attribute:`HasContainer`
+    A boolean value set to ``True`` if the machine is capable of
+    executing container universe jobs.
+
 :classad-attribute:`HasDocker`
     A boolean value set to ``True`` if the machine is capable of
     executing docker universe jobs.
+
+:classad-attribute:`DockerCachedImageSizeMb`
+    An integer value containing the number of megabytes of space used
+    by the docker image cache for cached images used by a worker node.
+    Excludes any images that may be in the cache that were not placed
+    there by HTCondor.
+
+:classad-attribute:`HasSandboxImage`
+    A boolean value set to ``True`` if the machine is capable of
+    executing container universe jobs with a singularity "sandbox"
+    image type
+
+:classad-attribute:`HasSIF`
+    A boolean value set to ``True`` if the machine is capable of
+    executing container universe jobs with a singularity "SIF"
+    image type
 
 :classad-attribute:`HasEncryptExecuteDirectory`
     A boolean value set to ``True`` if the machine is capable of
@@ -255,6 +280,11 @@ Machine ClassAd Attributes
 :classad-attribute:`HasSingularity`
     A boolean value set to ``True`` if the machine being advertised
     supports running jobs within Singularity containers.
+
+:classad-attribute:`HasSshd`
+    A boolean value set to ``True`` if the machine has a
+    /usr/sbin/sshd installed.  If ``False``, *condor_ssh_to_job* 
+    is unlikely to function.
 
 :classad-attribute:`HasVM`
     If the configuration triggers the detection of virtual machine
@@ -484,6 +514,11 @@ Machine ClassAd Attributes
     which is publishing this machine ClassAd. When using CCB,
     *condor_shared_port*, and/or an additional private network
     interface, that information will be included here as well.
+
+:classad-attribute:`MyCurrentTime`
+    The time, represented as the number of second elapsed since the Unix
+    epoch (00:00:00 UTC, Jan 1, 1970), at which the *condor_startd*
+    daemon last sent a ClassAd update to the *condor_collector*.
 
 :classad-attribute:`MyType`
     The ClassAd type; always set to the literal string ``"Machine"``.

@@ -196,6 +196,8 @@ const int DCJOBOPT_NO_CONDOR_ENV_INHERIT = (1<<5);   // do not pass CONDOR_INHER
 const int DCJOBOPT_USE_SYSTEMD_INET_SOCKET = (1<<6);	     // Pass the reli sock from systemd as the command socket.
 const int DCJOBOPT_INHERIT_FAMILY_SESSION = (1<<7);
 
+const int DC_STATUS_OOM_KILLED = (1 << 24);
+
 #define HAS_DCJOBOPT_SUSPEND_ON_EXEC(mask)  ((mask)&DCJOBOPT_SUSPEND_ON_EXEC)
 #define HAS_DCJOBOPT_NO_ENV_INHERIT(mask)  ((mask)&DCJOBOPT_NO_ENV_INHERIT)
 #define HAS_DCJOBOPT_ENV_INHERIT(mask)  (!(HAS_DCJOBOPT_NO_ENV_INHERIT(mask)))
@@ -209,25 +211,17 @@ const int DCJOBOPT_INHERIT_FAMILY_SESSION = (1<<7);
 // families
 struct FamilyInfo {
 
-	int max_snapshot_interval;
-	const char* login;
+	int max_snapshot_interval{-1};
+	const char* login{nullptr};
 #if defined(LINUX)
-	gid_t* group_ptr;
+	gid_t* group_ptr{nullptr};
 #endif
-	const char* glexec_proxy;
-	bool want_pid_namespace;
-	const char* cgroup;
+	bool want_pid_namespace{false};
+	const char* cgroup{nullptr};
+	uint64_t cgroup_memory_limit{0};
+	int cgroup_cpu_shares{0};
 
-	FamilyInfo() {
-		max_snapshot_interval = -1;
-		login = NULL;
-#if defined(LINUX)
-		group_ptr = NULL;
-#endif
-		glexec_proxy = NULL;
-		want_pid_namespace = false;
-		cgroup = NULL;
-	}
+	FamilyInfo() = default;
 };
 
 // Create_Process takes a sigset_t* as an argument for the signal mask to be
@@ -247,10 +241,17 @@ int BindAnyLocalCommandPort(ReliSock *rsock, SafeSock *ssock);
     TCP and UDP command socket */
 int BindAnyCommandPort(ReliSock *rsock, SafeSock *ssock, condor_protocol proto);
 
+// Multiple senders of DCSignalMsg assume it won't block when resuming a
+// session. This is false if the server is expected to send a reply to the
+// resumed session and the server is blocked (possibly trying to connect to
+// this process). This can result in a timeout-limited deadlock.
+// Since these messages are local to the machine and there's no data sent
+// after the security communication, disabling the server response to the
+// resume session request is acceptable.
 class DCSignalMsg: public DCMsg {
  public:
 	DCSignalMsg(pid_t pid, int s): DCMsg(DC_RAISESIGNAL)
-		{m_pid = pid; m_signal = s; m_messenger_delivery = false;}
+		{m_pid = pid; m_signal = s; m_messenger_delivery = false; setResumeResponse(false);}
 
 	int theSignal() const {return m_signal;}
 	pid_t thePid() const {return m_pid;}
@@ -329,6 +330,14 @@ class OptionalCreateProcessArgs {
   friend class DaemonCore;
 
   public:
+    OptionalCreateProcessArgs(/*very not-const*/ std::string &_err_return_msg) :
+        _priv(PRIV_UNKNOWN), reaper_id(1), want_command_port(TRUE),
+        want_udp_command_port(TRUE), _env(NULL), _cwd(NULL), family_info(NULL),
+        socket_inherit_list(NULL), _std(NULL), fd_inherit_list(NULL),
+        nice_inc(0), sig_mask(NULL), job_opt_mask(0), core_hard_limit(NULL),
+        affinity_mask(NULL), daemon_sock(NULL),
+        err_return_msg(_err_return_msg), _remap(NULL), as_hard_limit(0l)
+	{}
     OptionalCreateProcessArgs() :
         _priv(PRIV_UNKNOWN), reaper_id(1), want_command_port(TRUE),
         want_udp_command_port(TRUE), _env(NULL), _cwd(NULL), family_info(NULL),
@@ -384,7 +393,6 @@ class OptionalCreateProcessArgs {
     OptionalCreateProcessArgs & coreHardLimit(size_t * core_hard_limit ) { this->core_hard_limit = core_hard_limit; return *this; }
     OptionalCreateProcessArgs & affinityMask(int * affinity_mask) { this->affinity_mask = affinity_mask; return *this; }
     OptionalCreateProcessArgs & daemonSock(const char * daemon_sock) { this->daemon_sock = daemon_sock; return *this; }
-    OptionalCreateProcessArgs & errorReturnMsg(std::string & erm) { this->err_return_msg = erm; return *this; }
     OptionalCreateProcessArgs & remap(FilesystemRemap * fsr) { this->_remap = fsr; return *this; }
     OptionalCreateProcessArgs & asHardLimit(long ahl) { this->as_hard_limit = ahl; return *this; }
 
@@ -468,6 +476,20 @@ class DaemonCore : public Service
         @return Not_Yet_Documented
     */
     int Verify (char const *command_descrip, DCpermission perm, const condor_sockaddr& addr, const char * fqu, int log_level=D_ALWAYS);
+
+	/** Given a socket, check to see whether it has a given permission.
+	    This checks:
+	    - the authentication was done with an appropriate settings and methods.
+	    - any permission limits on the authentication (such as used with fine-grained tokens)
+	      are applied correctly.
+	    - the user / IP address has authorization (e.g., applies ALLOW_* / DENY_* from the IpVerify
+	      class).
+
+	    The `command_descrip` is used to generate a useful logging message on an authorization allowed
+	    or denied; log_level controls how "loud" the log message is.
+	 */
+    int Verify (char const *command_descrip, DCpermission perm, const Sock &sock, int log_level=D_ALWAYS);
+
     int AddAllowHost( const char* host, DCpermission perm );
 
     /** clear all sessions associated with the child 
@@ -485,7 +507,6 @@ class DaemonCore : public Service
         @param handler_descrip Not_Yet_Documented
         @param s               Not_Yet_Documented
         @param perm            Not_Yet_Documented
-        @param dprintf_flag    Not_Yet_Documented
 		@param force_authentication This command _must_ be authenticated.
         @param wait_for_payload Do a non-blocking select for read for this
                                 many seconds (0 means none) before calling
@@ -496,8 +517,7 @@ class DaemonCore : public Service
                           const char *    com_descrip,
                           CommandHandler  handler, 
                           const char *    handler_descrip,
-                          DCpermission    perm             = ALLOW,
-                          int             dprintf_flag     = D_COMMAND,
+                          DCpermission    perm,
                           bool            force_authentication = false,
                           int             wait_for_payload = 0,
                           std::vector<DCpermission> *alternate_perms = nullptr);
@@ -509,7 +529,6 @@ class DaemonCore : public Service
         @param handler_descrip Not_Yet_Documented
         @param s               Not_Yet_Documented
         @param perm            Not_Yet_Documented
-        @param dprintf_flag    Not_Yet_Documented
 		@param force_authentication This command _must_ be authenticated.
         @param wait_for_payload Do a non-blocking select for read for this
                                 many seconds (0 means none) before calling
@@ -521,8 +540,7 @@ class DaemonCore : public Service
                           CommandHandlercpp  handlercpp, 
                           const char *       handler_descrip,
                           Service *          s,
-                          DCpermission       perm             = ALLOW,
-                          int                dprintf_flag     = D_COMMAND,
+                          DCpermission       perm,
                           bool               force_authentication = false,
                           int                wait_for_payload = 0,
                           std::vector<DCpermission> * alternate_perms = nullptr);
@@ -548,8 +566,7 @@ class DaemonCore : public Service
                           const char *    com_descrip,
                           CommandHandler  handler, 
                           const char *    handler_descrip,
-                          DCpermission    perm             = ALLOW,
-                          int             dprintf_flag     = D_COMMAND,
+                          DCpermission    perm,
                           bool            force_authentication = false,
                           int             wait_for_payload = STANDARD_COMMAND_PAYLOAD_TIMEOUT,
                           std::vector<DCpermission> *alternate_perms = nullptr);
@@ -560,8 +577,7 @@ class DaemonCore : public Service
                           CommandHandlercpp  handlercpp, 
                           const char *       handler_descrip,
                           Service *          s,
-                          DCpermission       perm             = ALLOW,
-                          int                dprintf_flag     = D_COMMAND,
+                          DCpermission       perm,
                           bool               force_authentication = false,
                           int                wait_for_payload = STANDARD_COMMAND_PAYLOAD_TIMEOUT,
                           std::vector<DCpermission> * alternate_perms = nullptr);
@@ -753,6 +769,7 @@ class DaemonCore : public Service
         @return Not_Yet_Documented
     */
     bool Send_Signal (pid_t pid, int sig);
+    bool Signal_Myself(int sig);
 
 	/**  Send a signal to a process, as a nonblocking operation.
 		 If the caller cares about the success/failure status, this
@@ -860,14 +877,12 @@ class DaemonCore : public Service
         @param handler          Not_Yet_Documented
         @param handler_descrip  Not_Yet_Documented
         @param s                Not_Yet_Documented
-        @param perm             Not_Yet_Documented
         @return -1 if iosock is NULL, -2 is reregister, 0 or above on success
     */
     int Register_Socket (Stream*           iosock,
                          const char *      iosock_descrip,
                          SocketHandler     handler,
                          const char *      handler_descrip,
-                         DCpermission      perm             = ALLOW,
                          HandlerType       handler_type = HANDLE_READ,
                          void **           prev_entry = NULL);
 
@@ -877,7 +892,6 @@ class DaemonCore : public Service
         @param handlercpp       Not_Yet_Documented
         @param handler_descrip  Not_Yet_Documented
         @param s                Not_Yet_Documented
-        @param perm             Not_Yet_Documented
         @return -1 if iosock is NULL, -2 is reregister, 0 or above on success
     */
     int Register_Socket (Stream*              iosock,
@@ -885,7 +899,6 @@ class DaemonCore : public Service
                          SocketHandlercpp     handlercpp,
                          const char *         handler_descrip,
                          Service*             s,
-                         DCpermission         perm = ALLOW,
                          HandlerType          handler_type = HANDLE_READ,
                          void **              prev_entry = NULL);
 
@@ -903,7 +916,6 @@ class DaemonCore : public Service
                                 (SocketHandlercpp)NULL,
                                 "DC Command Handler",
                                 NULL,
-                                ALLOW,
 				HANDLE_READ,
                                 0); 
     }
@@ -982,15 +994,13 @@ class DaemonCore : public Service
         @param handler          Not_Yet_Documented
         @param handler_descrip  Not_Yet_Documented
         @param s                Not_Yet_Documented
-        @param perm             Not_Yet_Documented
         @return Not_Yet_Documented
     */
     int Register_Pipe (int		           pipe_end,
                          const char *      pipe_descrip,
                          PipeHandler       handler,
                          const char *      handler_descrip,
-                         HandlerType       handler_type     = HANDLE_READ,    
-                         DCpermission      perm             = ALLOW);
+                         HandlerType       handler_type     = HANDLE_READ);
 
     /** Not_Yet_Documented
         @param pipe_end         Not_Yet_Documented
@@ -998,7 +1008,6 @@ class DaemonCore : public Service
         @param handlercpp       Not_Yet_Documented
         @param handler_descrip  Not_Yet_Documented
         @param s                Not_Yet_Documented
-        @param perm             Not_Yet_Documented
         @return Not_Yet_Documented
     */
     int Register_Pipe (int					  pipe_end,
@@ -1006,8 +1015,7 @@ class DaemonCore : public Service
                          PipeHandlercpp       handlercpp,
                          const char *         handler_descrip,
                          Service*             s,
-                         HandlerType          handler_type = HANDLE_READ,    
-                         DCpermission         perm = ALLOW);
+                         HandlerType          handler_type = HANDLE_READ);
 
     /** Not_Yet_Documented
         @param pipe_end           Not_Yet_Documented
@@ -1417,16 +1425,19 @@ class DaemonCore : public Service
     int Kill_Family(pid_t);
     int Signal_Process(pid_t,int);
     
-	/** Used to explicitly initialize our ProcFamilyInterface object.
-	    Calling this is not required - if not called, the object
-	    will be initialized on-demand: the first time Create_Process
-		is called with a non-NULL FamilyInfo argument
-	*/
-	void Proc_Family_Init();
+	// This method should go away in the long term.
+	// Daemon Core should be responsible for unregistering any subfamily
+	// that it creates when asked to monitor subfamilies as a side-effect
+	// of Create_Process.  It does this after calling the Reaper, but in
+	// the starter, the starter exit's in the reaper before it returns
+	// to daemon core, so subfamilies never get unregistered, and thus
+	// cgroups are never deleted.  This should only be called from
+	// the starter, or any other daemon where the reaper calls exit
+	void Unregister_subfamily(pid_t pid);
 
 	/** Used to explicitly cleanup our ProcFamilyInterface object
 	    (used by the Master before it restarts, since in that
-	    case the DaemonCore destructor won't be called. also used by a glexec'd starter before it exits)
+	    case the DaemonCore destructor won't be called.
 	*/
 	void Proc_Family_Cleanup();
 
@@ -1647,7 +1658,7 @@ class DaemonCore : public Service
 
 	DCCollectorAdSequences & getUpdateAdSeq() { return m_collector_list->getAdSeq(); }
 
-	bool getStartTime(int & startTime);
+	time_t getStartTime() const {return m_startup_time;}
 
 		/**
 		   Indicates if this daemon wants to be restarted by its
@@ -1694,7 +1705,7 @@ class DaemonCore : public Service
 		/**
 			check hotness of wakeup select socket from an async thread. used for debugging
 		*/
-	int Async_test_Wake_up_select(void * &dst, int & dst_fd, void* &src, int & src_fd, MyString & status);
+	int Async_test_Wake_up_select(void * &dst, int & dst_fd, void* &src, int & src_fd, std::string & status);
 
 	/** Registers a socket for read and then calls HandleReq to
 			process a command on the socket once one becomes
@@ -1783,6 +1794,16 @@ class DaemonCore : public Service
 	} dc_stats;
 
 	bool wants_dc_udp_self() const { return m_wants_dc_udp_self;}
+
+		// Create a session that permits a remote entity to be an administrator
+		// of this daemon.
+		// - duration: Lifetime of the session.
+		// - capability (output): Resulting serialized session string.
+		// - Return: true on success.
+		// This is public so the collector process can invoke this directly for
+		// its selfAd.
+	bool SetupAdministratorSession(unsigned duration, std::string &capability);
+
   private:      
 
 		// do and our parents/children want/have a udp comment socket?
@@ -1856,7 +1877,7 @@ class DaemonCore : public Service
 	void SetDaemonSockName( char const *sock_name );
 
     int HandleSigCommand(int command, Stream* stream);
-    int HandleReq(int socki, Stream* accepted_sock=NULL);
+    int HandleReq(size_t socki, Stream* accepted_sock=NULL);
 	int HandleReq(Stream *insock, Stream* accepted_sock=NULL);
 	int HandleReqSocketTimerHandler();
 	int HandleReqSocketHandler(Stream *stream);
@@ -1879,7 +1900,6 @@ class DaemonCore : public Service
                          const char *handler_descrip,
                          Service* s, 
                          DCpermission perm,
-                         int dprintf_flag,
                          int is_cpp,
                          bool force_authentication,
                          int wait_for_payload,
@@ -1899,7 +1919,6 @@ class DaemonCore : public Service
                         SocketHandlercpp handlercpp,
                         const char *handler_descrip,
                         Service* s, 
-                        DCpermission perm,
 			HandlerType handler_type,
                         int is_cpp,
                         void **prev_entry = NULL);
@@ -1911,7 +1930,6 @@ class DaemonCore : public Service
                         const char *handler_descrip,
                         Service* s, 
 					    HandlerType handler_type, 
-					    DCpermission perm,
                         int is_cpp);
 
     int Register_Reaper(int rid,
@@ -1928,8 +1946,7 @@ class DaemonCore : public Service
 	                     PidEnvID* penvid,
 	                     const char* login,
 	                     gid_t* group,
-			     const char* cgroup,
-	                     const char* glexec_proxy);
+	                     const FamilyInfo* fi);
 
 	void CheckForTimeSkip(time_t time_before, time_t okay_delta);
 
@@ -1963,19 +1980,16 @@ class DaemonCore : public Service
         char*           command_descrip;
         char*           handler_descrip;
         void*           data_ptr;
-        int             dprintf_flag;
 	int             wait_for_payload;
 		// If there are alternate permission levels where the
 		// command is permitted, they will be listed here.
 	std::vector<DCpermission> *alternate_perm{nullptr};
 
-		CommandEnt() : num(0), is_cpp(true), force_authentication(false), handler(0), handlercpp(0), perm(ALLOW), service(0), command_descrip(0), handler_descrip(0), data_ptr(0), dprintf_flag(0), wait_for_payload(0) {}
+		CommandEnt() : num(0), is_cpp(true), force_authentication(false), handler(0), handlercpp(0), perm(ALLOW), service(0), command_descrip(0), handler_descrip(0), data_ptr(0), wait_for_payload(0) {}
     };
 
     void                DumpCommandTable(int, const char* = NULL);
-    int                 maxCommand;     // max number of command handlers
-    int                 nCommand;       // number of command handlers used
-    ExtArray<CommandEnt>         comTable;       // command table
+	std::vector<CommandEnt>         comTable;       // command table
     CommandEnt          m_unregisteredCommand;
 
     struct SignalEnt 
@@ -1994,9 +2008,7 @@ class DaemonCore : public Service
         void*           data_ptr;
     };
     void                DumpSigTable(int, const char* = NULL);
-    int                 maxSig;      // max number of signal handlers
-    int                 nSig;        // high-water mark of entries used
-    ExtArray<SignalEnt> sigTable;    // signal table
+	std::vector<SignalEnt> sigTable;    // signal table
     volatile int        sent_signal; // TRUE if a signal handler sends a signal
 
     struct SockEnt
@@ -2008,7 +2020,6 @@ class DaemonCore : public Service
         char*           iosock_descrip;
         char*           handler_descrip;
         void*           data_ptr;
-        DCpermission    perm;
         bool            is_cpp;
 		bool			is_connect_pending;
 		bool			is_reverse_connect_pending;
@@ -2020,11 +2031,9 @@ class DaemonCore : public Service
 		bool            is_command_sock;
     };
     void              DumpSocketTable(int, const char* = NULL);
-    int               maxSocket;  // number of socket handlers to start with
-    int               nSock;      // number of socket handler slots in use use
 	int				  nRegisteredSocks; // number of sockets registered, always < nSock
 	int               nPendingSockets; // number of sockets waiting on timers or any other callbacks
-    ExtArray<SockEnt> *sockTable; // socket table; grows dynamically if needed
+	std::vector<SockEnt> sockTable; // socket table; grows dynamically if needed
 
 		// number of file descriptors in use past which we should start
 		// avoiding the creation of new persistent sockets.  Do not use
@@ -2038,11 +2047,10 @@ class DaemonCore : public Service
 #else
 	typedef int PipeHandle;
 #endif
-	ExtArray<PipeHandle>* pipeHandleTable;
-	int maxPipeHandleIndex;
-	int pipeHandleTableInsert(PipeHandle);
-	void pipeHandleTableRemove(int);
-	int pipeHandleTableLookup(int, PipeHandle* = NULL);
+	std::vector<PipeHandle> pipeHandleTable;
+	size_t pipeHandleTableInsert(PipeHandle);
+	void pipeHandleTableRemove(size_t);
+	int pipeHandleTableLookup(size_t, PipeHandle* = NULL);
 	int maxPipeBuffer;
 
 	// this table is for dispatching registered pipes
@@ -2057,7 +2065,6 @@ class DaemonCore : public Service
         void*           data_ptr;
 		PidEntry*		pentry;
         int				index;		// index into the pipeHandleTable
-        DCpermission    perm;
 		HandlerType		handler_type;
         bool            is_cpp;
 		bool			call_handler;
@@ -2080,10 +2087,9 @@ class DaemonCore : public Service
         void*           data_ptr;
     };
     void                DumpReapTable(int, const char* = NULL);
-    int                 maxReap;        // max number of reaper handlers
-    int                 nReap;          // number of reaper handlers used
+    size_t              nReap;          // number of reaper handlers used
     int                 nextReapId;     // next reaper id to use
-    ExtArray<ReapEnt>  reapTable;      // reaper table
+	std::vector<ReapEnt>  reapTable;      // reaper table
     int                 defaultReaper;
 
     class PidEntry : public Service
@@ -2106,8 +2112,7 @@ class DaemonCore : public Service
 		LONG deallocate;
 		HANDLE watcherEvent;
 #endif
-        MyString sinful_string;
-        MyString parent_sinful_string;
+        std::string sinful_string;
         int is_local;
         int parent_is_local;
         int reaper_id;
@@ -2123,7 +2128,7 @@ class DaemonCore : public Service
 		/* the environment variables which allow me the track the pidfamily
 			of this pid (where applicable) */
 		PidEnvID penvid;
-		MyString shared_port_fname;
+		std::string shared_port_fname;
 		//Session ID and key for child process.
 		char* child_session_id;
     };
@@ -2238,9 +2243,7 @@ class DaemonCore : public Service
 		// i - index of registered socket
 		// default_to_HandleCommand - true if HandleCommand() should be called
 		//                          if there is no other callback function
-		// On return, i may be modified so that when incremented,
-		// it will index the next registered socket.
-	void CallSocketHandler( int &i, bool default_to_HandleCommand );
+	void CallSocketHandler( const size_t i, bool default_to_HandleCommand );
 	static void CallSocketHandler_worker_demarshall(void *args);
 	void CallSocketHandler_worker( int i, bool default_to_HandleCommand, Stream* asock );
 	
@@ -2323,7 +2326,7 @@ class DaemonCore : public Service
 
 	class CCBListeners *m_ccb_listeners;
 	class SharedPortEndpoint *m_shared_port_endpoint;
-	MyString m_daemon_sock_name;
+	std::string m_daemon_sock_name;
 	Sinful m_sinful;     // full contact info (public, private, ccb, etc.)
 	bool m_dirty_sinful; // true if m_sinful needs to be reinitialized
 	std::vector<Sinful> m_command_sock_sinfuls; // Cached copy of our command sockets' sinful strings.
@@ -2345,6 +2348,15 @@ class DaemonCore : public Service
 	void InitSharedPort(bool in_init_dc_command_socket=false);
 
 	std::string m_inherit_parent_sinful;
+
+		// Enable remote administration for this daemon.
+	void SetRemoteAdmin(bool remote_admin);
+
+	static unsigned m_remote_admin_seq;
+	static time_t m_startup_time;
+	bool m_enable_remote_admin{false};
+	time_t m_remote_admin_last_time{0};
+	std::string m_remote_admin_last;
 };
 
 /**
@@ -2426,13 +2438,6 @@ public:
 */
 [[noreturn]]
 extern PREFAST_NORETURN void DC_Exit( int status, const char *shutdown_program = NULL ) GCC_NORETURN;
-
-/** Call this function (inside your main_pre_dc_init() function) to
-    bypass the authorization initialization in daemoncore.  This is for
-    programs, such as condor_dagman, that are Condor daemons but should
-    run with the user's credentials.
-*/
-extern void DC_Skip_Auth_Init();
 
 /** Call this function (inside your main_pre_dc_init() function) to
     bypass the core limit initialization in daemoncore.  This is for

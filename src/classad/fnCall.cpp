@@ -37,26 +37,18 @@
 #include <sys/time.h>
 #endif
 
-#if defined(WIN32) && !defined(USE_PCRE) && !defined(USE_POSIX_REGEX)
-  #define USE_PCRE
-  #define HAVE_PCRE_H
-#endif
-
-#if defined USE_POSIX_REGEX 
-  #include <regex.h>
-#elif defined USE_PCRE
-  #ifdef HAVE_PCRE_H
-    #include <pcre.h>
-  #elif defined HAVE_PCRE_PCRE_H
-    #include <pcre/pcre.h>
-  #endif
-#endif
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 
 #ifdef UNIX
 #include <dlfcn.h>
 #endif
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+using std::set;
+
 
 namespace classad {
 
@@ -86,29 +78,29 @@ FunctionCall( )
 
 		// load up the function dispatch table
 			// type predicates
-		functionTable["isundefined"	] = (void*)isType;
-		functionTable["iserror"		] =	(void*)isType;
-		functionTable["isstring"	] =	(void*)isType;
-		functionTable["isinteger"	] =	(void*)isType;
-		functionTable["isreal"		] =	(void*)isType;
-		functionTable["islist"		] =	(void*)isType;
-		functionTable["isclassad"	] =	(void*)isType;
-		functionTable["isboolean"	] =	(void*)isType;
-		functionTable["isabstime"	] =	(void*)isType;
-		functionTable["isreltime"	] =	(void*)isType;
+		functionTable["isundefined"	] = isType;
+		functionTable["iserror"		] =	isType;
+		functionTable["isstring"	] =	isType;
+		functionTable["isinteger"	] =	isType;
+		functionTable["isreal"		] =	isType;
+		functionTable["islist"		] =	isType;
+		functionTable["isclassad"	] =	isType;
+		functionTable["isboolean"	] =	isType;
+		functionTable["isabstime"	] =	isType;
+		functionTable["isreltime"	] =	isType;
 
 			// list membership
-		functionTable["member"		] =	(void*)testMember;
-		functionTable["identicalmember"	] =	(void*)testMember;
+		functionTable["member"		] =	testMember;
+		functionTable["identicalmember"	] =	testMember;
 
 		// Some list functions, useful for lists as sets
-		functionTable["size"        ] = (void*)size;
-		functionTable["sum"         ] = (void*)sumAvg;
-		functionTable["avg"         ] = (void*)sumAvg;
-		functionTable["min"         ] = (void*)minMax;
-		functionTable["max"         ] = (void*)minMax;
-		functionTable["anycompare"  ] = (void*)listCompare;
-		functionTable["allcompare"  ] = (void*)listCompare;
+		functionTable["size"        ] = size;
+		functionTable["sum"         ] = sumAvg;
+		functionTable["avg"         ] = sumAvg;
+		functionTable["min"         ] = minMax;
+		functionTable["max"         ] = minMax;
+		functionTable["anycompare"  ] = listCompare;
+		functionTable["allcompare"  ] = listCompare;
 
 			// basic apply-like functions
 		/*
@@ -119,88 +111,86 @@ FunctionCall( )
 		*/
 
 			// time management
-		functionTable["time"        ] = (void*)epochTime;
-		functionTable["currenttime"	] =	(void*)currentTime;
-		functionTable["timezoneoffset"] =(void*)timeZoneOffset;
-		functionTable["daytime"		] =	(void*)dayTime;
-		//functionTable["makedate"	] =	(void*)makeDate;
-		functionTable["getyear"		] =	(void*)getField;
-		functionTable["getmonth"	] =	(void*)getField;
-		functionTable["getdayofyear"] =	(void*)getField;
-		functionTable["getdayofmonth"] =(void*)getField;
-		functionTable["getdayofweek"] =	(void*)getField;
-		functionTable["getdays"		] =	(void*)getField;
-		functionTable["gethours"	] =	(void*)getField;
-		functionTable["getminutes"	] =	(void*)getField;
-		functionTable["getseconds"	] =	(void*)getField;
-		functionTable["splittime"   ] = (void*)splitTime;
-		functionTable["formattime"  ] = (void*)formatTime;
-		//functionTable["indays"		] =	(void*)inTimeUnits;
-		//functionTable["inhours"		] =	(void*)inTimeUnits;
-		//functionTable["inminutes"	] =	(void*)inTimeUnits;
-		//functionTable["inseconds"	] =	(void*)inTimeUnits;
+		functionTable["time"        ] = epochTime;
+		functionTable["currenttime"	] =	currentTime;
+		functionTable["timezoneoffset"] =timeZoneOffset;
+		functionTable["daytime"		] =	dayTime;
+		//functionTable["makedate"	] =	makeDate;
+		functionTable["getyear"		] =	getField;
+		functionTable["getmonth"	] =	getField;
+		functionTable["getdayofyear"] =	getField;
+		functionTable["getdayofmonth"] =getField;
+		functionTable["getdayofweek"] =	getField;
+		functionTable["getdays"		] =	getField;
+		functionTable["gethours"	] =	getField;
+		functionTable["getminutes"	] =	getField;
+		functionTable["getseconds"	] =	getField;
+		functionTable["splittime"   ] = splitTime;
+		functionTable["formattime"  ] = formatTime;
+		//functionTable["indays"		] =	inTimeUnits;
+		//functionTable["inhours"		] =	inTimeUnits;
+		//functionTable["inminutes"	] =	inTimeUnits;
+		//functionTable["inseconds"	] =	inTimeUnits;
 
 			// string manipulation
-		functionTable["strcat"		] =	(void*)strCat;
-		functionTable["join"		] =	(void*)strCat;
-		functionTable["toupper"		] =	(void*)changeCase;
-		functionTable["tolower"		] =	(void*)changeCase;
-		functionTable["substr"		] =	(void*)subString;
-		functionTable["strcmp"      ] = (void*)compareString;
-		functionTable["stricmp"     ] = (void*)compareString;
+		functionTable["strcat"		] =	strCat;
+		functionTable["join"		] =	strCat;
+		functionTable["toupper"		] =	changeCase;
+		functionTable["tolower"		] =	changeCase;
+		functionTable["substr"		] =	subString;
+		functionTable["strcmp"      ] = compareString;
+		functionTable["stricmp"     ] = compareString;
 
 			// version comparison
-		functionTable["versioncmp"  ] = (void*)compareVersion;
-		functionTable["versionLE"   ] = (void*)compareVersion;
-		functionTable["versionLT"   ] = (void*)compareVersion;
-		functionTable["versionGE"   ] = (void*)compareVersion;
-		functionTable["versionGT"   ] = (void*)compareVersion;
+		functionTable["versioncmp"  ] = compareVersion;
+		functionTable["versionLE"   ] = compareVersion;
+		functionTable["versionLT"   ] = compareVersion;
+		functionTable["versionGE"   ] = compareVersion;
+		functionTable["versionGT"   ] = compareVersion;
 		// Not identical to str1 =?= str2 because it won't eat undefined.
-		functionTable["versionEQ"   ] = (void*)compareVersion;
-		functionTable["version_in_range"] = (void*)versionInRange;
+		functionTable["versionEQ"   ] = compareVersion;
+		functionTable["version_in_range"] = versionInRange;
 
 			// pattern matching (regular expressions)
-#if defined USE_POSIX_REGEX || defined USE_PCRE
-		functionTable["regexp"		] =	(void*)matchPattern;
-		functionTable["regexpmember"] =	(void*)matchPatternMember;
-		functionTable["regexps"     ] = (void*)substPattern;
-		functionTable["replace"     ] = (void*)substPattern;
-		functionTable["replaceall"  ] = (void*)substPattern;
-#endif
+		functionTable["regexp"		] =	matchPattern;
+		functionTable["regexpmember"] =	matchPatternMember;
+		functionTable["regexps"     ] = substPattern;
+		functionTable["replace"     ] = substPattern;
+		functionTable["replaceall"  ] = substPattern;
 
 			// conversion functions
-		functionTable["int"			] =	(void*)convInt;
-		functionTable["real"		] =	(void*)convReal;
-		functionTable["string"		] =	(void*)convString;
-		functionTable["bool"		] =	(void*)convBool;
-		functionTable["absTime"		] =	(void*)convTime;
-		functionTable["relTime"		] = (void*)convTime;
+		functionTable["int"			] =	convInt;
+		functionTable["real"		] =	convReal;
+		functionTable["string"		] =	convString;
+		functionTable["bool"		] =	convBool;
+		functionTable["absTime"		] =	convTime;
+		functionTable["relTime"		] = convTime;
 
 		// turn the contents of an expression into a string
 		// but *do not* evaluate it
-		functionTable["unparse"		] =	(void*)unparse;
-		functionTable["unresolved"	] = (void*)hasRefs;
+		functionTable["unparse"		] =	unparse;
+		functionTable["unresolved"	] = hasRefs;
 
 			// mathematical functions
-		functionTable["floor"		] =	(void*)doRound;
-		functionTable["ceil"		] =	(void*)doRound;
-		functionTable["ceiling"		] =	(void*)doRound;
-		functionTable["round"		] =	(void*)doRound;
-		functionTable["pow" 		] =	(void*)doMath2;
-		//functionTable["log" 		] =	(void*)doMath2;
-		functionTable["quantize"	] =	(void*)doMath2;
-		functionTable["random"      ] = (void*)random;
+		functionTable["floor"		] =	doRound;
+		functionTable["ceil"		] =	doRound;
+		functionTable["ceiling"		] =	doRound;
+		functionTable["round"		] =	doRound;
+		functionTable["pow" 		] =	doMath2;
+		//functionTable["log" 		] =	doMath2;
+		functionTable["quantize"	] =	doMath2;
+		functionTable["random"      ] = random;
 
 			// for compatibility with old classads:
-		functionTable["ifThenElse"  ] = (void*)ifThenElse;
-		functionTable["interval" ] = (void*)interval;
-		functionTable["eval"] = (void*)eval;
+		functionTable["ifThenElse"  ] = ifThenElse;
+		functionTable["interval" ] = interval;
+		functionTable["eval"] = eval;
 
 			// string list functions:
 			// Note that many other string list functions are defined
 			// externally in the Condor classad compatibility layer.
-		functionTable["stringListsIntersect" ] = (void*)stringListsIntersect;
-		functionTable["debug"      ] = (void*)debug;
+		functionTable["stringListsIntersect" ] = stringListsIntersect;
+		functionTable["debug"      ] = debug;
 
 		initialized = true;
 	}
@@ -330,7 +320,7 @@ void FunctionCall::RegisterFunction(
     FuncTable &functionTable = getFunctionTable();
 
 	if (functionTable.find(functionName) == functionTable.end()) {
-		functionTable[functionName] = (void *) function;
+		functionTable[functionName] = function;
 	}
 	return;
 }
@@ -341,7 +331,7 @@ void FunctionCall::RegisterFunctions(
 	if (functions != NULL) {
 		while (functions->function != NULL) {
 			RegisterFunction(functions->functionName, 
-							 (ClassAdFunc) functions->function);
+							 functions->function);
 			functions++;
 		}
 	}
@@ -388,12 +378,12 @@ bool FunctionCall::RegisterSharedLibraryFunctions(
 					success = true;
 					/*
 					while (functions->apparentFunctionName != NULL) {
-						void *function;
+						ClassAdFunc function;
 						string functionName = functions->apparentFunctionName;
 						function = dlsym(dynamic_library_handle, 
 										 functions->actualFunctionName);
 						RegisterFunction(functionName,
-										 (ClassAdFunc) function);
+										 function);
 						success = true;
 						functions++;
 					}
@@ -453,7 +443,7 @@ MakeFunctionCall( const string &str, vector<ExprTree*> &args )
 	FuncTable::iterator	itr = functionTable.find( str );
 
 	if( itr != functionTable.end( ) ) {
-		fc->function = (ClassAdFunc)itr->second;
+		fc->function = itr->second;
 	} else {
 		fc->function = NULL;
 	}
@@ -1439,7 +1429,7 @@ splitTime(const char*, const ArgumentList &argList, EvalState &state,
 	Value &result )
 {
 	Value 	arg;
-    ClassAd *split;
+	ClassAd *split = nullptr;
 
 	if( argList.size( ) != 1 ) {
 		result.SetErrorValue( );
@@ -1451,12 +1441,15 @@ splitTime(const char*, const ArgumentList &argList, EvalState &state,
 		return false;	
 	}
 
-    if (!arg.IsClassAdValue() && doSplitTime(arg, split)) {
-        result.SetClassAdValue(split);
-    } else {
-        result.SetErrorValue();
-    }
-    return true;
+	if (arg.IsUndefinedValue()) {
+		result.SetUndefinedValue();
+	} else if (!arg.IsClassAdValue() && doSplitTime(arg, split)) {
+		state.AddToDeletionCache(split);
+		result.SetClassAdValue(split);
+	} else {
+		result.SetErrorValue();
+	}
+	return true;
 }
 
 bool FunctionCall::
@@ -1622,7 +1615,14 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 	// join has a special case for 1 or 2 args when the last argument is a list.
 	// for 1 arg, join the list items, for 2 args, join arg1 with arg0 as the separator
 	if (is_join && num_args > 0 && num_args <= 2) {
+		if( state.depth_remaining <= 0 ) {
+			result.SetErrorValue();
+			return false;
+		}
+		state.depth_remaining--;
+
 		rval = argListIn[num_args-1]->Evaluate(state, listVal);
+		state.depth_remaining++;
 		if (rval) {
 			ExprList *listToJoin;
 			if (listVal.IsListValue(listToJoin)) {
@@ -1648,9 +1648,17 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 		Value  stringVal;
 
 		s = "";
+
+		if( state.depth_remaining <= 0 ) {
+			result.SetErrorValue();
+			return false;
+		}
+		state.depth_remaining--;
+
 		if( !( rval = (*args)[i]->Evaluate( state, val ) ) ) {
 			break;
 		}
+		state.depth_remaining++;
 
 		if (!val.IsStringValue(s)) {
 			convertValueToStringValue(val, stringVal);
@@ -2078,7 +2086,7 @@ bool FunctionCall::hasRefs(const char*, const ArgumentList& argList, EvalState& 
 
 	// for the 2 arg form, the second argument is a regex pattern to be compared against
 	// each of the unresolved references
-	pcre * re = nullptr;
+	pcre2_code * re = nullptr;
 	if (argList.size() == 2) {
 		const char* pattern = nullptr;
 		if ( !argList[1]->Evaluate(state, arg) || ! arg.IsStringValue(pattern)) {
@@ -2086,9 +2094,10 @@ bool FunctionCall::hasRefs(const char*, const ArgumentList& argList, EvalState& 
 			return false;
 		}
 
-		const char  *error_message;
-		int error_offset;
-		re = pcre_compile(pattern, PCRE_CASELESS, &error_message, &error_offset, NULL);
+		int error_number;
+		PCRE2_SIZE error_offset;
+		PCRE2_SPTR pattern_pcre2str = reinterpret_cast<const unsigned char *>(pattern);
+		re = pcre2_compile(pattern_pcre2str, PCRE2_ZERO_TERMINATED, PCRE2_CASELESS, &error_number, &error_offset, NULL);
 		if ( ! re) {
 			// error in pattern
 			result.SetErrorValue();
@@ -2108,10 +2117,14 @@ bool FunctionCall::hasRefs(const char*, const ArgumentList& argList, EvalState& 
 					len -= 7;
 				}
 				if (re) {
-					int ovec[6];
-					if (pcre_exec(re, NULL, attr, len, 0, PCRE_NOTEMPTY, ovec, 6) > 0) {
+					pcre2_match_data * match_data = pcre2_match_data_create_from_pattern(re, NULL);
+					PCRE2_SPTR attr_pcre2str = reinterpret_cast<const unsigned char *>(attr);
+					if (pcre2_match(re, attr_pcre2str, len, 0, PCRE2_NOTEMPTY, match_data, NULL) > 0) {
 						result.SetBooleanValue(true); // found a match
+						pcre2_match_data_free(match_data);
 						break;
+					} else {
+						pcre2_match_data_free(match_data);
 					}
 				} else {
 					if (!val.empty()) val += ",";
@@ -2124,7 +2137,7 @@ bool FunctionCall::hasRefs(const char*, const ArgumentList& argList, EvalState& 
 	if ( ! re) {
 		result.SetStringValue(val);
 	} else {
-		pcre_free(re);
+		pcre2_code_free(re);
 	}
 	return true;
 }
@@ -2687,6 +2700,9 @@ eval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 		return true;
 	}
 
+	// add the new tree to the evaluation cache for later deletion
+	state.AddToDeletionCache(expr);
+
 	state.depth_remaining--;
 
 	expr->SetParentScope( state.curAd );
@@ -2694,8 +2710,6 @@ eval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 	bool eval_ok = expr->Evaluate( state, result );
 
 	state.depth_remaining++;
-
-	delete expr;
 
 	if( !eval_ok ) {
 		result.SetErrorValue();
@@ -2740,13 +2754,13 @@ interval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 
 	char strval[25];
 	if ( days != 0 ) {
-		sprintf(strval,"%d+%02d:%02d:%02d", days, abs(hours), abs(min), abs(secs) );
+		snprintf(strval, sizeof(strval), "%d+%02d:%02d:%02d", days, abs(hours), abs(min), abs(secs) );
 	} else if ( hours != 0 ) {
-		sprintf(strval,"%d:%02d:%02d", hours, abs(min), abs(secs) );
+		snprintf(strval, sizeof(strval), "%d:%02d:%02d", hours, abs(min), abs(secs) );
 	} else if ( min != 0 ) {
-		sprintf(strval,"%d:%02d", min, abs(secs) );
+		snprintf(strval, sizeof(strval), "%d:%02d", min, abs(secs) );
 	} else {
-		sprintf(strval,"%d", secs );
+		snprintf(strval, sizeof(strval), "%d", secs );
 	}
 	result.SetStringValue(strval);
 
@@ -2788,7 +2802,6 @@ debug( const char* name,const ArgumentList &argList,EvalState &state,
 	return true;
 }
 
-#if defined USE_POSIX_REGEX || defined USE_PCRE
 static bool regexp_helper(const char *pattern, const char *target,
                           const char *replace,
                           bool have_options, string options_string,
@@ -3046,151 +3059,39 @@ static bool regexp_helper(
     string     options_string,
     Value      &result)
 {
-    int         options;
+    int         options = 0;
 	int			status;
 	bool		full_target = false;
 	bool		find_all = false;
 
-#if defined (USE_POSIX_REGEX)
-	regex_t		re;
-
-	const int MAX_REGEX_GROUPS=11;
-	regmatch_t pmatch[MAX_REGEX_GROUPS];
-	size_t      nmatch = MAX_REGEX_GROUPS;
-
-    options = REG_EXTENDED;
-	if( !replace ) {
-		options |= REG_NOSUB;
-	}
-    if( have_options ){
-        // We look for the options we understand, and ignore
-        // any others that we might find, hopefully allowing
-        // forwards compatibility.
-        if ( options_string.find( 'i' ) != string::npos ) {
-            options |= REG_ICASE;
-        }
-        if ( options_string.find( 'f' ) != string::npos ) {
-            full_target = true;
-        }
-    }
-
-		// compile the patern
-	if( regcomp( &re, pattern, options ) != 0 ) {
-			// error in pattern
-		result.SetErrorValue( );
-		return( true );
-	}
-
-		// test the match
-	status = regexec( &re, target, nmatch, pmatch, 0 );
-
-		// dispose memory created by regcomp()
-	regfree( &re );
-
-	if( status == 0 && replace ) {
-		string group_buffers[MAX_REGEX_GROUPS];
-		char const *groups[MAX_REGEX_GROUPS];
-		int ngroups = MAX_REGEX_GROUPS;
-		int i;
-
-		for(i=0;i<MAX_REGEX_GROUPS;i++) {
-			regoff_t rm_so = pmatch[i].rm_so;
-			regoff_t rm_eo = pmatch[i].rm_eo;
-			if( rm_so >= 0 ) {
-				group_buffers[i].append(target,rm_so,rm_eo-rm_so);
-				groups[i] = group_buffers[i].c_str();
-			}
-			else {
-				groups[i] = NULL;
-			}
-		}
-
-		string output;
-		bool replace_success = true;
-
-		if ( full_target ) {
-			output.append(target, pmatch[0].rm_so);
-		}
-		while (*replace) {
-			if (*replace == '\\') {
-				if (isdigit(replace[1])) {
-					int offset = replace[1] - '0';
-					replace++;
-					if( offset >= ngroups || !groups[offset] ) {
-						replace_success = false;
-						break;
-					}
-					output += groups[offset];
-				} else {
-					output += '\\';
-				}
-			} else {
-				output += *replace;
-			}
-			replace++;
-		}
-		if ( replace_success && full_target ) {
-			output.append(target+pmatch[0].rm_eo, strlen(target+pmatch[0].rm_eo));
-		}
-
-		if( replace_success ) {
-			result.SetStringValue( output );
-		}
-		else {
-			result.SetErrorValue( );
-		}
-		return( true );
-	}
-	else if( status == REG_NOMATCH && replace ) {
-		if ( full_target ) {
-			result.SetStringValue( target );
-		} else {
-			result.SetStringValue( "" );
-		}
-		return( true );
-	}
-
-		// check for success/failure
-	if( status == 0 ) {
-		result.SetBooleanValue( true );
-		return( true );
-	} else if( status == REG_NOMATCH ) {
-		result.SetBooleanValue( false );
-		return( true );
-	} else {
-			// some error; we could possibly return 'false' here ...
-		result.SetErrorValue( );
-		return( true );
-	}
-#elif defined (USE_PCRE)
-    const char  *error_message;
-    int         error_offset;
-    pcre        *re = NULL;
-	int group_count = 0;
-	int oveccount = 0;
-	int *ovector = NULL;
+	PCRE2_SIZE error_offset;
+	int error_code;
+	pcre2_code * re = NULL;
+	PCRE2_SPTR pattern_pcre2 = reinterpret_cast<const unsigned char *>(pattern);
+	PCRE2_SIZE *ovector = NULL;
 	bool empty_match = false;
-	int addl_opts = 0;
-	int target_len = strlen(target);
-	int target_idx = 0;
-	string output;
+	uint32_t addl_opts = 0;
+	PCRE2_SIZE target_len = (PCRE2_SIZE) strlen(target);
+	PCRE2_SPTR target_pcre2str = reinterpret_cast<const unsigned char *>(target);
 
-    options     = 0;
+	size_t target_idx = 0;
+	std::string output;
+
     if( have_options ){
         // We look for the options we understand, and ignore
         // any others that we might find, hopefully allowing
         // forwards compatibility.
         if ( options_string.find( 'i' ) != string::npos ) {
-            options |= PCRE_CASELESS;
+            options |= PCRE2_CASELESS;
         } 
         if ( options_string.find( 'm' ) != string::npos ) {
-            options |= PCRE_MULTILINE;
+            options |= PCRE2_MULTILINE;
         }
         if ( options_string.find( 's' ) != string::npos ) {
-            options |= PCRE_DOTALL;
+            options |= PCRE2_DOTALL;
         }
         if ( options_string.find( 'x' ) != string::npos ) {
-            options |= PCRE_EXTENDED;
+            options |= PCRE2_EXTENDED;
         }
 		if ( replace ) {
 			// The 'f' option means that the result should consist of
@@ -3207,17 +3108,12 @@ static bool regexp_helper(
 		}
     }
 
-    re = pcre_compile( pattern, options, &error_message,
-                      &error_offset, NULL );
+    re = pcre2_compile(pattern_pcre2, PCRE2_ZERO_TERMINATED, options, &error_code, &error_offset, NULL);
     if ( re == NULL ){
 			// error in pattern
 		result.SetErrorValue( );
 		goto cleanup;
 	}
-
-	pcre_fullinfo(re, NULL, PCRE_INFO_CAPTURECOUNT, &group_count);
-	oveccount = 3 * (group_count + 1); // +1 for the string itself
-	ovector = (int *) malloc(oveccount * sizeof(int));
 
 	// NOTE: For global replacement option 'g', we don't properly
 	//   handle situations where a single character of the target
@@ -3228,15 +3124,15 @@ static bool regexp_helper(
 	do {
 
 		if ( empty_match ) {
-			addl_opts = PCRE_NOTEMPTY_ATSTART | PCRE_ANCHORED;
+			addl_opts = PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED;
 		} else {
 			addl_opts = 0;
 		}
 
-        status = pcre_exec(re, NULL, target, target_len,
-                           target_idx, addl_opts, ovector, oveccount);
-
-		if (empty_match && status == PCRE_ERROR_NOMATCH) {
+		pcre2_match_data * match_data = pcre2_match_data_create_from_pattern(re, NULL);
+		status = pcre2_match(re, target_pcre2str, target_len, target_idx, addl_opts, match_data, NULL);
+		ovector = pcre2_get_ovector_pointer(match_data);
+		if (empty_match && status == PCRE2_ERROR_NOMATCH) {
 			output += target[target_idx];
 			target_idx++;
 			empty_match = false;
@@ -3245,16 +3141,15 @@ static bool regexp_helper(
 		}
 
 		if( status >= 0 && replace ) {
-
-			const char **groups = NULL;
+			PCRE2_UCHAR **groups_pcre2 = nullptr;
 			int ngroups = status;
 			const char *replace_ptr = replace;
 
 			if ( full_target ) {
-				output.append(&target[target_idx], ovector[0] - target_idx);
+				output.append(&target[target_idx], (ovector[0]) - target_idx);
 			}
 
-			if( pcre_get_substring_list(target,ovector,ngroups,&groups)!=0 ) {
+			if (pcre2_substring_list_get(match_data, &groups_pcre2, NULL)) {
 				result.SetErrorValue( );
 				goto cleanup;
 			}
@@ -3267,7 +3162,7 @@ static bool regexp_helper(
 							result.SetErrorValue();
 							goto cleanup;
 						}
-						output += groups[offset];
+						output += reinterpret_cast<const char *>(groups_pcre2[offset]);
 					} else {
 						output += '\\';
 					}
@@ -3277,17 +3172,19 @@ static bool regexp_helper(
 				replace_ptr++;
 			}
 
-			pcre_free_substring_list( groups );
+			pcre2_substring_list_free((PCRE2_SPTR *) groups_pcre2);
 
 			target_idx = ovector[1];
 			if ( ovector[0] == ovector[1] ) {
 				empty_match = true;
 			}
 		}
+	
+		pcre2_match_data_free(match_data);
 
     } while (status >= 0 && find_all);
 
-	if ( status < 0 && status != PCRE_ERROR_NOMATCH ) {
+	if ( status < 0 && status != PCRE2_ERROR_NOMATCH ) {
 		result.SetErrorValue();
 	} else if ( !replace ) {
 		result.SetBooleanValue( status >= 0 );
@@ -3299,14 +3196,10 @@ static bool regexp_helper(
 	}
  cleanup:
 	if ( re ) {
-		pcre_free(re);
+		pcre2_code_free(re);
 	}
-	free(ovector);
     return true;
-#endif
 }
-
-#endif /* defined USE_POSIX_REGEX || defined USE_PCRE */
 
 static bool 
 doSplitTime(const Value &time, ClassAd * &splitClassAd)

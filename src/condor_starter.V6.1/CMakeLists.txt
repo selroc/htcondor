@@ -39,7 +39,6 @@ local_user_log.cpp
 NTsenders.cpp
 os_proc.cpp
 parallel_proc.cpp
-privsep_helper.cpp
 remote_proc.cpp
 script_proc.cpp
 singularity.cpp
@@ -58,9 +57,10 @@ vm_proc.cpp
 )
 
 if (LINUX)
+	include_directories("${CMAKE_CURRENT_SOURCE_DIR}/../vendor/rapidjson.src/include")
 	list(APPEND starterElements
 		cgroup.linux.cpp  
-		glexec_privsep_helper.linux.cpp
+		../condor_startd.V6/VolumeManager.cpp
 	)
 endif(LINUX)
 
@@ -70,17 +70,8 @@ endif(UNIX)
 
 condor_daemon( EXE condor_starter SOURCES "${starterElements}" LIBRARIES "${CONDOR_LIBS};${LIBCGROUP_FOUND}" INSTALL "${C_SBIN}")
 
-if (HAVE_EXT_GLOBUS)
-	clone_install( condor_starter "${C_SBIN}" "condor_gridshell" "${C_SBIN}" )
-endif()
-
 # need to add all the other install targets for libexec.
 install ( FILES CondorJavaWrapper.class CondorJavaInfo.class DESTINATION ${C_LIB} )
-
-if(LINUX AND WANT_GLEXEC)
-	install (FILES condor_glexec_setup condor_glexec_run condor_glexec_cleanup condor_glexec_kill condor_glexec_update_proxy DESTINATION ${C_LIBEXEC} PERMISSIONS ${CONDOR_SCRIPT_PERMS} )
-	condor_exe(condor_glexec_job_wrapper "glexec_job_wrapper.linux.cpp" ${C_LIBEXEC} "${CONDOR_TOOL_LIBS}" OFF)
-endif()
 
 if (HAVE_SSH_TO_JOB)
 	install ( FILES condor_ssh_to_job_sshd_setup condor_ssh_to_job_shell_setup DESTINATION ${C_LIBEXEC} PERMISSIONS ${CONDOR_SCRIPT_PERMS} )
@@ -103,10 +94,22 @@ endif()
 # docker build -t htcondor_docker_test .
 # docker save htcondor_docker_test > htcondor_docker_test
 
-# At startup we run singularity with a sandbox dir of SBIN
+# At startup we run singularity with a sandbox dir of $(LIBEXEC)/singularity_test_sandbox
 # and run this small program to verify that it exits with code 37
 if (LINUX)
 	add_executable(exit_37 "exit_37.c")
+
+# Address Sanitizer can't deal with statically linked exes
+if (WITH_ADDRESS_SANITIZER)
+	set_target_properties( exit_37 PROPERTIES COMPILE_FLAGS "-fno-sanitize=address")
+	set_target_properties( exit_37 PROPERTIES LINK_FLAGS "-fno-sanitize=address")
+endif()
+
+if (WITH_UB_SANITIZER)
+	set_target_properties( exit_37 PROPERTIES COMPILE_FLAGS "-fno-sanitize=undefined")
+	set_target_properties( exit_37 PROPERTIES LINK_FLAGS "-fno-sanitize=undefined")
+endif()
+
 
 	# Our special assembly version of exit_37 needs special flags
 	# but only works on 64 bit linux
@@ -121,11 +124,14 @@ endif()
 # we can't assume that singularity is either, so we check in a small .sif file
 # built with 
 # mkdir chroot
-# cp $(SBIN)/exit_37 chroot
+# cp $(LIBEXEC)/singularity_test_sandbox/bin/exit_37 chroot
 # singularity build exit_37.sif chroot
 
 if (LINUX)
 	install ( FILES ${CMAKE_CURRENT_SOURCE_DIR}/htcondor_docker_test DESTINATION ${C_LIBEXEC} )
 	install ( FILES ${CMAKE_CURRENT_SOURCE_DIR}/exit_37.sif DESTINATION ${C_LIBEXEC} )
-	install ( FILES ${CMAKE_CURRENT_BINARY_DIR}/exit_37 DESTINATION ${C_SBIN} PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+	install ( DIRECTORY DESTINATION ${C_LIBEXEC}/singularity_test_sandbox )
+	install ( DIRECTORY DESTINATION ${C_LIBEXEC}/singularity_test_sandbox/dev )
+	install ( DIRECTORY DESTINATION ${C_LIBEXEC}/singularity_test_sandbox/proc )
+	install ( FILES ${CMAKE_CURRENT_BINARY_DIR}/exit_37 DESTINATION ${C_LIBEXEC}/singularity_test_sandbox PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endif()

@@ -97,7 +97,7 @@ int main(int argc, char **argv)
 
 			if( e->eventNumber == ULOG_SUBMIT ) {
 				SubmitEvent* ee = (SubmitEvent*) e;
-				printf( " (\"%s\")", ee->submitEventLogNotes );
+				printf( " (\"%s\")", ee->submitEventLogNotes.c_str() );
 				++totalSubmitted;
 				++netSubmitted;
 				printf( "\n Total submitted: %d; net submitted: %d\n",
@@ -106,8 +106,8 @@ int main(int argc, char **argv)
 			
 			if( e->eventNumber == ULOG_JOB_HELD ) {
 				JobHeldEvent* ee = (JobHeldEvent*) e;
-				printf( " (code=%d subcode=%d)", ee->getReasonCode(),
-						ee->getReasonSubCode());
+				printf( " (code=%d subcode=%d)", ee->code,
+						ee->subcode);
 			}
 
 			if( e->eventNumber == ULOG_JOB_TERMINATED ) {

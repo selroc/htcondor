@@ -77,9 +77,9 @@ ProcFamilyProxy::ProcFamilyProxy(const char* address_suffix)
 	// the same "command pipe" (which would cause one of them to
 	// fail)
 	//
-	MyString procd_addr_base = m_procd_addr;
+	std::string procd_addr_base = m_procd_addr;
 	if (address_suffix != NULL) {
-		m_procd_addr.formatstr_cat(".%s", address_suffix);
+		formatstr_cat(m_procd_addr, ".%s", address_suffix);
 	}
 
 	// see what log file (if any) the ProcD will be using if we
@@ -94,7 +94,7 @@ ProcFamilyProxy::ProcFamilyProxy(const char* address_suffix)
 			m_procd_log = procd_log;
 			free(procd_log);
 			if (address_suffix != NULL) {
-				m_procd_log.formatstr_cat(".%s", address_suffix);
+				formatstr_cat(m_procd_log, ".%s", address_suffix);
 			}
 		}
 	}
@@ -266,17 +266,25 @@ ProcFamilyProxy::track_family_via_allocated_supplementary_group(pid_t pid, gid_t
 
 #if defined(HAVE_EXT_LIBCGROUP)
 bool
-ProcFamilyProxy::track_family_via_cgroup(pid_t pid, const char* cgroup)
+ProcFamilyProxy::track_family_via_cgroup(pid_t pid, const FamilyInfo *fi)
 {
 	bool response;
 	dprintf(D_FULLDEBUG, "track_family_via_cgroup: Tracking PID %u via cgroup %s.\n",
-		pid, cgroup);
-	if (!m_client->track_family_via_cgroup(pid, cgroup, response)) {
+		pid, fi->cgroup);
+	if (!m_client->track_family_via_cgroup(pid, fi->cgroup, response)) {
 		dprintf(D_ALWAYS,
 			"track_family_via_cgroup: ProcD communication error\n");
 		return false;
 	}
 	return response;
+}
+#else
+bool
+ProcFamilyProxy::track_family_via_cgroup(pid_t , const FamilyInfo *)
+{
+	dprintf(D_ALWAYS, "FATAL ERROR: Requested cgroup support on platform without support\n");
+	ASSERT(false);
+	return false;
 }
 #endif
 
@@ -357,20 +365,6 @@ ProcFamilyProxy::unregister_family(pid_t pid)
 }
 
 bool
-ProcFamilyProxy::use_glexec_for_family(pid_t pid, const char* proxy)
-{
-	// see "HACK" comment in register_subfamily for why we don't try
-	// to recover from errors here
-	//
-	bool response;
-	if (!m_client->use_glexec_for_family(pid, proxy, response)) {
-		dprintf(D_ALWAYS, "use_glexec_for_family: ProcD communication error\n");
-		return false;
-	}
-	return response;
-}
-
-bool
 ProcFamilyProxy::quit(void(*notify)(void*me, int pid, int status), void* me)
 {
 	if (m_procd_pid != -1) {
@@ -393,7 +387,7 @@ ProcFamilyProxy::start_procd()
 
 	// now, we build up an ArgList for the procd
 	//
-	MyString exe;
+	std::string exe;
 	ArgList args;
 
 	// path to the executable
@@ -446,10 +440,8 @@ ProcFamilyProxy::start_procd()
 	
 		// pass a log size arg if it is > 0 (-1 is the internal default, and 0 means to disable the log)
 		if (log_size > 0) {
-			MyString size_arg;
-			size_arg.serialize_int(log_size);
 			args.AppendArg("-R");
-			args.AppendArg(size_arg.c_str());
+			args.AppendArg(std::to_string(log_size));
 		}
 	}
 
@@ -535,31 +527,6 @@ ProcFamilyProxy::start_procd()
 		args.AppendArg(max_tracking_gid);
 	}
 #endif
-
-	// for the GLEXEC_JOB feature, we'll need to pass the ProcD paths
-	// to glexec and the condor_glexec_kill script
-	//
-	if (param_boolean("GLEXEC_JOB", false)) {
-		args.AppendArg("-I");
-		char* libexec = param("LIBEXEC");
-		if (libexec == NULL) {
-			EXCEPT("GLEXEC_JOB is defined, but LIBEXEC not configured");
-		}
-		MyString glexec_kill;
-		glexec_kill.formatstr("%s/condor_glexec_kill", libexec);
-		free(libexec);
-		args.AppendArg(glexec_kill.c_str());
-		char* glexec = param("GLEXEC");
-		if (glexec == NULL) {
-			EXCEPT("GLEXEC_JOB is defined, but GLEXEC not configured");
-		}
-		args.AppendArg(glexec);
-		free(glexec);
-		int glexec_retries = param_integer("GLEXEC_RETRIES",3,0);
-		int glexec_retry_delay = param_integer("GLEXEC_RETRY_DELAY",5,0);
-		args.AppendArg(glexec_retries);
-		args.AppendArg(glexec_retry_delay);
-	}
 
 	// done constructing the argument list; now register a reaper for
 	// notification when the procd exits

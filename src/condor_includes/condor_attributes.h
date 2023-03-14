@@ -65,7 +65,6 @@
 #define ATTR_BATCH_PROJECT  "BatchProject"
 #define ATTR_BATCH_QUEUE  "BatchQueue"
 #define ATTR_BATCH_RUNTIME  "BatchRuntime"
-#define ATTR_BOINC_AUTHENTICATOR_FILE "BoincAuthenticatorFile"
 #define ATTR_BUFFER_SIZE  "BufferSize"
 #define ATTR_BUFFER_FILES  "BufferFiles"
 #define ATTR_BUFFER_BLOCK_SIZE  "BufferBlockSize"
@@ -82,9 +81,10 @@
 #define ATTR_COMMAND  "Command"
 #define ATTR_COMPRESS_FILES  "CompressFiles"
 #define ATTR_CONTAINER_SERVICE_NAMES "ContainerServiceNames"
+#define ATTR_CONTAINER_DURATION "ContainerDuration"
 #define ATTR_CONTAINER_PORT_SUFFIX "_ContainerPort"
+#define ATTR_CONTAINER_TARGET_DIR "ContainerTargetDir"
 #define ATTR_REQUESTED_CAPACITY  "RequestedCapacity"
-#define ATTR_PAIRED_CLAIM_ID  "PairedClaimId"
 #define ATTR_CHECKPOINT_SIG  "CheckpointSig"
 #define ATTR_CHILD_CLAIM_IDS "ChildClaimIds"
 #define ATTR_CLAIM_ID  "ClaimId"
@@ -106,8 +106,8 @@
 #define ATTR_MATCHED_PSG  "Matched_PSG"
 #define ATTR_CONCURRENCY_LIMITS  "ConcurrencyLimits"
 #define ATTR_PREEMPTING_CONCURRENCY_LIMITS  "PreemptingConcurrencyLimits"
-#define ATTR_CONDOR_LOAD_AVG			AttrGetName( ATTRE_CONDOR_LOAD_AVG )
-#define ATTR_CONDOR_ADMIN				AttrGetName( ATTRE_CONDOR_ADMIN )
+#define ATTR_CONDOR_LOAD_AVG			"CondorLoadAvg"
+#define ATTR_CONDOR_ADMIN				"CondorAdmin"
 #define ATTR_CONSOLE_IDLE  "ConsoleIdle"
 #define ATTR_CONTAINER_IMAGE "ContainerImage"
 #define ATTR_CONTINUE  "Continue"
@@ -126,6 +126,7 @@
 #define ATTR_CPU_BUSY_TIME  "CpuBusyTime"
 #define ATTR_CPU_IS_BUSY  "CpuIsBusy"
 #define ATTR_CPUS  "Cpus"
+#define ATTR_CPUS_USAGE  "CpusUsage"
 #define ATTR_CPU_MODEL_NUMBER  "CpuModelNumber"
 #define ATTR_CPU_FAMILY  "CpuFamily"
 #define ATTR_CPU_CACHE_SIZE  "CpuCacheSize"
@@ -153,6 +154,12 @@
 #define ATTR_DAG_NODES_READY "DAG_NodesReady"
 #define ATTR_DAG_NODES_TOTAL "DAG_NodesTotal"
 #define ATTR_DAG_NODES_UNREADY "DAG_NodesUnready"
+#define ATTR_DAG_NODES_FUTILE "DAG_NodesFutile"
+#define ATTR_DAG_JOBS_SUBMITTED "DAG_JobsSubmitted"
+#define ATTR_DAG_JOBS_IDLE "DAG_JobsIdle"
+#define ATTR_DAG_JOBS_RUNNING "DAG_JobsRunning"
+#define ATTR_DAG_JOBS_HELD "DAG_JobsHeld"
+#define ATTR_DAG_JOBS_COMPLETED "DAG_JobsCompleted"
 #define ATTR_DAG_STATUS "DAG_Status"
 #define ATTR_DAG_STATS "DAG_Stats"
 #define ATTR_DAGMAN_MAXIDLE "DAGMan_MaxIdle"
@@ -168,9 +175,11 @@
 #define ATTR_DISK  "Disk"
 #define ATTR_DISK_USAGE  "DiskUsage"
 #define ATTR_SCRATCH_DIR_FILE_COUNT "ScratchDirFileCount"
+#define ATTR_DOCKER_CACHED_IMAGE_SIZE "DockerCachedImageSizeMb"
 #define ATTR_DOCKER_IMAGE "DockerImage"
 #define ATTR_DOCKER_NETWORKS "DockerNetworks"
 #define ATTR_DOCKER_NETWORK_TYPE "DockerNetworkType"
+#define ATTR_DOCKER_PULL_POLICY "DockerPullPolicy"
 #define ATTR_DOCKER_VOLUMES "DockerVolumes"
 #define ATTR_DOCKER_VERSION  "DockerVersion"
 #define ATTR_EMAIL_ATTRIBUTES  "EmailAttributes"
@@ -205,6 +214,7 @@
 #define ATTR_FILE_SEEK_COUNT  "FileSeekCount"
 #define ATTR_FLOCKED_JOBS  "FlockedJobs"
 #define ATTR_FLOCK_TO "FlockTo"
+#define ATTR_EFFECTIVE_FLOCK_LIST "EffectiveFlockList"
 #define ATTR_FLAVOR  "Flavor"
 #define ATTR_FORCE  "Force"
 #define ATTR_GAHP_PID "GahpPid"
@@ -222,7 +232,6 @@
 #define ATTR_GLOBAL_JOB_ID  "GlobalJobId"
 #define ATTR_GZIP  "GZIP"
 #define ATTR_JOB_MUST_EXPAND  "MustExpand"
-#define ATTR_GLOBUS_STATUS  "GlobusStatus"
 #define ATTR_X509_USER_PROXY  "x509userproxy"
 #define ATTR_X509_USER_PROXY_EXPIRATION  "x509UserProxyExpiration"
 #define ATTR_X509_USER_PROXY_SUBJECT  "x509userproxysubject"
@@ -237,19 +246,13 @@
 #define ATTR_TOKEN_ID "AuthTokenId"
 #define ATTR_DELEGATED_PROXY_EXPIRATION  "DelegatedProxyExpiration"
 #define ATTR_GRID_RESOURCE  "GridResource"
+#define ATTR_GRID_RESOURCE_UNAVAILABLE_REASON  "GridResourceUnavailableReason"
+#define ATTR_GRID_RESOURCE_UNAVAILABLE_REASON_CODE  "GridResourceUnavailableReasonCode"
 #define ATTR_GRID_RESOURCE_UNAVAILABLE_TIME  "GridResourceUnavailableTime"
 #define ATTR_GRID_JOB_ID  "GridJobId"
 #define ATTR_GRID_JOB_STATUS  "GridJobStatus"
 #define ATTR_GRIDMANAGER_SELECTION_VALUE "GridmanagerSelectionValue"
-// ckireyev myproxy
-#define ATTR_MYPROXY_SERVER_DN  "MyProxyServerDN"
-#define ATTR_MYPROXY_HOST_NAME  "MyProxyHost"
 #define ATTR_MYPROXY_PASSWORD  "MyProxyPassword"
-#define ATTR_MYPROXY_PASSWORD_EXISTS  "MyProxyPasswordExists"
-#define ATTR_MYPROXY_CRED_NAME  "MyProxyCredentialName"
-#define ATTR_MYPROXY_REFRESH_THRESHOLD  "MyProxyRefreshThreshold"
-#define ATTR_MYPROXY_NEW_PROXY_LIFETIME  "MyProxyNewProxyLifetime"
-// END ckireyev myproxy
 #define ATTR_HARDWARE_ADDRESS  "HardwareAddress"
 #define ATTR_HAS_CHECKPOINTING  "HasCheckpointing"
 #define ATTR_HAS_CONTAINER  "HasContainer"
@@ -257,6 +260,7 @@
 #define ATTR_HAS_DOCKER_URL  "HasDockerURL"
 #define ATTR_HAS_SANDBOX_IMAGE  "HasSandboxImage"
 #define ATTR_HAS_SIF  "HasSIF"
+#define ATTR_HAS_SINGULARITY_PIDNAMESPACES  "HasPidNamespaces"
 #define ATTR_HAS_ENCRYPT_EXECUTE_DIRECTORY "HasEncryptExecuteDirectory"
 #define ATTR_HAS_FILE_TRANSFER  "HasFileTransfer"
 #define ATTR_HAS_FILE_TRANSFER_PLUGIN_METHODS  "HasFileTransferPluginMethods"
@@ -328,6 +332,7 @@
 #define ATTR_JOB_MATERIALIZE_PAUSE_REASON "JobMaterializePauseReason"
 #define ATTR_JOB_ARGUMENTS1  "Args"
 #define ATTR_JOB_ARGUMENTS2  "Arguments"
+#define ATTR_JOB_CHECKPOINT_NUMBER  "CheckpointNumber"
 #define ATTR_JOB_CMD  "Cmd"
 #define ATTR_JOB_DESCRIPTION "JobDescription"
 #define ATTR_STACK_SIZE  "StackSize"
@@ -349,9 +354,9 @@
 #define ATTR_CUMULATIVE_TRANSFER_TIME  "CumulativeTransferTime"
 #define ATTR_JOB_DURATION  "JobDuration"
 #define ATTR_ENCRYPT_EXECUTE_DIRECTORY "EncryptExecuteDirectory"
-#define ATTR_JOB_ENVIRONMENT1  "Env"
-#define ATTR_JOB_ENVIRONMENT1_DELIM  "EnvDelim"
-#define ATTR_JOB_ENVIRONMENT2  "Environment"
+#define ATTR_JOB_ENV_V1  "Env"
+#define ATTR_JOB_ENV_V1_DELIM  "EnvDelim"
+#define ATTR_JOB_ENVIRONMENT  "Environment"
 #define ATTR_JOB_ERROR  "Err"
 #define ATTR_JOB_ORIGINAL_ERROR  "OriginalErr"
 #define ATTR_JOB_ERROR_SIZE  "ErrSize"
@@ -409,7 +414,6 @@
 #define ATTR_JOB_DISCONNECTED_DATE  "JobDisconnectedDate"
 #define ATTR_JOB_REMOTE_WALL_CLOCK  "RemoteWallClockTime"
 #define ATTR_JOB_LAST_REMOTE_WALL_CLOCK "LastRemoteWallClockTime"
-#define ATTR_JOB_ROOT_DIR  "RootDir"
 #define ATTR_JOB_RUN_COUNT  "JobRunCount"
 #define ATTR_JOB_MAX_RETRIES "JobMaxRetries"
 #define ATTR_JOB_SUCCESS_EXIT_CODE "JobSuccessExitCode"
@@ -428,8 +432,6 @@
 #define ATTR_JOB_TOE "ToE"  // termination of execution ad
 #define ATTR_JOB_STATUS_ON_RELEASE  "JobStatusOnRelease"
 #define ATTR_JOB_SUBMIT_METHOD "JobSubmitMethod"
-#define ATTR_JOB_TRANSFERRING_OUTPUT  "JobTransferringOutput"
-#define ATTR_JOB_TRANSFERRING_OUTPUT_TIME  "JobTransferringOutputTime"
 #define ATTR_JOB_UNIVERSE  "JobUniverse"
 #define ATTR_JOB_WALL_CLOCK_CKPT  "WallClockCheckpoint"
 #define ATTR_JOB_QUEUE_BIRTHDATE  "JobQueueBirthdate"
@@ -486,6 +488,7 @@
 #define ATTR_LOAD_AVG  "LoadAvg"
 #define ATTR_MACHINE  "Machine"
 #define ATTR_MACHINE_COUNT  "MachineCount"
+#define ATTR_MICROARCH  "Microarch"
 #define ATTR_REF_COUNT "RefCount"
 #define ATTR_MASTER_IP_ADDR  "MasterIpAddr"
 #define ATTR_MAX_HOSTS  "MaxHosts"
@@ -516,17 +519,14 @@
 #define ATTR_NEGOTIATOR_JOB_CONSTRAINT  "NegotiatorJobConstraint"
 #define ATTR_NEGOTIATOR_NAME  "NegotiatorName"
 #define ATTR_NEGOTIATOR_REQUIREMENTS  "NegotiatorRequirements"
-#define ATTR_NEGOTIATOR_SCHEDDS_ARE_SUBMITTERS  "NegotiatorScheddsAreSubmitters"
 #define ATTR_NETWORK_IN  "NetworkInputMb"
 #define ATTR_NETWORK_OUT  "NetworkOutputMb"
 #define ATTR_NEXT_CLUSTER_NUM  "NextClusterNum"
-#define ATTR_NEXT_JOBSET_NUM "NextJobSetNum"
+//#define ATTR_NEXT_JOBSET_NUM "NextJobSetNum"	// TJ removed NextJobSetNum, will use NextClusterNum to allocate jobset ids
 #define ATTR_NEXT_FETCH_WORK_DELAY  "NextFetchWorkDelay"
 #define ATTR_NEXT_JOB_START_DELAY  "NextJobStartDelay"
 #define ATTR_NODE  "Node"
-#define ATTR_NORDUGRID_RSL  "NordugridRSL"
 #define ATTR_ARC_APPLICATION  "ArcApplication"
-#define ATTR_ARC_RSL  "ArcRSL"
 #define ATTR_ARC_RTE  "ArcRte"
 #define ATTR_ARC_RESOURCES  "ArcResources"
 #define ATTR_NOTIFY_USER  "NotifyUser"
@@ -539,6 +539,7 @@
 #define ATTR_WINDOWS_SERVICE_PACK_MAJOR  "WindowsServicePackMajorVersion"
 #define ATTR_WINDOWS_SERVICE_PACK_MINOR  "WindowsServicePackMinorVersion"
 #define ATTR_WINDOWS_PRODUCT_TYPE  "WindowsProductType"
+#define ATTR_NUM_ADS "NumAds"
 #define ATTR_NUM_COD_CLAIMS  "NumCODClaims"
 #define ATTR_NUM_CKPTS  "NumCkpts"
 #define ATTR_NUM_CKPTS_RAW  "NumCkpts_RAW"
@@ -575,7 +576,7 @@
 #define ATTR_PARALLEL_SCRIPT_STARTER  "ParallelScriptStarter" 
 #define ATTR_PARALLEL_SHUTDOWN_POLICY  "ParallelShutdownPolicy" 
 #define ATTR_PERIODIC_CHECKPOINT  "PeriodicCheckpoint"
-#define ATTR_PLATFORM					AttrGetName( ATTRE_PLATFORM )
+#define ATTR_PLATFORM					"CondorPlatform"
 #define ATTR_PREEMPTING_ACCOUNTING_GROUP  "PreemptingAccountingGroup"
 #define ATTR_PREEMPTING_RANK  "PreemptingRank"
 #define ATTR_PREEMPTING_OWNER  "PreemptingOwner"
@@ -595,6 +596,7 @@
 #define ATTR_REAL_UID  "RealUid"
 #define ATTR_RELEASE_CLAIM  "ReleaseClaim"
 #define ATTR_RELEASE_REASON  "ReleaseReason"
+#define ATTR_REMOTE_ADMIN_CAPABILITY "_condor_PrivRemoteAdminCapability"
 #define ATTR_REMOTE_AUTOREGROUP  "RemoteAutoregroup"
 #define ATTR_REMOTE_GROUP  "RemoteGroup"
 #define ATTR_REMOTE_GROUP_RESOURCES_IN_USE  "RemoteGroupResourcesInUse"
@@ -618,6 +620,7 @@
 #define ATTR_RESOURCE_REQUEST_COUNT "_condor_RESOURCE_COUNT"  // used in resource request ad
 #define ATTR_RESOURCE_REQUEST_CLUSTER "_condor_RESOURCE_CLUSTER"
 #define ATTR_RESOURCE_REQUEST_PROC "_condor_RESOURCE_PROC"
+#define ATTR_RESTRICT_TO_AUTHENTICATED_IDENTITY "RestrictToAuthenticatedIdentity"
 #define ATTR_SLOT_TYPE  "SlotType"
 #define ATTR_SLOT_TYPE_ID  "SlotTypeID"
 #define ATTR_SLOT_WEIGHT  "SlotWeight"
@@ -636,14 +639,17 @@
 #define ATTR_SCHEDD_INTERVAL  "ScheddInterval"
 #define ATTR_SCHEDD_IP_ADDR  "ScheddIpAddr"
 #define ATTR_SCHEDD_NAME  "ScheddName"
+#define ATTR_SCHEDDS_ARE_SUBMITTERS  "ScheddsAreSubmitters"
 #define ATTR_SCHEDULER  "Scheduler"
 #define ATTR_SHADOW_WAIT_FOR_DEBUG  "ShadowWaitForDebug"
 #define ATTR_SHOULD_FORWARD	"ShouldForward"
 #define ATTR_SCITOKENS_FILE "ScitokensFile"
+#define ATTR_SEND_PRIVATE_ATTRIBUTES "SendPrivateAttributes"
+#define ATTR_SEND_SERVER_TIME "SendServerTime"
 #define ATTR_SINGULARITY_VERSION "SingularityVersion"
 #define ATTR_SLOT_ID  "SlotID"
-#define ATTR_SLOT_PAIR_NAME  "SlotPairName"
 #define ATTR_SLOT_PARTITIONABLE  "PartitionableSlot"
+#define ATTR_SLOT_BACKFILL  "BackfillSlot"
 #define ATTR_SLOT_DYNAMIC  "DynamicSlot"
 #define ATTR_SOURCE  "Source"
 #define ATTR_STAGE_IN_START  "StageInStart"
@@ -670,6 +676,7 @@
 #define ATTR_STREAM_ERROR  "StreamErr"
 #define ATTR_SUBMIT_EVENT_NOTES  "SubmitEventNotes"
 #define ATTR_SUBMIT_EVENT_USER_NOTES  "SubmitEventUserNotes"
+#define ATTR_SUBMITTER "Submitter"
 #define ATTR_SUBMITTER_GLOBAL_JOB_ID  "SubmitterGlobalJobId"
 #define ATTR_SUBMITTER_ID  "SubmitterId"
 #define ATTR_SUBMITTER_TAG  "SubmitterTag"
@@ -697,7 +704,7 @@
 #define ATTR_TOTAL_CLAIM_RUN_TIME  "TotalClaimRunTime"
 #define ATTR_TOTAL_CLAIM_SUSPEND_TIME  "TotalClaimSuspendTime"
 #define ATTR_TOTAL_CLUSTER_ADS  "TotalClusterAds"
-#define ATTR_TOTAL_CONDOR_LOAD_AVG			AttrGetName( ATTRE_TOTAL_LOAD )
+#define ATTR_TOTAL_CONDOR_LOAD_AVG			"TotalCondorLoadAvg"
 #define ATTR_TOTAL_CPUS  "TotalCpus"
 #define ATTR_TOTAL_SLOT_CPUS  "TotalSlotCpus"
 #define ATTR_TOTAL_DISK  "TotalDisk"
@@ -768,7 +775,6 @@
 #define ATTR_CLASSAD_LIFETIME  "ClassAdLifetime"
 #define ATTR_UPDATE_PRIO  "UpdatePrio"
 #define ATTR_UPDATE_SEQUENCE_NUMBER  "UpdateSequenceNumber"
-#define ATTR_USE_GRID_SHELL  "UseGridShell"
 #define ATTR_USE_PARROT  "UseParrot"
 #define ATTR_USER  "User"
 #define ATTR_VACATE  "Vacate"
@@ -806,7 +812,7 @@
 #define ATTR_NUM_HOSTS_UNCLAIMED  "HostsUnclaimed"
 #define ATTR_NUM_HOSTS_OWNER  "HostsOwner"
 #define ATTR_MAX_RUNNING_JOBS  "MaxRunningJobs"
-#define ATTR_VERSION					AttrGetName( ATTRE_VERSION )
+#define ATTR_VERSION					"CondorVersion"
 #define ATTR_SHADOW_VERSION  "ShadowVersion"
 #define ATTR_SHOULD_TRANSFER_FILES  "ShouldTransferFiles"
 #define ATTR_WHEN_TO_TRANSFER_OUTPUT  "WhenToTransferOutput"
@@ -914,6 +920,7 @@
 #define ATTR_SEC_USER  "User"
 #define ATTR_SEC_MY_REMOTE_USER_NAME  "MyRemoteUserName"
 #define ATTR_SEC_NEW_SESSION  "NewSession"
+#define ATTR_SEC_NONCE  "Nonce"
 #define ATTR_SEC_USE_SESSION  "UseSession"
 #define ATTR_SEC_COOKIE  "Cookie"
 extern const char ATTR_SEC_AUTHENTICATED_USER [];
@@ -929,6 +936,9 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 #define ATTR_SEC_REQUEST_ID "RequestId"
 #define ATTR_SEC_LIFETIME "Lifetime"
 #define ATTR_SEC_REQUESTED_KEY "RequestedKey"
+#define ATTR_SEC_ECDH_PUBLIC_KEY "ECDHPublicKey"
+#define ATTR_SEC_RESUME_RESPONSE "ResumeResponse"
+#define ATTR_SEC_NEGOTIATED_SESSION "NegotiatedSession"
 
 #define ATTR_MULTIPLE_TASKS_PER_PVMD  "MultipleTasksPerPvmd"
 
@@ -953,26 +963,6 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 
 #define ATTR_REPLICATION_LIST  "ReplicationList"
 
-#define ATTR_TREQ_DIRECTION  "TransferDirection"
-#define ATTR_TREQ_INVALID_REQUEST  "InvalidRequest"
-#define ATTR_TREQ_INVALID_REASON  "InvalidReason"
-#define ATTR_TREQ_HAS_CONSTRAINT  "HasConstraint"
-#define ATTR_TREQ_JOBID_LIST  "JobIDList"
-#define ATTR_TREQ_PEER_VERSION  "PeerVersion"
-#define ATTR_TREQ_FTP  "FileTransferProtocol" 
-#define ATTR_TREQ_TD_SINFUL  "TDSinful" 
-#define ATTR_TREQ_TD_ID  "TDID" 
-#define ATTR_TREQ_CONSTRAINT  "Constraint"
-#define ATTR_TREQ_JOBID_ALLOW_LIST  "JobIDAllowList"
-#define ATTR_TREQ_JOBID_DENY_LIST  "JobIDDenyList"
-#define ATTR_TREQ_CAPABILITY  "Capability"
-#define ATTR_TREQ_WILL_BLOCK  "WillBlock"
-#define ATTR_TREQ_NUM_TRANSFERS  "NumberOfTransfers"
-#define ATTR_TREQ_UPDATE_STATUS  "UpdateStatus"
-#define ATTR_TREQ_UPDATE_REASON  "UpdateReason"
-#define ATTR_TREQ_SIGNALED  "Signaled"
-#define ATTR_TREQ_SIGNAL  "Signal"
-#define ATTR_TREQ_EXIT_CODE  "ExitCode"
 #define ATTR_NEGOTIATOR_MATCH_EXPR  "NegotiatorMatchExpr"
 
 #define ATTR_VM_TYPE  "VM_Type"
@@ -1164,6 +1154,7 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 #define ATTR_RESUME_ON_COMPLETION  "ResumeOnCompletion"
 #define ATTR_DRAINING  "Draining"
 #define ATTR_DRAINING_REQUEST_ID  "DrainingRequestId"
+#define ATTR_DRAINING_DEADLINE "DrainingDeadline"
 #define ATTR_EXPECTED_MACHINE_GRACEFUL_DRAINING_COMPLETION  "ExpectedMachineGracefulDrainingCompletion"
 #define ATTR_EXPECTED_MACHINE_QUICK_DRAINING_COMPLETION  "ExpectedMachineQuickDrainingCompletion"
 #define ATTR_EXPECTED_MACHINE_GRACEFUL_DRAINING_BADPUT  "ExpectedMachineGracefulDrainingBadput"
@@ -1212,6 +1203,11 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 #define ATTR_SKIP_IF_DATAFLOW "SkipIfDataflow"
 #define ATTR_DATAFLOW_JOB_SKIPPED "DataflowJobSkipped"
 
+#ifdef LINUX
+#define ATTR_LINUX_CAPS "LinuxCapabilities"
+#endif
+
+#if 0
 // Enumerate the ones that can't be constant strings..
 typedef enum
 {
@@ -1226,12 +1222,12 @@ typedef enum
 // Prototypes
 int AttrInit( void );
 const char *AttrGetName( CONDOR_ATTR );
-
+#endif
 
 // ------------------------------------------------------
 // Stuff private to the environment variable manager
 // ------------------------------------------------------
-#if defined _CONDOR_ATTR_MAIN
+#if 0 // defined _CONDOR_ATTR_MAIN
 
 // Flags available
 typedef enum

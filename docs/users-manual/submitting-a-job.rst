@@ -81,7 +81,7 @@ The standard output for this job will go to the file
 the standard error output will go to ``errorfile``. 
 
 HTCondor will append events about the job to a log file wih the 
-requested name``myexe.log``. When the job
+requested name ``myexe.log``. When the job
 finishes, its exit conditions and resource usage will also be noted in the log file. 
 This file's contents are an excellent way to figure out what happened to jobs.
 
@@ -318,7 +318,7 @@ file.
     or, if you wanted to put the name of the machine the job ran on
     into the output file name, you could add
 
-    .. code-block: condor-submit
+    .. code-block:: condor-submit
 
       output = output_file.$$(Name)
 
@@ -328,7 +328,7 @@ file.
     For example, if want to pass 90% of the allocated memory as an
     argument to your job, the submit file can have
 
-    .. code-block: condor-submit
+    .. code-block:: condor-submit
 
         arguments = --mem $$([ Memory * 0.9 ])
 
@@ -1416,7 +1416,7 @@ Displaying the Factory
 *condor_q* can be use to show late materialization job factories in the *condor_schedd* by
 using the ``-factory`` option.
 
-.. code-block::
+.. code-block:: console
 
     > condor_q -factory
     -- Schedd: submit.example.org : <192.168.101.101:9618?... @ 12/01/20 13:35:00

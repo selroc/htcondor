@@ -1,3 +1,21 @@
+/***************************************************************
+ *
+ * Copyright (C) 1990-2022, Condor Team, Computer Sciences Department,
+ * University of Wisconsin-Madison, WI.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you
+ * may not use this file except in compliance with the License.  You may
+ * obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ ***************************************************************/
 
 #include "condor_common.h"
 
@@ -8,6 +26,7 @@
 #endif
 
 #include <vector>
+#include <regex>
 
 #include "condor_config.h"
 #include "my_popen.h"
@@ -16,15 +35,18 @@
 #include "stat_wrapper.h"
 #include "stat_info.h"
 #include "condor_attributes.h"
+#include "directory.h"
 
 using namespace htcondor;
 
 
 bool Singularity::m_enabled = false;
+bool Singularity::m_use_pid_namespaces = true;
 bool Singularity::m_probed = false;
+bool Singularity::m_apptainer = false;
 int  Singularity::m_default_timeout = 120;
 std::string Singularity::m_singularity_version;
-
+std::string Singularity::m_lastSingularityErrorLine;
 
 static bool find_singularity(std::string &exec)
 {
@@ -42,19 +64,14 @@ static bool find_singularity(std::string &exec)
 #endif
 }
 
-
-bool
-Singularity::advertise(ClassAd &ad)
-{
-	if (m_enabled && ad.InsertAttr("HasSingularity", true)) {
-		return false;
-	}
-	if (!m_singularity_version.empty() && ad.InsertAttr("SingularityVersion", m_singularity_version)) {
-		return false;
-	}
-	return true;
+// If singularity is really "apptainer", we need to
+// pass environment variables from host to container by
+// prefixing them with APPTAINERENV_.  Otherwise, they need
+// to be prefixed with SINGULARITY_ENV
+std::string 
+Singularity::environmentPrefix() {
+	return Singularity::m_apptainer ? "APPTAINERENV_" : "SINGULARITYENV_";
 }
-
 
 bool
 Singularity::enabled()
@@ -87,7 +104,7 @@ Singularity::detect(CondorError &err)
 
 	std::string displayString;
 	infoArgs.GetArgsStringForLogging( displayString );
-	dprintf(D_FULLDEBUG, "Attempting to run: '%s %s'.\n", exec.c_str(), displayString.c_str());
+	dprintf(D_ALWAYS, "Attempting to run: '%s %s'.\n", exec.c_str(), displayString.c_str());
 
 	MyPopenTimer pgm;
 	if (pgm.start_program(infoArgs, true, NULL, false) < 0) {
@@ -114,15 +131,16 @@ Singularity::detect(CondorError &err)
 
 	pgm.output().readLine(m_singularity_version, false);
 	chomp(m_singularity_version);
-	dprintf( D_FULLDEBUG, "[singularity version] %s\n", m_singularity_version.c_str() );
-	if (IsFulldebug(D_ALWAYS)) {
-		std::string line;
-		while (pgm.output().readLine(line, false)) {
-			chomp(line);
-			dprintf( D_FULLDEBUG, "[singularity info] %s\n", line.c_str() );
-		}
+	dprintf( D_ALWAYS, "[singularity version] %s\n", m_singularity_version.c_str() );
+	std::string line;
+	while (pgm.output().readLine(line, false)) {
+		chomp(line);
+		dprintf( D_ALWAYS, "[singularity info] %s\n", line.c_str() );
 	}
 
+	if (m_singularity_version.find("apptainer") != std::string::npos) {
+		m_apptainer = true;
+	}
 	m_enabled = ! m_singularity_version.empty();
 
 	return true;
@@ -133,11 +151,13 @@ Singularity::job_enabled(ClassAd &machineAd, ClassAd &jobAd)
 {
 	bool wantSIF = false;
 	bool wantSandbox  = false;
+	bool wantDockerImage = false;
 
 	jobAd.LookupBool(ATTR_WANT_SIF, wantSIF);
 	jobAd.LookupBool(ATTR_WANT_SANDBOX_IMAGE, wantSandbox);
+	jobAd.LookupBool(ATTR_WANT_DOCKER_IMAGE, wantDockerImage);
 
-	if (wantSIF || wantSandbox) {
+	if (wantSIF || wantSandbox || wantDockerImage) {
 		return true;
 	}
 
@@ -177,7 +197,7 @@ Singularity::setup(ClassAd &machineAd,
 	}
 
 	std::string target_dir;
-	bool has_target = param(target_dir, "SINGULARITY_TARGET_DIR") && !target_dir.empty();
+	bool has_target = hasTargetDir(jobAd, target_dir); 
 
 	// If we have a process to exec, remove it from the args
 	if (exec.length() > 0) {
@@ -190,6 +210,12 @@ Singularity::setup(ClassAd &machineAd,
 		dprintf(D_FULLDEBUG, "Updated executable path to %s for target directory mode.\n", exec.c_str());
 	}
 	sing_args.AppendArg(sing_exec_str.c_str());
+
+	std::string sing_verbosity;
+	param(sing_verbosity, "SINGULARITY_VERBOSITY", "-s");
+	if (sing_verbosity.length() > 0) {
+		sing_args.AppendArg(sing_verbosity);
+	}
 
 	// If no "Executable" is specified, we get a zero-length exec string
 	// use "singularity run" to run in this case, and assume
@@ -223,6 +249,18 @@ Singularity::setup(ClassAd &machineAd,
 		sing_args.AppendArg("-B");
 		sing_args.AppendArg(job_iwd.c_str());
 	}
+
+	sing_args.AppendArg("-W");
+	sing_args.AppendArg(execute_dir.c_str());
+
+	// Singularity and Apptainer prohibit setting HOME.  Just delete it
+	job_env.DeleteEnv("HOME");
+	job_env.DeleteEnv("APPTAINER_BIND");
+	job_env.DeleteEnv("APPTAINER_BINDDIR");
+	job_env.DeleteEnv("SINGULARITY_BIND");
+	job_env.DeleteEnv("SINGULARITY_BINDDIR");
+
+	// Bind-mount the execute directory.
 	// When overlayfs is unavailable, singularity cannot bind-mount a directory that
 	// does not exist in the container.  Hence, we allow a specific fixed target directory
 	// to be used instead.
@@ -242,13 +280,33 @@ Singularity::setup(ClassAd &machineAd,
 		sing_args.AppendArg("--pwd");
 		sing_args.AppendArg(job_iwd.c_str());
 	}
-
 	sing_args.AppendArg("-B");
 	sing_args.AppendArg(bind_spec.c_str());
 
+	// if the startd has assigned us a gpu, add --nv to the sing exec
+	// arguments to mount the nvidia devices
+	// ... and if the host has OpenCL drivers, bind-mount the drivers
+	// so that OpenCL programs can also run in the container.
+	StringList additional_bind_mounts;
+	std::string assignedGpus;
+	machineAd.LookupString("AssignedGPUs", assignedGpus);
+	if (assignedGpus.length() > 0) {
+		sing_args.AppendArg("--nv");
+		static const char* open_cl_path = "/etc/OpenCL/vendors";
+		if (IsDirectory(open_cl_path)) {
+			additional_bind_mounts.append(open_cl_path);
+		}
+	}
+
+	// Now handle requested bind-mounts.  We will mount everything specified with
+	// SINGULARITY_BIND_EXPR, plus any mounts in additional_bind_mounts list.
 	if (param_eval_string(bind_spec, "SINGULARITY_BIND_EXPR", "SingularityBind", &machineAd, &jobAd)) {
 		dprintf(D_FULLDEBUG, "Parsing bind mount specification for singularity: %s\n", bind_spec.c_str());
 		StringList binds(bind_spec.c_str());
+		// Use create_union to add additional mounts, since create_union prevents
+		// duplicates - Singularity outputs warnings about duplicate mounts to stderr, so
+		// let's try to avoid that.
+		binds.create_union(additional_bind_mounts, false);  // 'false' for anycase means case-sensitive strings
 		binds.rewind();
 		char *next_bind;
 		while ( (next_bind=binds.next()) ) {
@@ -308,7 +366,17 @@ Singularity::setup(ClassAd &machineAd,
 		sing_args.AppendArg("--no-home");
 	}
 
-	sing_args.AppendArg("-C");
+	// Setup Singularity containerization options.
+	std::string knob;
+	param(knob, "SINGULARITY_USE_PID_NAMESPACES", "auto");
+	if (!string_is_boolean_param(knob.c_str(), m_use_pid_namespaces)) {
+		// SINGULARITY_USE_PID_NAMESPACES is not explicitly set to True or False, so we set it automatically.
+		// At this point, we should have a slot attribute that says if pid namespaces supported - this
+		// slot attribute was set when the starter was run with the '-classad' option.
+		m_use_pid_namespaces = false;  // if our slotad does not have the result of our testing, go w/ false
+		machineAd.LookupBool(ATTR_HAS_SINGULARITY_PIDNAMESPACES, m_use_pid_namespaces);
+	}
+	add_containment_args(sing_args);
 
 	std::string args_error;
 	std::string sing_extra_args;
@@ -328,14 +396,6 @@ Singularity::setup(ClassAd &machineAd,
 		return Singularity::FAILURE;
 	}
 
-	// if the startd has assigned us a gpu, add --nv to the sing exec
-	// arguments to mount the nvidia devices
-	std::string assignedGpus;
-	machineAd.LookupString("AssignedGPUs", assignedGpus);
-	if  (assignedGpus.length() > 0) {
-		sing_args.AppendArg("--nv");
-	}
-
 	sing_args.AppendArg(image.c_str());
 
 	if (orig_exec_val.length() > 0) {
@@ -352,14 +412,26 @@ Singularity::setup(ClassAd &machineAd,
 
 	// For some reason, singularity really wants /usr/sbin near the beginning of the PATH
 	// when running /usr/sbin/mksquashfs when running docker: images
-	std::string oldPath;
-	job_env.GetEnv("PATH", oldPath);
-	job_env.SetEnv("PATH", std::string("/usr/sbin:" + oldPath));
+	//
+	// Update:  If PATH wasn't set, singularity will set it from the
+	// image.  In this case, we are injecting a new PATH which prevents
+	// the image path from being set, which breaks all kinds of things.
+	// comment this out for now until we find a better solution.
+	// This means that to run docker images, the user will have to have
+	// /usr/sbin in their path
+	//std::string oldPath;
+	//job_env.GetEnv("PATH", oldPath);
+	//job_env.SetEnv("PATH", std::string("/usr/sbin:" + oldPath));
 
 	// If reading an image from a docker hub, store it in the scratch dir
 	// when we get AP sandboxes, that would be a better place to store these
-	job_env.SetEnv("SINGULARITY_CACHEDIR", execute_dir);
-	job_env.SetEnv("SINGULARITY_TEMPDIR", execute_dir);
+	if (Singularity::m_apptainer) {
+		job_env.SetEnv("APPTAINER_CACHEDIR", execute_dir);
+		job_env.SetEnv("APPTAINER_TEMPDIR", execute_dir);
+	} else {
+		job_env.SetEnv("SINGULARITY_CACHEDIR", execute_dir);
+		job_env.SetEnv("SINGULARITY_TEMPDIR", execute_dir);
+	}
 
 	Singularity::convertEnv(&job_env);
 	return Singularity::SUCCESS;
@@ -396,7 +468,7 @@ Singularity::retargetEnvs(Env &job_env, const std::string &target_dir, const std
 		std::string  value = myValue;
 		auto index_execute_dir = value.find(execute_dir);
 		if (index_execute_dir != std::string::npos) {
-			std::string new_name = "SINGULARITYENV_" + name;
+			std::string new_name = environmentPrefix() + name;
 			job_env.SetEnv(
 				new_name.c_str(),
 				value.replace(index_execute_dir, execute_dir.length(), target_dir)
@@ -420,10 +492,10 @@ Singularity::convertEnv(Env *job_env) {
 
 		// Skip env vars that already start with SINGULARITYENV_, as they
 		// have already been converted (probably via retargetEnvs()).
-		if (name.rfind("SINGULARITYENV_",0)==0) continue;
+		if (name.rfind(environmentPrefix(),0)==0) continue;
 
 		job_env->GetEnv(name.c_str(), value);
-		std::string new_name = "SINGULARITYENV_" + name;
+		std::string new_name = environmentPrefix() + name;
 		// Only copy over the value to the new_name if the new_name
 		// does not already exist because perhaps it was already set
 		// in retargetEnvs().  Note that 'value' is not touched if
@@ -436,10 +508,30 @@ Singularity::convertEnv(Env *job_env) {
 }
 
 bool 
-Singularity::runTest(const std::string &JobName, const ArgList &args, int orig_args_len, const Env &env, std::string &errorMessage) {
+Singularity::hasTargetDir(const ClassAd &jobAd, /* not const */ std::string &target_dir) {
+	target_dir = "";
+	bool has_target = param(target_dir, "SINGULARITY_TARGET_DIR") && !target_dir.empty();
+
+	// If the admin hasn't specification as target_dir, let the job select one
+	// We assume that the job has also selected the image as well
+	if (!has_target) {
+		has_target = jobAd.LookupString(ATTR_CONTAINER_TARGET_DIR, target_dir);
+	}
+	return has_target;
+}
+
+bool 
+Singularity::runTest(const std::string &JobName, const ArgList &args, int orig_args_len, Env &env, std::string &errorMessage) {
 
 	TemporaryPrivSentry sentry(PRIV_USER);
 
+	// Cleanse environment
+	env.DeleteEnv("HOME");
+	env.DeleteEnv("APPTAINER_BIND");
+	env.DeleteEnv("APPTAINER_BINDDIR");
+	env.DeleteEnv("SINGULARITY_BIND");
+	env.DeleteEnv("SINGULARITY_BINDDIR");
+	//
 	// First replace "exec" with "test"
 	ArgList testArgs;
 
@@ -476,6 +568,10 @@ Singularity::runTest(const std::string &JobName, const ArgList &args, int orig_a
 
 	errorMessage = buf;
 
+	// Singularity puts various ansi escape sequences into its output to do things
+	// like change text color to red if an error.  Remove those sequences.
+	errorMessage = RemoveANSIcodes(errorMessage);
+
 	// my_pclose will return an error if there is more than a pipe full
 	// of output at close time.  Drain the input pipe to prevent this.
 	while (!feof(sing_test_output)) {
@@ -508,20 +604,66 @@ Singularity::runTest(const std::string &JobName, const ArgList &args, int orig_a
 bool
 Singularity::canRunSIF() {
 	std::string libexec_dir;
-	libexec_dir = param("LIBEXEC");
+	param(libexec_dir, "LIBEXEC");
 	return Singularity::canRun(libexec_dir + "/exit_37.sif");
 }
 
 bool
-Singularity::canRunSandbox() {
-	std::string sbin_dir;
-	sbin_dir = param("SBIN");
-	return Singularity::canRun(sbin_dir);
+Singularity::canRunSandbox(bool &can_use_pidnamespaces) {
+	std::string sandbox_dir;
+	param(sandbox_dir, "SINGULARITY_TEST_SANDBOX");
+	bool result = Singularity::canRun(sandbox_dir);  // canRun() will also set m_use_pid_namespaces
+	can_use_pidnamespaces = m_use_pid_namespaces;
+	return result;
 }
+
+void
+Singularity::add_containment_args(ArgList & sing_args)
+{
+	// By default, we will ideally pass "-C" which tells Singularity to contain
+	// everything, which includes file systems, PID, IPC, and environment and whatever
+	// they dream up next.
+	// However, if we are told to not use PID namespaces, then we cannot pass "-C".
+	if (m_use_pid_namespaces) {
+		// containerize everything with -C, ie use pid namespaces
+		sing_args.AppendArg("-C");
+	}
+	else {
+		// We cannot use pid namespaces, so we cannot use -C to contain everything.
+		// Unfortunately, Singulariry does not have a way to just disable pid namespaces.
+		// So instead we pass as many other contain flags as we can.
+		sing_args.AppendArg("--contain");	//  minimal dev and other dirs
+		sing_args.AppendArg("--ipc");		// contain ipc namespace
+		sing_args.AppendArg("--cleanenv");
+	}
+}
+
 
 bool 
 Singularity::canRun(const std::string &image) {
 #ifdef LINUX
+	bool success = true;
+	bool retry_on_fail_without_namespaces = false;
+
+	static bool first_run_attempt = true;
+
+	if (first_run_attempt) {
+		first_run_attempt = false;
+		std::string knob;
+		param(knob, "SINGULARITY_USE_PID_NAMESPACES", "auto");
+		if (string_is_boolean_param(knob.c_str(), m_use_pid_namespaces)) {
+			// SINGULARITY_USE_PID_NAMESPACES is explicitly set to True or False
+			retry_on_fail_without_namespaces = false;
+		}
+		else {
+			// SINGULARITY_USE_PID_NAMESPACES is auto, so attempt to use
+			// pid namespaces the first time, and try again without on failure
+			m_use_pid_namespaces = true;
+			retry_on_fail_without_namespaces = true;
+		}
+	}
+
+
 	ArgList sandboxArgs;
 	std::string exec;
 	if (!find_singularity(exec)) {
@@ -531,6 +673,7 @@ Singularity::canRun(const std::string &image) {
 
 	sandboxArgs.AppendArg(exec);
 	sandboxArgs.AppendArg("exec");
+	add_containment_args(sandboxArgs);
 	sandboxArgs.AppendArg(image);
 	sandboxArgs.AppendArg(exit_37);
 
@@ -538,25 +681,59 @@ Singularity::canRun(const std::string &image) {
 	sandboxArgs.GetArgsStringForLogging( displayString );
 	dprintf(D_FULLDEBUG, "Attempting to run: '%s'.\n", displayString.c_str());
 
+	// Note! We need to use PRIV_CONDOR_FINAL here, because Singularity
+	// needs to know if it was started with setuid root or not, and it does this
+	// not by looking at the filesystem, but by comparing the euid to the ruid.
+	// If the euid and ruid are different, it *assumes* setuid root, even if it is not.
+	// So we do the tests here as PRIV_CONDOR_FINAL so that the euid and ruid are kept
+	// the same so Singularity can correctly deduce if it is setuid or not.
+	// If we used PRIV_CONDOR instead of PRIV_CONDOR_FINAL here, Singularity would fail
+	// if HTCondor is running as root and Singularity is configured to use user-namespaces.
+	TemporaryPrivSentry sentry(PRIV_CONDOR_FINAL);
+
 	MyPopenTimer pgm;
-	if (pgm.start_program(sandboxArgs, true, NULL, false) < 0) {
+	Env env;
+	if (pgm.start_program(sandboxArgs, true, &env, false) < 0) {
 		if (pgm.error_code() != 0) {
-			dprintf(D_ALWAYS, "Singularity exec of failed, this singularity can run some programs, but not these\n");
-			return false;
+			dprintf(D_ALWAYS, "Test launch singularity exec failed, this singularity can run some programs, but not these\n");
+			success =  false;
+		}
+	}
+	else {
+		int exitCode = -1;
+		pgm.wait_for_exit(m_default_timeout, &exitCode);
+		if (WEXITSTATUS(exitCode) != 37) {  // hard coded return from exit_37
+			pgm.close_program(1);
+			dprintf(D_ALWAYS, "'%s' did not exit successfully (code %d); stderr is :\n",
+				displayString.c_str(), exitCode);
+			std::string line;
+			while (pgm.output().readLine(line, false)) {
+				line = RemoveANSIcodes(line);
+				chomp(line);
+				trim(line);
+				if (!line.empty()) {
+					dprintf(D_ALWAYS, "[singularity stderr]: %s\n", line.c_str());
+					m_lastSingularityErrorLine = line;
+				}
+			}
+			success =  false;
 		}
 	}
 
-	int exitCode = -1;
-	pgm.wait_for_exit(m_default_timeout, &exitCode);
-	if (WEXITSTATUS(exitCode) != 37) {  // hard coded return from exit_37
-		pgm.close_program(1);
-		std::string line;
-		pgm.output().readLine(line, false);
-		dprintf( D_ALWAYS, "'%s' did not exit successfully (code %d); the first line of output was '%s'.\n", displayString.c_str(), exitCode, line.c_str());
+	if (success) {
+		dprintf(D_ALWAYS, "Successfully ran: '%s'.\n", displayString.c_str());
+		return true;
+	}
+
+	// If we made it here, we failed to launch Singularity... perhaps retry?
+	if (retry_on_fail_without_namespaces && m_use_pid_namespaces) {
+		m_use_pid_namespaces = false;
+		dprintf(D_ALWAYS, "Singularity exec failed, trying again without pid namespaces\n");
+		return canRun(image);	// Ooooh... recursion!  fancy!
+	}
+	else {
 		return false;
 	}
-	dprintf(D_ALWAYS, "Successfully ran: '%s'.\n", displayString.c_str());
-	return true;
 #else
 	(void)image;	// shut the compiler up
 	return false;

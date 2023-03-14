@@ -50,7 +50,7 @@ extern Daemons daemons;
 
 // Static variables
 // The name of the service
-static char *SERVICE_NAME = "Condor Master";
+static const char *SERVICE_NAME = "Condor Master";
 // Handle used to communicate status info with
 // the SCM. Created by RegisterServiceCtrlHandler
 static SERVICE_STATUS_HANDLE serviceStatusHandle;
@@ -58,7 +58,7 @@ static SERVICE_STATUS_HANDLE serviceStatusHandle;
 static BOOL pauseService = FALSE;
 static BOOL runningService = FALSE;
 
-static void ErrorHandler(char *s, DWORD err)
+static void ErrorHandler(const char *s, DWORD err)
 {
 	cout << s << endl;
 	cout << "Error number: " << err << endl;
@@ -78,7 +78,7 @@ BOOL InitService()
 // complete
 VOID StopService() 
 {	
-	if( daemonCore->Send_Signal(daemonCore->getpid(), SIGQUIT) ) {
+	if( daemonCore->Signal_Myself(SIGQUIT) ) {
 		runningService=FALSE;
 	}
 }
@@ -320,7 +320,7 @@ ServiceCtrlHandler (
 		// Do nothing in a shutdown. Could do cleanup
 		// here but it must be very quick.
 		case SERVICE_CONTROL_SHUTDOWN:
-			daemonCore->Send_Signal( daemonCore->getpid(), SIGQUIT );
+			daemonCore->Signal_Myself(SIGQUIT);
 			line_where_service_stopped = __LINE__;
 #if HAVE_HIBERNATION
 			return NO_ERROR;
@@ -433,7 +433,7 @@ DWORD start_as_service()
 {
 	SERVICE_TABLE_ENTRY serviceTable[] = 
 	{ 
-	{ SERVICE_NAME,
+	{ (LPSTR) SERVICE_NAME,
 		(LPSERVICE_MAIN_FUNCTION) ServiceMain},
 	{ NULL, NULL }
 	};

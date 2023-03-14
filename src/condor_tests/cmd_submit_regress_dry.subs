@@ -20,11 +20,7 @@ notify_user = bt@cs.wisc.edu
 email_attributes = not, spam
 remote_initialdir = sandbox
 remote_grid_resource = condor stuff
-remote_globus_rsl = what goes here
-remote_nordugrid_rsl = or here
 remote_remote_grid_resource = condor remoter stuff
-remote_remote_globus_rsl = what goes over there
-remote_remote_nordugrid_rsl = or over there
 output_destination = /scratch/output/$(cluster)
 want_graceful_removal = true
 job_max_vacate_time = 5*60
@@ -264,12 +260,6 @@ arguments=10s
 x509UserProxy = $Fp(SUBMIT_FILE)proxy
 use_x509userproxy = true
 delegate_job_gsi_credentials_lifetime = 2600
-myProxyHost = example
-myProxyServerDN = example.com
-myProxyCredentialName = bob
-myProxyPassword = really-secure-huh
-myProxyRefreshThreshold = 2*60
-myProxyNewProxyLifetime = 1*60+20
 
 queue 2
 

@@ -30,7 +30,6 @@
 #include "proc.h"
 #include "file_transfer.h"
 #include "condor_version.h"
-#include "condor_ftp.h"
 
 #include <sstream>
 
@@ -835,380 +834,6 @@ DCSchedd::receiveJobSandbox(const char* constraint, CondorError * errstack, int 
 	return true;
 }
 
-// when a transferd registers itself, it identifies who it is. The connection
-// is then held open and the schedd periodically might send more transfer
-// requests to the transferd. Also, if the transferd dies, the schedd is 
-// informed quickly and reliably due to the closed connection.
-bool
-DCSchedd::register_transferd(const std::string &sinful, const std::string &id, int timeout,
-		ReliSock **regsock_ptr, CondorError *errstack) 
-{
-	ReliSock *rsock;
-	int invalid_request = 0;
-	ClassAd regad;
-	ClassAd respad;
-	std::string errstr;
-	std::string reason;
-
-	if (regsock_ptr != NULL) {
-		// Our caller wants a pointer to the socket we used to succesfully
-		// register the claim. The NULL pointer will represent failure and
-		// this will only be set to something real if everything was ok.
-		*regsock_ptr = NULL;
-	}
-
-	// This call with automatically connect to _addr, which was set in the
-	// constructor of this object to be the schedd in question.
-	rsock = (ReliSock*)startCommand(TRANSFERD_REGISTER, Stream::reli_sock,
-		timeout, errstack);
-
-	if( ! rsock ) {
-		dprintf( D_ALWAYS, "DCSchedd::register_transferd: "
-				 "Failed to send command (TRANSFERD_REGISTER) "
-				 "to the schedd\n" );
-		errstack->push("DC_SCHEDD", 1, 
-			"Failed to start a TRANSFERD_REGISTER command.");
-		return false;
-	}
-
-		// First, if we're not already authenticated, force that now. 
-	if (!forceAuthentication( rsock, errstack )) {
-		dprintf( D_ALWAYS, "DCSchedd::register_transferd authentication "
-				"failure: %s\n", errstack->getFullText().c_str() );
-		errstack->push("DC_SCHEDD", 1, 
-			"Failed to authenticate properly.");
-		return false;
-	}
-
-	rsock->encode();
-
-	// set up my registration request.
-	regad.Assign(ATTR_TREQ_TD_SINFUL, sinful);
-	regad.Assign(ATTR_TREQ_TD_ID, id);
-
-	// This is the initial registration identification ad to the schedd
-	// It contains:
-	//	ATTR_TREQ_TD_SINFUL
-	//	ATTR_TREQ_TD_ID
-	putClassAd(rsock, regad);
-	rsock->end_of_message();
-
-	// Get the response from the schedd.
-	rsock->decode();
-
-	// This is the response ad from the schedd:
-	// It contains:
-	//	ATTR_TREQ_INVALID_REQUEST
-	//
-	// OR
-	// 
-	//	ATTR_TREQ_INVALID_REQUEST
-	//	ATTR_TREQ_INVALID_REASON
-	getClassAd(rsock, respad);
-	rsock->end_of_message();
-
-	respad.LookupInteger(ATTR_TREQ_INVALID_REQUEST, invalid_request);
-
-	if (invalid_request == FALSE) {
-		// not an invalid request
-		if (regsock_ptr)
-			*regsock_ptr = rsock;
-		return true;
-	}
-
-	respad.LookupString(ATTR_TREQ_INVALID_REASON, reason);
-	errstack->pushf("DC_SCHEDD", 1, "Schedd refused registration: %s", reason.c_str());
-
-	return false;
-}
-
-/*
-[Request Sandbox Location Ad]
-
-FileTransferProtocol = "CondorInternalFileTransfer"
-PeerVersion = "..."
-HasConstraint = TRUE
-Constraint = "(cluster == 120 && procid == 0)"
-
-OR
-
-FileTransferProtocol = "CondorInternalFileTransfer"
-PeerVersion = "..."
-HasConstraint = FALSE
-NumJobIDs = 10
-JobIDs = "12.0,12.1,12.2,12.3,12.4,12.5,12.6,12.7,12.8,12.9"
-*/
-
-// using jobids structure so the schedd doesn't have to iterate over all the
-// job ads.
-bool 
-DCSchedd::requestSandboxLocation(int direction, 
-	int JobAdsArrayLen, ClassAd* JobAdsArray[], int protocol, 
-	ClassAd *respad, CondorError * errstack)
-{
-	StringList sl;
-	ClassAd reqad;
-	std::string str;
-	int i;
-	int cluster, proc;
-	char *tmp = NULL;
-
-	////////////////////////////////////////////////////////////////////////
-	// This request knows exactly which jobs it wants to talk about, so
-	// just compact them into the classad to send to the schedd.
-	////////////////////////////////////////////////////////////////////////
-
-	reqad.Assign(ATTR_TREQ_DIRECTION, direction);
-	reqad.Assign(ATTR_TREQ_PEER_VERSION, CondorVersion());
-	reqad.Assign(ATTR_TREQ_HAS_CONSTRAINT, false);
-
-	for (i = 0; i < JobAdsArrayLen; i++) {
-		if (!JobAdsArray[i]->LookupInteger(ATTR_CLUSTER_ID,cluster)) {
-			dprintf(D_ALWAYS,"DCSchedd:requestSandboxLocation: "
-					"Job ad %d did not have a cluster id\n",i);
-			if ( errstack ) {
-				errstack->pushf( "DCSchedd::requestSandboxLocation", 1,
-								 "Job ad %d did not have a cluster id", i );
-			}
-			return false;
-		}
-		if (!JobAdsArray[i]->LookupInteger(ATTR_PROC_ID,proc)) {
-			dprintf(D_ALWAYS,"DCSchedd:requestSandboxLocation(): "
-					"Job ad %d did not have a proc id\n",i);
-			if ( errstack ) {
-				errstack->pushf( "DCSchedd::requestSandboxLocation", 1,
-								 "Job ad %d did not have a proc id", i );
-			}
-			return false;
-		}
-		
-		formatstr(str, "%d.%d", cluster, proc);
-
-		// make something like: 1.0, 1.1, 1.2, ....
-		sl.append(str.c_str());
-	}
-
-	tmp = sl.print_to_string();
-
-	reqad.Assign(ATTR_TREQ_JOBID_LIST, tmp);
-
-	free(tmp);
-	tmp = NULL;
-
-	// XXX This should be a realized function to convert between the
-	// protocol enum and a string description. That way both functions can
-	// use it and it won't seem so bad.
-	switch(protocol) {
-		case FTP_CFTP:
-			reqad.Assign(ATTR_TREQ_FTP, FTP_CFTP);
-			break;
-		default:
-			dprintf(D_ALWAYS, "DCSchedd::requestSandboxLocation(): "
-				"Can't make a request for a sandbox with an unknown file "
-				"transfer protocol!");
-			if ( errstack ) {
-				errstack->push( "DCSchedd::requestSandboxLocation", 1,
-								"Unknown file transfer protocol" );
-			}
-			return false;
-			break;
-	}
-
-	// now connect to the schedd and get the response.
-	return requestSandboxLocation(&reqad, respad, errstack);
-}
-
-// using a constraint for which the schedd must iterate over all the jobads.
-bool
-DCSchedd::requestSandboxLocation(int direction, std::string & constraint,
-	int protocol, ClassAd *respad, CondorError * errstack)
-{
-	ClassAd reqad;
-
-	////////////////////////////////////////////////////////////////////////
-	// This request specifies a collection of job ads as defined by a
-	// constraint. Later, then the transfer actually happens to the transferd,
-	// this constraint will get converted to actual job ads at that time and
-	// the client will have to get them back so it knows what to send.
-	////////////////////////////////////////////////////////////////////////
-
-	reqad.Assign(ATTR_TREQ_DIRECTION, direction);
-	reqad.Assign(ATTR_TREQ_PEER_VERSION, CondorVersion());
-	reqad.Assign(ATTR_TREQ_HAS_CONSTRAINT, true);
-	reqad.Assign(ATTR_TREQ_CONSTRAINT, constraint.c_str());
-
-	// XXX This should be a realized function to convert between the
-	// protocol enum and a string description. That way both functions can
-	// use it and it won't seem so bad.
-	switch(protocol) {
-		case FTP_CFTP:
-			reqad.Assign(ATTR_TREQ_FTP, FTP_CFTP);
-			break;
-		default:
-			dprintf(D_ALWAYS, "DCSchedd::requestSandboxLocation(): "
-				"Can't make a request for a sandbox with an unknown file "
-				"transfer protocol!");
-			if ( errstack ) {
-				errstack->push( "DCSchedd::requestSandboxLocation", 1,
-								"Unknown file transfer protocol" );
-			}
-			return false;
-			break;
-	}
-
-	// now connect to the schedd and get the response.
-	return requestSandboxLocation(&reqad, respad, errstack);
-}
-
-
-// I'm going to ask the schedd for where I can put the files for the jobs I've
-// specified. The schedd is going to respond with A) a message telling me it
-// has the answer right away, or B) an answer telling me I have to wait 
-// an unknown length of time for the schedd to schedule me a place to put it.
-bool 
-DCSchedd::requestSandboxLocation(ClassAd *reqad, ClassAd *respad, 
-	CondorError * errstack)
-{
-	ReliSock rsock;
-	int will_block;
-	ClassAd status_ad;
-
-	rsock.timeout(20);   // years of research... :)
-	if( ! rsock.connect(_addr) ) {
-		dprintf( D_ALWAYS, "DCSchedd::requestSandboxLocation(): "
-				 "Failed to connect to schedd (%s)\n", _addr );
-		if ( errstack ) {
-			errstack->push( "DCSchedd::requestSandboxLocation",
-							CEDAR_ERR_CONNECT_FAILED,
-							"Failed to connect to schedd" );
-		}
-		return false;
-	}
-	if( ! startCommand(REQUEST_SANDBOX_LOCATION, (Sock*)&rsock, 0,
-						   errstack) ) {
-		dprintf( D_ALWAYS, "DCSchedd::requestSandboxLocation(): "
-				 "Failed to send command (REQUEST_SANDBOX_LOCATION) "
-				 "to schedd (%s)\n", _addr );
-		return false;
-	}
-
-		// First, if we're not already authenticated, force that now. 
-	if (!forceAuthentication( &rsock, errstack )) {
-		dprintf( D_ALWAYS, "DCSchedd: authentication failure: %s\n",
-				 errstack->getFullText().c_str() );
-		return false;
-	}
-
-	rsock.encode();
-
-	///////////////////////////////////////////////////////////////////////
-	// Send my sandbox location request packet to the schedd.
-	///////////////////////////////////////////////////////////////////////
-
-	// This request ad will either contain:
-	//	ATTR_TREQ_PEER_VERSION
-	//	ATTR_TREQ_HAS_CONSTRAINT
-	//	ATTR_TREQ_JOBID_LIST
-	//	ATTR_TREQ_FTP
-	//
-	// OR
-	//
-	//	ATTR_TREQ_DIRECTION
-	//	ATTR_TREQ_PEER_VERSION
-	//	ATTR_TREQ_HAS_CONSTRAINT
-	//	ATTR_TREQ_CONSTRAINT
-	//	ATTR_TREQ_FTP
-	dprintf(D_ALWAYS, "Sending request ad.\n");
-	if (putClassAd(&rsock, *reqad) != 1) {
-		dprintf(D_ALWAYS,"DCSchedd:requestSandboxLocation(): "
-				"Can't send reqad to the schedd\n");
-		if ( errstack ) {
-			errstack->push( "DCSchedd::requestSandboxLocation",
-							CEDAR_ERR_PUT_FAILED,
-							"Can't send reqad to the schedd" );
-		}
-		return false;
-	}
-	rsock.end_of_message();
-
-	rsock.decode();
-
-	///////////////////////////////////////////////////////////////////////
-	// Read back a response ad which will tell me which jobs the schedd
-	// said I could modify and whether or not I'm am going to have to block
-	// before getting the payload of the transferd location/capability ad.
-	///////////////////////////////////////////////////////////////////////
-
-	// This status ad will contain
-	//	ATTR_TREQ_INVALID_REQUEST (set to true)
-	//	ATTR_TREQ_INVALID_REASON
-	//
-	// OR
-	//	ATTR_TREQ_INVALID_REQUEST (set to false)
-	//	ATTR_TREQ_JOBID_ALLOW_LIST
-	//	ATTR_TREQ_JOBID_DENY_LIST
-	//	ATTR_TREQ_WILL_BLOCK
-
-	dprintf(D_ALWAYS, "Receiving status ad.\n");
-	if (getClassAd(&rsock, status_ad) == false) {
-		dprintf(D_ALWAYS, "Schedd closed connection to me. Aborting sandbox "
-			"submission.\n");
-		if ( errstack ) {
-			errstack->push( "DCSchedd::requestSandboxLocation",
-							CEDAR_ERR_GET_FAILED,
-							"Schedd closed connection" );
-		}
-		return false;
-	}
-	rsock.end_of_message();
-
-	status_ad.LookupInteger(ATTR_TREQ_WILL_BLOCK, will_block);
-
-	dprintf(D_ALWAYS, "Client will %s\n", will_block==1?"block":"not block");
-
-	if (will_block == 1) {
-		// set to 20 minutes.
-		rsock.timeout(60*20);
-	}
-
-	///////////////////////////////////////////////////////////////////////
-	// Read back the payload ad from the schedd about the transferd location
-	// and capability string I can use for the fileset I wish to transfer.
-	///////////////////////////////////////////////////////////////////////
-
-	// read back the response ad from the schedd which contains a 
-	// td sinful string, and a capability. These represent my ability to
-	// read/write a certain fileset somewhere.
-
-	// This response ad from the schedd will contain:
-	//
-	//	ATTR_TREQ_INVALID_REQUEST (set to true)
-	//	ATTR_TREQ_INVALID_REASON
-	//
-	// OR
-	//
-	//	ATTR_TREQ_INVALID_REQUEST (set to false)
-	//	ATTR_TREQ_CAPABILITY
-	//	ATTR_TREQ_TD_SINFUL
-	//	ATTR_TREQ_JOBID_ALLOW_LIST
-
-	dprintf(D_ALWAYS, "Receiving response ad.\n");
-	if (getClassAd(&rsock, *respad) != true) {
-		dprintf(D_ALWAYS,"DCSchedd:requestSandboxLocation(): "
-				"Can't receive response ad from the schedd\n");
-		if ( errstack ) {
-			errstack->push( "DCSchedd::requestSandboxLocation",
-							CEDAR_ERR_GET_FAILED,
-							"Can't receive response ad from the schedd" );
-		}
-		return false;
-	}
-	rsock.end_of_message();
-
-	return true;
-}
-
-
 bool 
 DCSchedd::spoolJobFiles(int JobAdsArrayLen, ClassAd* JobAdsArray[], CondorError * errstack)
 {
@@ -1781,7 +1406,7 @@ JobActionResults::~JobActionResults()
 void
 JobActionResults::record( PROC_ID job_id, action_result_t result ) 
 {
-	char buf[64];
+	std::string buf;
 
 	if( ! result_ad ) {
 		result_ad = new ClassAd();
@@ -1790,9 +1415,9 @@ JobActionResults::record( PROC_ID job_id, action_result_t result )
 	if( result_type == AR_LONG ) {
 		// Put it directly in our ad
 		if (job_id.proc < 0) {
-			sprintf( buf, "cluster_%d", job_id.cluster );
+			formatstr( buf, "cluster_%d", job_id.cluster );
 		} else {
-			sprintf( buf, "job_%d_%d", job_id.cluster, job_id.proc );
+			formatstr( buf, "job_%d_%d", job_id.cluster, job_id.proc );
 		}
 		result_ad->Assign( buf, (int)result );
 		return;
@@ -1826,7 +1451,7 @@ JobActionResults::record( PROC_ID job_id, action_result_t result )
 void
 JobActionResults::readResults( ClassAd* ad ) 
 {
-	char attr_name[64];
+	std::string attr_name;
 
 	if( ! ad ) {
 		return;
@@ -1864,22 +1489,22 @@ JobActionResults::readResults( ClassAd* ad )
 		}
 	}
 
-	sprintf( attr_name, "result_total_%d", AR_ERROR );
+	formatstr( attr_name, "result_total_%d", AR_ERROR );
 	ad->LookupInteger( attr_name, ar_error );
 
-	sprintf( attr_name, "result_total_%d", AR_SUCCESS );
+	formatstr( attr_name, "result_total_%d", AR_SUCCESS );
 	ad->LookupInteger( attr_name, ar_success );
 
-	sprintf( attr_name, "result_total_%d", AR_NOT_FOUND );
+	formatstr( attr_name, "result_total_%d", AR_NOT_FOUND );
 	ad->LookupInteger( attr_name, ar_not_found );
 
-	sprintf( attr_name, "result_total_%d", AR_BAD_STATUS );
+	formatstr( attr_name, "result_total_%d", AR_BAD_STATUS );
 	ad->LookupInteger( attr_name, ar_bad_status );
 
-	sprintf( attr_name, "result_total_%d", AR_ALREADY_DONE );
+	formatstr( attr_name, "result_total_%d", AR_ALREADY_DONE );
 	ad->LookupInteger( attr_name, ar_already_done );
 
-	sprintf( attr_name, "result_total_%d", AR_PERMISSION_DENIED );
+	formatstr( attr_name, "result_total_%d", AR_PERMISSION_DENIED );
 	ad->LookupInteger( attr_name, ar_permission_denied );
 
 }
@@ -1888,7 +1513,7 @@ JobActionResults::readResults( ClassAd* ad )
 ClassAd*
 JobActionResults::publishResults( void ) 
 {
-	char buf[128];
+	std::string buf;
 
 		// no matter what they want, give them a few things of
 		// interest, like what kind of results we're giving them. 
@@ -1905,22 +1530,22 @@ JobActionResults::publishResults( void )
 	}
 
 		// They want totals for each possible result
-	sprintf( buf, "result_total_%d", AR_ERROR );
+	formatstr( buf, "result_total_%d", AR_ERROR );
 	result_ad->Assign( buf, ar_error );
 
-	sprintf( buf, "result_total_%d", AR_SUCCESS );
+	formatstr( buf, "result_total_%d", AR_SUCCESS );
 	result_ad->Assign( buf, ar_success );
 		
-	sprintf( buf, "result_total_%d", AR_NOT_FOUND );
+	formatstr( buf, "result_total_%d", AR_NOT_FOUND );
 	result_ad->Assign( buf, ar_not_found );
 
-	sprintf( buf, "result_total_%d", AR_BAD_STATUS );
+	formatstr( buf, "result_total_%d", AR_BAD_STATUS );
 	result_ad->Assign( buf, ar_bad_status );
 
-	sprintf( buf, "result_total_%d", AR_ALREADY_DONE );
+	formatstr( buf, "result_total_%d", AR_ALREADY_DONE );
 	result_ad->Assign( buf, ar_already_done );
 
-	sprintf( buf, "result_total_%d", AR_PERMISSION_DENIED );
+	formatstr( buf, "result_total_%d", AR_PERMISSION_DENIED );
 	result_ad->Assign( buf, ar_permission_denied );
 
 	return result_ad;
@@ -1930,13 +1555,13 @@ JobActionResults::publishResults( void )
 action_result_t
 JobActionResults::getResult( PROC_ID job_id )
 {
-	char buf[64];
+	std::string buf;
 	int result;
 
 	if( ! result_ad ) { 
 		return AR_ERROR;
 	}
-	sprintf( buf, "job_%d_%d", job_id.cluster, job_id.proc );
+	formatstr( buf, "job_%d_%d", job_id.cluster, job_id.proc );
 	if( ! result_ad->LookupInteger(buf, result) ) {
 		return AR_ERROR;
 	}
@@ -1947,14 +1572,13 @@ JobActionResults::getResult( PROC_ID job_id )
 bool
 JobActionResults::getResultString( PROC_ID job_id, char** str )
 {
-	char buf[1024];
+	std::string buf;
 	action_result_t result;
 	bool rval = false;
 
 	if( ! str ) {
 		return false;
 	}
-	buf[0] = 0; // in case result is bogus..
 
 	result = getResult( job_id );
 
@@ -1964,7 +1588,7 @@ JobActionResults::getResultString( PROC_ID job_id, char** str )
 	switch( result ) {
 
 	case AR_SUCCESS:
-		sprintf( buf, "Job %d.%d %s", job_id.cluster, job_id.proc,
+		formatstr( buf, "Job %d.%d %s", job_id.cluster, job_id.proc,
 				 (action==JA_REMOVE_JOBS)?"marked for removal":
 				 (action==JA_REMOVE_X_JOBS)?
 				 "removed locally (remote state unknown)":
@@ -1978,17 +1602,17 @@ JobActionResults::getResultString( PROC_ID job_id, char** str )
 		break;
 
 	case AR_ERROR:
-		sprintf( buf, "No result found for job %d.%d", job_id.cluster,
+		formatstr( buf, "No result found for job %d.%d", job_id.cluster,
 				 job_id.proc );
 		break;
 
 	case AR_NOT_FOUND:
-		sprintf( buf, "Job %d.%d not found", job_id.cluster,
+		formatstr( buf, "Job %d.%d not found", job_id.cluster,
 				 job_id.proc ); 
 		break;
 
 	case AR_PERMISSION_DENIED: 
-		sprintf( buf, "Permission denied to %s job %d.%d", 
+		formatstr( buf, "Permission denied to %s job %d.%d",
 				 (action==JA_REMOVE_JOBS)?"remove":
 				 (action==JA_REMOVE_X_JOBS)?"force removal of":
 				 (action==JA_HOLD_JOBS)?"hold":
@@ -2002,59 +1626,59 @@ JobActionResults::getResultString( PROC_ID job_id, char** str )
 
 	case AR_BAD_STATUS:
 		if( action == JA_RELEASE_JOBS ) { 
-			sprintf( buf, "Job %d.%d not held to be released", 
+			formatstr( buf, "Job %d.%d not held to be released",
 					 job_id.cluster, job_id.proc );
 		} else if( action == JA_REMOVE_X_JOBS ) {
-			sprintf( buf, "Job %d.%d not in `X' state to be forcibly removed", 
+			formatstr( buf, "Job %d.%d not in `X' state to be forcibly removed",
 					 job_id.cluster, job_id.proc );
 		} else if( action == JA_VACATE_JOBS ) {
-			sprintf( buf, "Job %d.%d not running to be vacated", 
+			formatstr( buf, "Job %d.%d not running to be vacated",
 					 job_id.cluster, job_id.proc );
 		} else if( action == JA_VACATE_FAST_JOBS ) {
-			sprintf( buf, "Job %d.%d not running to be fast-vacated", 
+			formatstr( buf, "Job %d.%d not running to be fast-vacated",
 					 job_id.cluster, job_id.proc );
 		}else if( action == JA_SUSPEND_JOBS ) {
-			sprintf( buf, "Job %d.%d not running to be suspended", 
+			formatstr( buf, "Job %d.%d not running to be suspended",
 					 job_id.cluster, job_id.proc );
 		}else if( action == JA_CONTINUE_JOBS ) {
-			sprintf( buf, "Job %d.%d not running to be continued", 
+			formatstr( buf, "Job %d.%d not running to be continued",
 					 job_id.cluster, job_id.proc );
 		} else {
 				// Nothing else should use this.
-			sprintf( buf, "Invalid result for job %d.%d", 
+			formatstr( buf, "Invalid result for job %d.%d",
 					 job_id.cluster, job_id.proc );
 		}
 		break;
 
 	case AR_ALREADY_DONE:
 		if( action == JA_HOLD_JOBS ) {
-			sprintf( buf, "Job %d.%d already held", 
+			formatstr( buf, "Job %d.%d already held",
 					 job_id.cluster, job_id.proc );
 		} else if( action == JA_REMOVE_JOBS ) { 
-			sprintf( buf, "Job %d.%d already marked for removal",
+			formatstr( buf, "Job %d.%d already marked for removal",
 					 job_id.cluster, job_id.proc );
 		}else if( action == JA_SUSPEND_JOBS ) { 
-			sprintf( buf, "Job %d.%d already suspended",
+			formatstr( buf, "Job %d.%d already suspended",
 					 job_id.cluster, job_id.proc );
 		}else if( action == JA_CONTINUE_JOBS ) { 
-			sprintf( buf, "Job %d.%d already running",
+			formatstr( buf, "Job %d.%d already running",
 					 job_id.cluster, job_id.proc );
 		} else if( action == JA_REMOVE_X_JOBS ) { 
 				// pfc: due to the immediate nature of a forced
 				// remove, i'm not sure this should ever happen, but
 				// just in case...
-			sprintf( buf, "Job %d.%d already marked for forced removal",
+			formatstr( buf, "Job %d.%d already marked for forced removal",
 					 job_id.cluster, job_id.proc );
 		} else {
 				// we should have gotten AR_BAD_STATUS if we tried to
 				// act on a job that had already had the action done
-			sprintf( buf, "Invalid result for job %d.%d", 
+			formatstr( buf, "Invalid result for job %d.%d",
 					 job_id.cluster, job_id.proc );
 		}
 		break;
 
 	}
-	*str = strdup( buf );
+	*str = strdup( buf.c_str() );
 	return rval;
 }
 
@@ -2432,7 +2056,7 @@ ImpersonationTokenContinuation::startCommandCallback(bool success, Sock *sock, C
 	auto rc = daemonCore->Register_Socket(sock, "Impersonation Token Request",
 		(SocketHandlercpp)&ImpersonationTokenContinuation::finish,
 		"Finish impersonation token request",
-		callback_ptr.get(), ALLOW, HANDLE_READ);
+		callback_ptr.get(), HANDLE_READ);
 	if (rc < 0) {
 		errstack->push("DCSCHEDD", 4, "Failed to register callback for schedd response");
 		callback_data.m_callback(false, "", *errstack, callback_data.m_misc_data);

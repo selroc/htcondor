@@ -20,7 +20,6 @@
 
 
 #include "condor_common.h"
-#include "condor_constants.h"
 #include "condor_io.h"
 #include "condor_debug.h"
 #include "MyString.h"
@@ -1309,6 +1308,25 @@ Stream::get_string_ptr( char const *&s ) {
 		}
 	}
 	return TRUE;
+}
+
+int
+Stream::get_secret( std::string& s )
+{
+	const char* str = nullptr;
+	int len = 0;
+	int retval;
+
+	prepare_crypto_for_secret();
+
+	retval = get_string_ptr(str, len);
+	if (retval) {
+		s.assign(str ? str : "", len);
+	}
+
+	restore_crypto_after_secret();
+
+	return retval;
 }
 
 int

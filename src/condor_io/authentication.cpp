@@ -27,7 +27,6 @@
 #include "condor_auth_fs.h"
 #include "condor_auth_munge.h"
 #include "condor_auth_sspi.h"
-#include "condor_auth_x509.h"
 #include "condor_auth_ssl.h"
 #include "condor_auth_kerberos.h"
 #include "condor_auth_passwd.h"
@@ -37,7 +36,7 @@
 #include "CondorError.h"
 #include "globus_utils.h"
 #include "condor_scitokens.h"
-
+#include "ca_utils.h"
 
 
 #include "condor_debug.h"
@@ -73,7 +72,8 @@ Authentication::Authentication( ReliSock *sock )
 	  m_key(NULL),
 	  m_auth_timeout_time(0),
 	  m_continue_handshake(false),
-	  m_continue_auth(false)
+	  m_continue_auth(false),
+	  m_continue_plugin(false)
 {
 	mySock              = sock;
 	auth_status         = CAUTH_NONE;
@@ -158,6 +158,11 @@ int Authentication::authenticate_inner( char *hostAddr, const char* auth_methods
 
 int Authentication::authenticate_continue( CondorError* errstack, bool non_blocking )
 {
+	bool use_mapfile = false;
+	const char *connect_addr = nullptr;
+	int retval = 0;
+	std::string mapped_id;
+
 	// Check for continuations;
 	int firm = -1;
 	bool do_handshake = true;
@@ -173,6 +178,8 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 
 	int auth_rc = 0;
 	bool do_authenticate = true;
+	int plugin_rc = 0;
+	bool do_plugin = false;
 	if (m_continue_auth) {
 		auth_rc = m_auth->authenticate_continue(errstack, non_blocking);
 		if (auth_rc == 2 ) {
@@ -184,7 +191,31 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 		do_authenticate = false;
 		goto authenticate;
 	}
- 
+
+	if (m_continue_plugin) {
+		if (mySock->readReady()) {
+			// Assume the client has closed the socket
+			dprintf(D_SECURITY, "AUTHENTICATE: client closed socket during plugin\n");
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED, "Client closed socket during plugin");
+			((Condor_Auth_SSL*)authenticator_)->CancelScitokensPlugins();
+			plugin_rc = 0;
+		} else if (m_auth_timeout_time > 0 && m_auth_timeout_time <= time(nullptr)) {
+			dprintf(D_SECURITY, "AUTHENTICATE: plugin exceeded deadline %ld\n", m_auth_timeout_time);
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_TIMEOUT, "Plugin exceeded %ld deadline", m_auth_timeout_time );
+			((Condor_Auth_SSL*)authenticator_)->CancelScitokensPlugins();
+			plugin_rc = 0;
+		} else {
+			plugin_rc = ((Condor_Auth_SSL*)authenticator_)->ContinueScitokensPlugins(mapped_id, errstack);
+		}
+		if (plugin_rc == 2) {
+			dprintf(D_SECURITY, "AUTHENTICATE: scitokens plugin would still block\n");
+			return 2;
+		}
+		m_continue_plugin = false;
+		do_plugin = true;
+		goto plugin_done;
+	}
+
 	m_auth = NULL;
 	while (auth_status == CAUTH_NONE ) {
 		if (m_auth_timeout_time>0 && m_auth_timeout_time <= time(0)) {
@@ -215,14 +246,6 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 		m_method_id = firm;
 		m_method_name = "";
 		switch ( firm ) {
-#if defined(HAVE_EXT_GLOBUS)
-			case CAUTH_GSI:
-				m_auth = new Condor_Auth_X509(mySock);
-				m_method_name = "GSI";
-				break;
-#endif /* HAVE_EXT_GLOBUS */
-
-#ifdef HAVE_EXT_OPENSSL
 			case CAUTH_SSL:
 				m_auth = new Condor_Auth_SSL(mySock, 0, false);
 				m_method_name = "SSL";
@@ -233,7 +256,6 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 				m_method_name = "SCITOKENS";
 				break;
 #endif
-#endif
 
 #if defined(HAVE_EXT_KRB5) 
 			case CAUTH_KERBEROS:
@@ -242,7 +264,6 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 				break;
 #endif
 
-#ifdef HAVE_EXT_OPENSSL  // 3DES is the prerequisite for passwd auth
 			case CAUTH_PASSWORD:
 				m_auth = new Condor_Auth_Passwd(mySock, 1);
 				m_method_name = "PASSWORD";
@@ -274,7 +295,6 @@ int Authentication::authenticate_continue( CondorError* errstack, bool non_block
 				m_method_name = "IDTOKENS";
 				break;
 			}
-#endif
  
 #if defined(WIN32)
 			case CAUTH_NTSSPI:
@@ -438,19 +458,23 @@ authenticate:
 			}
 		}
 	}
-	return authenticate_finish(errstack);
-}
 
-int Authentication::authenticate_finish(CondorError *errstack)
-{
 	//if none of the methods succeeded, we fall thru to default "none" from above
-	int retval = ( auth_status != CAUTH_NONE );
+	retval = ( auth_status != CAUTH_NONE );
 	if (IsDebugVerbose(D_SECURITY)) {
 		dprintf(D_SECURITY, "AUTHENTICATE: auth_status == %i (%s)\n", auth_status,
 				(method_used?method_used:"?!?") );
 	}
 	dprintf(D_SECURITY, "Authentication was a %s.\n", retval == 1 ? "Success" : "FAILURE" );
 
+	// If authentication was a success, then we record it in the known_hosts file.
+	// Note SSL has its own special handling for this file.
+	connect_addr = mySock->get_connect_addr();
+	if (connect_addr && retval == 1 && mySock->isClient() && !m_method_name.empty() && m_method_name != "SSL") {
+		Sinful s(connect_addr);
+		const char *alias = s.getAlias();
+		if (alias) htcondor::add_known_hosts(alias, true, m_method_name, authenticator_->getRemoteFQU() ? authenticator_->getRemoteFQU() : "unknown");
+	}
 
 	// at this point, all methods have set the raw authenticated name available
 	// via getAuthenticatedName().
@@ -463,7 +487,7 @@ int Authentication::authenticate_finish(CondorError *errstack)
 	// check to see if CERTIFICATE_MAPFILE was defined.  if so, use it.  if
 	// not, do nothing.  the user and domain have been filled in by the
 	// authentication method itself, so just leave that alone.
-	bool use_mapfile = param_defined("CERTIFICATE_MAPFILE");
+	use_mapfile = param_defined("CERTIFICATE_MAPFILE");
 
 	// if successful so far, invoke the security MapFile.  the output of that
 	// is the "canonical user".  if that has an '@' sign, split it up on the
@@ -478,25 +502,63 @@ int Authentication::authenticate_finish(CondorError *errstack)
 					authenticator_->getRemoteUser()?authenticator_->getRemoteUser():"(null)");
 			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: pre-map: current domain is '%s'\n",
 					authenticator_->getRemoteDomain()?authenticator_->getRemoteDomain():"(null)");
-			map_authentication_name_to_canonical_name(auth_status, method_used ? method_used : "(null)", name_to_map);
+			map_authentication_name_to_canonical_name(auth_status, method_used ? method_used : "(null)", name_to_map, mapped_id);
 		} else {
 			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: name to map is null, not mapping.\n");
 		}
-#if defined(HAVE_EXT_GLOBUS)
-	} else if (authenticator_ && (auth_status == CAUTH_GSI)) {
-		// Fall back to using the globus mapping mechanism.  GSI is a bit unique in that
-		// it may be horribly expensive - or cause a SEGFAULT - to do an authorization callout.
-		// Hence, we delay it until after we apply a mapfile or, here, have no map file.
-		// nameGssToLocal calls setRemoteFoo directly.
-		const char * name_to_map = authenticator_->getAuthenticatedName();
-		if (name_to_map) {
-			int retval = ((Condor_Auth_X509*)authenticator_)->nameGssToLocal(name_to_map);
-			dprintf(D_SECURITY|D_VERBOSE, "nameGssToLocal returned %s\n", retval ? "success" : "failure");
-		} else {
-			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: name to map is null, not calling GSI authorization.\n");
-		}
-#endif
 	}
+
+	if (retval && authenticator_ && auth_status == CAUTH_SCITOKENS && !mySock->isClient()) {
+		std::string plugin_input;
+		if (!use_mapfile) {
+			plugin_input = "*";
+		} else if (strncmp(mapped_id.c_str(), "PLUGIN:", 7) == 0) {
+			plugin_input = mapped_id.c_str() + 7;
+		}
+		if (!plugin_input.empty()) {
+			do_plugin = true;
+			plugin_rc = ((Condor_Auth_SSL*)authenticator_)->StartScitokensPlugins(plugin_input, mapped_id, errstack);
+			if (plugin_rc == 2) {
+				m_continue_plugin = true;
+				dprintf(D_SECURITY, "AUTHENTICATE: plugin in progress\n");
+				return 2;
+			}
+		}
+	}
+
+ plugin_done:
+
+	if (do_plugin) {
+		if (plugin_rc == 0) {
+			dprintf(D_ALWAYS,"AUTHENTICATE: plugins failed to execute, failing.\n");
+			errstack->pushf("AUTHENTICATE", AUTHENTICATE_ERR_PLUGIN_FAILED,
+			                "Plugin failed");
+			return 0;
+		} else if (mapped_id.empty()) {
+			dprintf(D_SECURITY, "AUTHENTICATE: plugins didn't producing a mapping\n");
+		} else {
+			dprintf(D_SECURITY, "AUTHENTICATE: Plugins procuded mapping '%s'\n", mapped_id.c_str());
+		}
+	}
+
+	if (!mapped_id.empty()) {
+		std::string user;
+		std::string domain;
+
+		// this sets user and domain
+		split_canonical_name( mapped_id, user, domain);
+
+		authenticator_->setRemoteUser( user.c_str() );
+		authenticator_->setRemoteDomain( domain.c_str() );
+	}
+
+	return authenticate_finish(errstack);
+}
+
+int Authentication::authenticate_finish(CondorError *errstack)
+{
+	int retval = ( auth_status != CAUTH_NONE );
+
 	// for now, let's be a bit more verbose and print this to D_SECURITY.
 	// yeah, probably all of the log lines that start with ZKM: should be
 	// updated.  oh, i wish there were a D_ZKM, but alas, we're out of bits.
@@ -570,7 +632,7 @@ void Authentication::load_map_file() {
 	}
 }
 
-void Authentication::map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name) {
+void Authentication::map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name, std::string& canonical_user) {
     load_map_file();
 
 	dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: attempting to map '%s'\n", authentication_name);
@@ -578,33 +640,11 @@ void Authentication::map_authentication_name_to_canonical_name(int authenticatio
 	// this will hold what we pass to the mapping function
 	std::string auth_name_to_map = authentication_name;
 
-	bool included_voms = false;
-
-#if defined(HAVE_EXT_GLOBUS)
-	// if GSI, try first with the FQAN (dn plus voms attrs)
-	if (authentication_type == CAUTH_GSI) {
-		const char *fqan = ((Condor_Auth_X509*)authenticator_)->getFQAN();
-		if (fqan && fqan[0]) {
-			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: GSI was used, and FQAN is present.\n");
-			auth_name_to_map = fqan;
-			included_voms = true;
-		}
-	}
-#endif
-
 	if (global_map_file) {
-		std::string canonical_user;
 
 		dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: 1: attempting to map '%s'\n", auth_name_to_map.c_str());
 		bool mapret = global_map_file->GetCanonicalization(method_string, auth_name_to_map.c_str(), canonical_user);
-		dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: 2: mapret: %i included_voms: %i canonical_user: %s\n", mapret, included_voms, canonical_user.c_str());
-
-		// if it did not find a user, and we included voms attrs, try again without voms
-		if (mapret && included_voms) {
-			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: now attempting to map '%s'\n", authentication_name);
-			mapret = global_map_file->GetCanonicalization(method_string, authentication_name, canonical_user);
-			dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: now 2: mapret: %i included_voms: %i canonical_user: %s\n", mapret, included_voms, canonical_user.c_str());
-		}
+		dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: 2: mapret: %i canonical_user: %s\n", mapret, canonical_user.c_str());
 
 		// if the method is SCITOKENS and mapping failed, try again
 		// with a trailing '/'.  this is to assist admins who have
@@ -634,58 +674,11 @@ void Authentication::map_authentication_name_to_canonical_name(int authenticatio
 			// returns true on failure?
 			dprintf (D_FULLDEBUG|D_VERBOSE, "AUTHENTICATION: successful mapping to %s\n", canonical_user.c_str());
 
-			// there is a switch for GSI to use the default globus function for this, in
-			// case there is some custom globus mapping add-on, or the admin just wants
-			// to use the grid-mapfile in use by other globus software.
-			//
-			// if they don't opt for globus to map, just fall through to the condor
-			// mapfile.
-			//
-			if ((authentication_type == CAUTH_GSI) && (canonical_user == "GSS_ASSIST_GRIDMAP")) {
-#if defined(HAVE_EXT_GLOBUS)
-
-				// nameGssToLocal calls setRemoteFoo directly.
-				int retval = ((Condor_Auth_X509*)authenticator_)->nameGssToLocal( authentication_name );
-
-				if (retval) {
-					dprintf (D_SECURITY, "Globus-based mapping was successful.\n");
-				} else {
-					dprintf (D_SECURITY, "Globus-based mapping failed; will use gsi@unmapped.\n");
-				}
-#else
-				dprintf(D_ALWAYS, "AUTHENTICATION: GSI not compiled, but was used?!!\n");
-#endif
-				return;
-			} else {
-
-				dprintf (D_SECURITY|D_VERBOSE, "AUTHENTICATION: found user %s, splitting.\n", canonical_user.c_str());
-
-				std::string user;
-				std::string domain;
-
-				// this sets user and domain
-				split_canonical_name( canonical_user, user, domain);
-
-				authenticator_->setRemoteUser( user.c_str() );
-				authenticator_->setRemoteDomain( domain.c_str() );
-
-				// we're done.
-				return;
-			}
+			// we're done.
+			return;
 		} else {
 			dprintf (D_FULLDEBUG, "AUTHENTICATION: did not find user %s.\n", authentication_name);
 		}
-	} else if (authentication_type == CAUTH_GSI) {
-        // See notes above around the nameGssToLocal call about why we invoke GSI authorization here.
-        // Theoretically, it should be impossible to hit this case - the invoking function thought
-		// we had a mapfile, but we couldnt create one.  This just covers weird corner cases.
-
-#if defined(HAVE_EXT_GLOBUS)
-		int retval = ((Condor_Auth_X509*)authenticator_)->nameGssToLocal(authentication_name);
-		dprintf(D_SECURITY, "nameGssToLocal returned %s\n", retval ? "success" : "failure");
-#else
-		dprintf(D_ALWAYS, "AUTHENTICATION: GSI not compiled, so can't call nameGssToLocal!!\n");
-#endif
 	} else {
 		dprintf (D_FULLDEBUG, "AUTHENTICATION: global_map_file not present!\n");
 	}
@@ -756,23 +749,6 @@ char* Authentication::getMethodUsed() {
 const char* Authentication::getAuthenticatedName()
 {
 	if ( authenticator_ ) {
-		return authenticator_->getAuthenticatedName();
-	} else {
-		return NULL;
-	}
-}
-
-const char* Authentication::getFQAuthenticatedName()
-{
-	if ( authenticator_ ) {
-#if defined(HAVE_EXT_GLOBUS)
-		if(strcasecmp("GSI", method_used) == 0) {
-	        const char *fqan = ((Condor_Auth_X509*)authenticator_)->getFQAN();	
-			if(fqan) {
-				return fqan;
-			}
-		}
-#endif // defined(HAVE_EXT_GLOBUS)
 		return authenticator_->getAuthenticatedName();
 	} else {
 		return NULL;
@@ -1022,18 +998,10 @@ int Authentication::handshake(const std::string& my_methods, bool non_blocking) 
 			dprintf (D_SECURITY, "HANDSHAKE: excluding KERBEROS: %s\n", "Initialization failed");
 			method_bitmask &= ~CAUTH_KERBEROS;
 		}
-#ifdef HAVE_EXT_OPENSSL
 		if ( (method_bitmask & CAUTH_SSL) && Condor_Auth_SSL::Initialize() == false )
-#else
-		if (method_bitmask & CAUTH_SSL)
-#endif
 		{
 			dprintf (D_SECURITY, "HANDSHAKE: excluding SSL: %s\n", "Initialization failed");
 			method_bitmask &= ~CAUTH_SSL;
-		}
-		if ( (method_bitmask & CAUTH_GSI) && activate_globus_gsi() != 0 ) {
-			dprintf (D_SECURITY, "HANDSHAKE: excluding GSI: %s\n", x509_error_string());
-			method_bitmask &= ~CAUTH_GSI;
 		}
 #ifdef HAVE_EXT_SCITOKENS
 		if ( (method_bitmask & CAUTH_SCITOKENS) && (Condor_Auth_SSL::Initialize() == false || htcondor::init_scitokens() == false) )
@@ -1101,19 +1069,10 @@ Authentication::handshake_continue(const std::string& my_methods, bool non_block
 			client_methods &= ~CAUTH_KERBEROS;
 			continue;
 		}
-#ifdef HAVE_EXT_OPENSSL
 		if ( (shouldUseMethod & CAUTH_SSL) && Condor_Auth_SSL::Initialize() == false )
-#else
-		if (shouldUseMethod & CAUTH_SSL)
-#endif
 		{
 			dprintf (D_SECURITY, "HANDSHAKE: excluding SSL: %s\n", "Initialization failed");
 			client_methods &= ~CAUTH_SSL;
-			continue;
-		}
-		if ( shouldUseMethod == CAUTH_GSI && activate_globus_gsi() != 0 ) {
-			dprintf (D_SECURITY, "HANDSHAKE: excluding GSI: %s\n", x509_error_string());
-			client_methods &= ~CAUTH_GSI;
 			continue;
 		}
 #ifdef HAVE_EXT_SCITOKENS

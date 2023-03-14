@@ -204,7 +204,7 @@ If the remote *condor_collector* is not listening on the standard port
 
 .. code-block:: condor-submit
 
-    grid_resource = condor schedd.example.comd machine1.example.com:12345
+    grid_resource = condor schedd.example.com machine1.example.com:12345
 
 File transfer of a job's executable, ``stdin``, ``stdout``, and
 ``stderr`` are automatic. When other files need to be transferred using
@@ -255,17 +255,19 @@ command specifies the name of the ARC CE service as follows:
 Only the hostname portion of the URL is required.
 Appropriate defaults will be used for the other components.
 
-ARC uses X.509 credentials for authentication, usually in the form
-a proxy certificate. *condor_submit* looks in default locations for the
-proxy. The submit description file command
+ARC accepts X.509 credentials and SciTokens for authentication.
+You must specify one of these two credential types for your **arc**
+grid jobs.
+The submit description file command
 **x509userproxy** :index:`x509userproxy<single: x509userproxy; submit commands>` may be
-used to give the full path name to the directory containing the proxy,
-when the proxy is not in a default location. If this optional command is
-not present in the submit description file, then the value of the
-environment variable ``X509_USER_PROXY`` is checked for the location of
-the proxy. If this environment variable is not present, then the proxy
-in the file ``/tmp/x509up_uXXXX`` is used, where the characters XXXX in
-this file name are replaced with the Unix user id.
+used to give the full path name of an X.509 proxy file.
+The submit description file command
+**scitokens_file** :index:`scitokens_file<single: scitokens_file; submit commands>`
+may be used to give the full path name of a SciTokens file.
+If both an X.509 proxy and a SciTokens file are provided, then only
+the SciTokens file is used for authentication.
+Whenever an X.509 proxy is provided, it is delegated to the ARC CE for
+use by the job.
 
 ARC CE allows sites to define Runtime Environment (RTE) labels that alter
 the environment in which a job runs.
@@ -1005,7 +1007,7 @@ to communicate with Azure.
 You can also set up a service account in Azure for HTCondor to use. This
 lets you limit the level of access HTCondor has to your Azure account.
 Instructions for creating a service account can be found here:
-`http://research.cs.wisc.edu/htcondor/gahp/AzureGAHPSetup.docx <http://research.cs.wisc.edu/htcondor/gahp/AzureGAHPSetup.docx>`_.
+`https://htcondor.org/gahp/AzureGAHPSetup.docx <https://htcondor.org/gahp/AzureGAHPSetup.docx>`_.
 
 Once you have created a file containing the service account credentials,
 you can specify its location in the submit description file using the
@@ -1036,60 +1038,3 @@ command. You can supply the name of a file containing an SSH public key
 that will allow access to the administrator account with the
 **azure_admin_key** :index:`azure_admin_key<single: azure_admin_key; submit commands>`
 command.
-
-The BOINC Grid Type
--------------------
-
-:index:`BOINC` :index:`BOINC grid jobs`
-:index:`submitting jobs to BOINC<single: submitting jobs to BOINC; grid computing>`
-:index:`boinc<single: boinc; grid type>`
-
-HTCondor jobs may be submitted to BOINC (Berkeley Open Infrastructure
-for Network Computing) servers. BOINC is a software system for volunteer
-computing. More information about BOINC is available at
-`http://boinc.berkeley.edu/ <http://boinc.berkeley.edu/>`_.
-
-BOINC Job Submission
-''''''''''''''''''''
-
-HTCondor jobs are submitted to a BOINC service with the **grid**
-universe, setting the
-**grid_resource** :index:`grid_resource<single: grid_resource; submit commands>`
-command to **boinc**, followed by the service's URL.
-
-To use this grid type, you must have an account on the BOINC server that
-is authorized to submit jobs. Provide the authenticator string for that
-account for HTCondor to use. Write the authenticator string in a file
-and specify its location in the submit description file using the
-**boinc_authenticator_file** :index:`boinc_authenticator_file<single: boinc_authenticator_file; submit commands>`
-command, as in the example:
-
-.. code-block:: condor-submit
-
-    boinc_authenticator_file = /path/to/auth-file
-
-Before submitting BOINC jobs, register the application with the BOINC
-server. This includes describing the application's resource requirements
-and input and output files, and placing application files on the server.
-This is a manual process that is done on the BOINC server. See the BOINC
-documentation for details.
-
-In the submit description file, the
-**executable** :index:`executable<single: executable; submit commands>` command
-gives the registered name of the application on the BOINC server. Input
-and output files can be described as in the vanilla universe, but the
-file names must match the application description on the BOINC server.
-If
-**transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`
-is omitted, then all output files are transferred.
-
-BOINC Configuration Variables
-'''''''''''''''''''''''''''''
-
-The following configuration variable is specific to the **boinc** grid
-type. The value listed here is the default. A different value may be
-specified in the HTCondor configuration files.
-
-.. code-block:: condor-config
-
-    BOINC_GAHP = $(SBIN)/boinc_gahp

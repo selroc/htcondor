@@ -75,10 +75,9 @@ ClassAd* CollectorDaemon::__query__;
 int CollectorDaemon::__numAds__;
 int CollectorDaemon::__resultLimit__;
 int CollectorDaemon::__failed__;
-List<ClassAd>* CollectorDaemon::__ClassAdResultList__;
+List<CollectorRecord>* CollectorDaemon::__ClassAdResultList__;
 std::string CollectorDaemon::__adType__;
 ExprTree *CollectorDaemon::__filter__;
-bool CollectorDaemon::__hidePvtAttrs__;
 
 TrackTotals* CollectorDaemon::normalTotals = NULL;
 int CollectorDaemon::submittorRunningJobs;
@@ -123,15 +122,6 @@ bool CollectorDaemon::want_track_queries_by_subsys = false;
 AdTransforms CollectorDaemon::m_forward_ad_xfm;
 
 //---------------------------------------------------------
-
-
-
-// prototypes of library functions
-typedef void (*SIGNAL_HANDLER)();
-extern "C"
-{
-	void schedule_event ( int month, int day, int hour, int minute, int second, SIGNAL_HANDLER );
-}
 
 
 struct TokenRequestContinuation {
@@ -225,13 +215,13 @@ CollectorDaemon::schedd_token_request(int, Stream *stream)
 		error_string = "No schedd target specified.";
 	}
 	std::string capability, schedd_addr;
-	if (!error_code && !collector.walkConcreteTable(SCHEDD_AD, [&](ClassAd *ad) -> int {
+	if (!error_code && !collector.walkConcreteTable(SCHEDD_AD, [&](CollectorRecord *record) -> int {
 			std::string local_schedd_name;
-			if (!ad ||
-				!ad->EvaluateAttrString(ATTR_NAME, local_schedd_name) ||
+			if (!record || !record->m_publicAd ||
+				!record->m_publicAd->EvaluateAttrString(ATTR_NAME, local_schedd_name) ||
 				(schedd_name != local_schedd_name) ||
-				!ad->EvaluateAttrString(ATTR_CAPABILITY, capability) ||
-				!ad->EvaluateAttrString(ATTR_MY_ADDRESS, schedd_addr))
+				!record->m_publicAd->EvaluateAttrString(ATTR_CAPABILITY, capability) ||
+				!record->m_publicAd->EvaluateAttrString(ATTR_MY_ADDRESS, schedd_addr))
 			{
 				return 1;
 			}
@@ -276,7 +266,7 @@ CollectorDaemon::schedd_token_request(int, Stream *stream)
 		SUBMIT_SIDE_MATCHSESSION_FQU,
 		schedd_addr.c_str(),
 		1200,
-		nullptr
+		nullptr, false
 	);
 
 
@@ -333,14 +323,9 @@ void CollectorDaemon::Init()
 	daemonCore->Register_CommandWithPayload(QUERY_SUBMITTOR_ADS,"QUERY_SUBMITTOR_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
 	daemonCore->Register_CommandWithPayload(QUERY_LICENSE_ADS,"QUERY_LICENSE_ADS",
+	receive_query_cedar,"receive_query_cedar",READ);
+	daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
-	if(param_boolean("PROTECT_COLLECTOR_ADS", false)) {
-		daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
-			receive_query_cedar,"receive_query_cedar",ADMINISTRATOR);
-	} else {
-		daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
-			receive_query_cedar,"receive_query_cedar",READ);
-	}
 	daemonCore->Register_CommandWithPayload(QUERY_STORAGE_ADS,"QUERY_STORAGE_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
 	daemonCore->Register_CommandWithPayload(QUERY_ACCOUNTING_ADS,"QUERY_ACCOUNTING_ADS",
@@ -428,12 +413,12 @@ void CollectorDaemon::Init()
 		// restrictions to their contents (such as the user must be authenticated, not
 		// unmapped, and must match the Owner attribute).
 	daemonCore->Register_CommandWithPayload(UPDATE_OWN_SUBMITTOR_AD,"UPDATE_OWN_SUBMITTOR_AD",
-		receive_update,"receive_update", DAEMON, D_COMMAND, false,
+		receive_update,"receive_update", DAEMON, false,
 		0, &allow_perms);
 		//
 	daemonCore->Register_CommandWithPayload(IMPERSONATION_TOKEN_REQUEST, "IMPERSONATION_TOKEN_REQUEST",
 		schedd_token_request, "schedd_token_request", DAEMON,
-		D_COMMAND, true, 0, &allow_perms);
+		true, 0, &allow_perms);
 
     // install command handlers for updates with acknowledgement
 
@@ -845,30 +830,45 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 {
 	int return_status = TRUE;
 	double begin = condor_gettimestamp_double();
-	List<ClassAd> results;
-
-		// If our peer is at least 8.9.3 and has NEGOTIATOR authz, then we'll
-		// trust it to handle our capabilities.
-	bool filter_private_ads = true;
-	auto *verinfo = sock->get_peer_version();
-	if (verinfo && verinfo->built_since_version(8, 9, 3)) {
-		auto addr = static_cast<ReliSock*>(sock)->peer_addr();
-			// Given failure here is non-fatal, do not log at D_ALWAYS.
-		if (static_cast<Sock*>(sock)->isAuthorizationInBoundingSet("NEGOTIATOR") &&
-			(USER_AUTH_SUCCESS == daemonCore->Verify("send private ads", NEGOTIATOR, addr, static_cast<ReliSock*>(sock)->getFullyQualifiedUser(), D_SECURITY|D_FULLDEBUG))) {
-			filter_private_ads = false;
-		}
-	}
+	List<CollectorRecord> results;
 
 	// Pull out relavent state from query_entry
 	pending_query_entry_t *query_entry = (pending_query_entry_t *) in_query_entry;
 	ClassAd *cad = query_entry->cad;
 	bool is_locate = query_entry->is_locate;
 	AdTypes whichAds = query_entry->whichAds;
+	bool wants_pvt_attrs = false;
+
+	cad->LookupBool(ATTR_SEND_PRIVATE_ATTRIBUTES, wants_pvt_attrs);
+
+		// If our peer is at least 8.9.3 and has NEGOTIATOR authz, then we'll
+		// trust it to handle our capabilities.
+		// Starting with 10.0.0, send the private attributes only if the
+		// client requests them.
+	bool filter_private_attrs = true;
+	auto *verinfo = sock->get_peer_version();
+	if (verinfo && verinfo->built_since_version(8, 9, 3) &&
+		(USER_AUTH_SUCCESS == daemonCore->Verify("send private attrs", NEGOTIATOR, *static_cast<ReliSock*>(sock), D_SECURITY|D_FULLDEBUG)))
+	{
+		if (verinfo->built_since_version(10, 0, 0)) {
+			filter_private_attrs = !wants_pvt_attrs;
+		} else {
+			filter_private_attrs = false;
+		}
+	}
+
+		// If our peer has ADMINISTRATOR authz and explicitly asks for
+		// private attributes, then we'll trust it to handle our capabilities
+	if (wants_pvt_attrs &&
+		(USER_AUTH_SUCCESS == daemonCore->Verify("send private attrs", ADMINISTRATOR, *static_cast<ReliSock*>(sock), D_SECURITY|D_FULLDEBUG)))
+	{
+		dprintf(D_SECURITY|D_FULLDEBUG, "Administrator requesting private attributes - will not filter.\n");
+		filter_private_attrs = false;
+	}
 
 		// Always send private attributes in private ads.
 	if (whichAds == STARTD_PVT_AD) {
-		filter_private_ads = false;
+		filter_private_attrs = false;
 	}
 
 	// Perform the query
@@ -884,7 +884,7 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 	sock->timeout(QueryTimeout); // set up a network timeout of a longer duration
 	sock->encode();
 	results.Rewind();
-	ClassAd *curr_ad = NULL;
+	CollectorRecord* curr_rec = nullptr;
 	int more = 1;
 	
 		// See if query ad asks for server-side projection
@@ -902,8 +902,9 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 		evaluate_projection = true;
 	}
 
-	while ( (curr_ad=results.Next()) )
+	while ( (curr_rec=results.Next()) )
 	{
+		ClassAd* ad_to_send = filter_private_attrs ? curr_rec->m_publicAd : curr_rec->m_pvtAd;
 		// if querying collector ads, and the collectors own ad appears in this list.
 		// then we want to shove in current statistics. we do this by chaining a
 		// temporary stats ad into the ad to be returned, and publishing updated
@@ -911,7 +912,7 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 		// is increased we do NOT want to put the high-verbosity attributes into
 		// our persistent collector ad.
 		ClassAd * stats_ad = NULL;
-		if ((whichAds == COLLECTOR_AD) && collector.isSelfAd(curr_ad)) {
+		if ((whichAds == COLLECTOR_AD) && collector.isSelfAd(curr_rec)) {
 			dprintf(D_ALWAYS,"Query includes collector's self ad\n");
 			// update stats in the collector ad before we return it.
 			std::string stats_config;
@@ -919,25 +920,28 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 			if (stats_config != "stored") {
 				dprintf(D_ALWAYS,"Updating collector stats using a chained ad and config=%s\n", stats_config.c_str());
 				stats_ad = new ClassAd();
+				if (!filter_private_attrs) {
+					stats_ad->CopyFrom(*curr_rec->m_pvtAd);
+				}
 				daemonCore->dc_stats.Publish(*stats_ad, stats_config.c_str());
 				daemonCore->monitor_data.ExportData(stats_ad, true);
 				collectorStats.publishGlobal(stats_ad, stats_config.c_str());
-				stats_ad->ChainToAd(curr_ad);
-				curr_ad = stats_ad; // send the stats ad instead of the self ad.
+				stats_ad->ChainToAd(curr_rec->m_publicAd);
+				ad_to_send = stats_ad; // send the stats ad instead of the self ad.
 			}
 		}
 
 		if (evaluate_projection) {
 			proj.clear();
 			projection.clear();
-			if (EvalString(ATTR_PROJECTION, cad, curr_ad, projection) && ! projection.empty()) {
+			if (EvalString(ATTR_PROJECTION, cad, curr_rec->m_publicAd, projection) && ! projection.empty()) {
 				StringTokenIterator list(projection);
 				const std::string * attr;
 				while ((attr = list.next_string())) { proj.insert(*attr); }
 			}
 		}
 
-		bool send_failed = (!sock->code(more) || !putClassAd(sock, *curr_ad, filter_private_ads ? PUT_CLASSAD_NO_PRIVATE : 0, proj.empty() ? NULL : &proj));
+		bool send_failed = (!sock->code(more) || !putClassAd(sock, *ad_to_send, 0, proj.empty() ? NULL : &proj));
         
 		if (stats_ad) {
 			stats_ad->Unchain();
@@ -977,7 +981,7 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 	end_write = condor_gettimestamp_double();
 
 	dprintf (D_ALWAYS,
-			 "Query info: matched=%d; skipped=%d; query_time=%f; send_time=%f; type=%s; requirements={%s}; locate=%d; limit=%d; from=%s; peer=%s; projection={%s}; filter_private_ads=%d\n",
+			 "Query info: matched=%d; skipped=%d; query_time=%f; send_time=%f; type=%s; requirements={%s}; locate=%d; limit=%d; from=%s; peer=%s; projection={%s}; filter_private_attrs=%d\n",
 			 __numAds__,
 			 __failed__,
 			 end_query - begin,
@@ -989,7 +993,7 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 			 query_entry->subsys,
 			 sock->peer_description(),
 			 projection.c_str(),
-			 filter_private_ads);
+			 filter_private_attrs);
 END:
 	
 	// All done.  Deallocate memory allocated in this method.  Note that DaemonCore 
@@ -1231,7 +1235,7 @@ collector_runtime_probe CollectorEngine_ru_stash_socket_runtime;
 int CollectorDaemon::receive_update(int command, Stream* sock)
 {
     int	insert;
-	ClassAd *cad;
+	CollectorRecord *record;
 	_condor_auto_accum_runtime<collector_runtime_probe> rt(CollectorEngine_receive_update_runtime);
 #ifdef PROFILE_RECEIVE_UPDATE
 	double rt_last = rt.begin;
@@ -1249,7 +1253,7 @@ int CollectorDaemon::receive_update(int command, Stream* sock)
 	CollectorEngine_ru_pre_collect_runtime += rt.tick(rt_last);
 #endif
     // process the given command
-	if (!(cad = collector.collect (command,(Sock*)sock,from,insert)))
+	if (!(record = collector.collect (command,(Sock*)sock,from,insert)))
 	{
 		if (insert == -2)
 		{
@@ -1284,10 +1288,11 @@ int CollectorDaemon::receive_update(int command, Stream* sock)
 #endif
 
 	/* let the off-line plug-in have at it */
-	offline_plugin_.update ( command, *cad );
+	offline_plugin_.update ( command, *record->m_publicAd );
 
 #if defined(UNIX) && !defined(DARWIN)
-	CollectorPluginManager::Update(command, *cad);
+	// JEF TODO Should we use the private ad here?
+	CollectorPluginManager::Update(command, *record->m_publicAd);
 #endif
 
 #ifdef PROFILE_RECEIVE_UPDATE
@@ -1297,7 +1302,7 @@ int CollectorDaemon::receive_update(int command, Stream* sock)
 	if (viewCollectorTypes || command == UPDATE_STARTD_AD || command == UPDATE_SUBMITTOR_AD) {
 		forward_classad_to_view_collector(command,
 										  ATTR_MY_TYPE,
-										  cad);
+										  record->m_pvtAd);
 	}
 
 #ifdef PROFILE_RECEIVE_UPDATE
@@ -1355,13 +1360,13 @@ int CollectorDaemon::receive_update_expect_ack(int command,
 	condor_sockaddr from = socket->peer_addr();
 
     /* "collect" the ad */
-    ClassAd *cad = collector.collect ( 
+    CollectorRecord *record = collector.collect ( 
         command,
         updateAd,
         from,
         insert );
 
-    if ( !cad ) {
+    if ( !record ) {
 
         /* attempting to "collect" a QUERY or INVALIDATE command?!? */
         if ( -2 == insert ) {
@@ -1422,18 +1427,19 @@ int CollectorDaemon::receive_update_expect_ack(int command,
         
     }
 
-    /* let the off-line plug-in have at it */
-	if(cad)
-    offline_plugin_.update ( command, *cad );
+	if(record) {
+		offline_plugin_.update ( command, *record->m_publicAd );
 
 #if defined(UNIX) && !defined(DARWIN)
-    CollectorPluginManager::Update ( command, *cad );
+		// JEF TODO Should we use the private ad here?
+		CollectorPluginManager::Update ( command, *record->m_publicAd );
 #endif
 
-	if (viewCollectorTypes || UPDATE_STARTD_AD_WITH_ACK == command) {
-		forward_classad_to_view_collector(command,
+		if (viewCollectorTypes || UPDATE_STARTD_AD_WITH_ACK == command) {
+			forward_classad_to_view_collector(command,
 										  ATTR_MY_TYPE,
-										  cad);
+										  record->m_pvtAd);
+		}
 	}
 
 	// let daemon core clean up the socket
@@ -1475,8 +1481,10 @@ CollectorDaemon::stashSocket( ReliSock* sock )
 	return KEEP_STREAM;
 }
 
-int CollectorDaemon::query_scanFunc (ClassAd *cad)
+int CollectorDaemon::query_scanFunc (CollectorRecord *record)
 {
+	ClassAd* cad = record->m_publicAd;
+
 	if ( !__adType__.empty() ) {
 		std::string type = "";
 		cad->LookupString( ATTR_MY_TYPE, type );
@@ -1486,17 +1494,13 @@ int CollectorDaemon::query_scanFunc (ClassAd *cad)
 	}
 
 	int rc = 1;
-	ExprTree *cap_expr = NULL;
-	if ( __hidePvtAttrs__ ) {
-		cap_expr = cad->Remove(ATTR_CAPABILITY);
-	}
 	classad::Value result;
 	bool val;
-	if ( EvalExprTree( __filter__, cad, NULL, result ) &&
+	if ( EvalExprToBool( __filter__, cad, NULL, result ) &&
 		 result.IsBooleanValueEquiv(val) && val ) {
 		// Found a match 
         __numAds__++;
-		__ClassAdResultList__->Append(cad);
+		__ClassAdResultList__->Append(record);
 		if (__numAds__ >= __resultLimit__) {
 			rc = 0; // tell it to stop iterating, we have all the results we want
 		}
@@ -1504,16 +1508,13 @@ int CollectorDaemon::query_scanFunc (ClassAd *cad)
 		__failed__++;
 	}
 
-	if ( cap_expr ) {
-		cad->Insert(ATTR_CAPABILITY, cap_expr);
-	}
     return rc;
 }
 
 
 void CollectorDaemon::process_query_public (AdTypes whichAds,
 											ClassAd *query,
-											List<ClassAd>* results)
+											List<CollectorRecord>* results)
 {
 	// set up for hashtable scan
 	__query__ = query;
@@ -1540,31 +1541,6 @@ void CollectorDaemon::process_query_public (AdTypes whichAds,
 	__resultLimit__ = INT_MAX; // no limit
 	if ( ! query->LookupInteger(ATTR_LIMIT_RESULTS, __resultLimit__) || __resultLimit__ <= 0) {
 		__resultLimit__ = INT_MAX; // no limit
-	}
-
-	__hidePvtAttrs__ = false;
-	if ( whichAds == SUBMITTOR_AD || whichAds == SCHEDD_AD || whichAds == GENERIC_AD || whichAds == ANY_AD ) {
-		__hidePvtAttrs__ = true;
-	}
-
-	// See if we should exclude Collector Ads from generic queries.  Still
-	// give them out for specific collector queries, which is registered as
-	// ADMINISTRATOR when PROTECT_COLLECTOR_ADS is true.  This setting is
-	// designed only for use at the UW, and as such this knob is not present
-	// in the param table.
-	if ((whichAds != COLLECTOR_AD) && param_boolean("PROTECT_COLLECTOR_ADS", false)) {
-		dprintf(D_FULLDEBUG, "Received query with generic type; filtering collector ads\n");
-		std::string modified_filter;
-		formatstr(modified_filter, "(%s) && (MyType =!= \"Collector\")",
-			ExprTreeToString(__filter__));
-		query->AssignExpr(ATTR_REQUIREMENTS,modified_filter.c_str());
-		__filter__ = query->LookupExpr(ATTR_REQUIREMENTS);
-		if ( __filter__ == NULL ) {
-			dprintf (D_ALWAYS, "Failed to parse modified filter: %s\n",
-				modified_filter.c_str());
-			return;
-		}
-		dprintf(D_FULLDEBUG,"Query after modification: *%s*\n",modified_filter.c_str());
 	}
 
 	// If ABSENT_REQUIREMENTS is defined, rewrite filter to filter-out absent ads 
@@ -1605,14 +1581,14 @@ void CollectorDaemon::process_query_public (AdTypes whichAds,
 // invalidated ads allows the offline plugin to decide if they should go
 // absent, instead.
 //
-int CollectorDaemon::expiration_scanFunc (ClassAd *cad)
+int CollectorDaemon::expiration_scanFunc (CollectorRecord *record)
 {
-    return setAttrLastHeardFrom( cad, 1 );
+    return setAttrLastHeardFrom( record->m_publicAd, 1 );
 }
 
-int CollectorDaemon::invalidation_scanFunc (ClassAd *cad)
+int CollectorDaemon::invalidation_scanFunc (CollectorRecord *record)
 {
-    return setAttrLastHeardFrom( cad, 0 );
+    return setAttrLastHeardFrom( record->m_publicAd, 0 );
 }
 
 int CollectorDaemon::setAttrLastHeardFrom (ClassAd* cad, unsigned long time)
@@ -1627,7 +1603,7 @@ int CollectorDaemon::setAttrLastHeardFrom (ClassAd* cad, unsigned long time)
 
 	classad::Value result;
 	bool val;
-	if ( EvalExprTree( __filter__, cad, NULL, result ) &&
+	if ( EvalExprToBool( __filter__, cad, NULL, result ) &&
 		 result.IsBooleanValueEquiv(val) && val ) {
 
 		cad->Assign( ATTR_LAST_HEARD_FROM, time );
@@ -1709,18 +1685,18 @@ void CollectorDaemon::process_invalidation (AdTypes whichAds, ClassAd &query, St
 
 
 
-int CollectorDaemon::reportStartdScanFunc( ClassAd *cad )
+int CollectorDaemon::reportStartdScanFunc( CollectorRecord *record )
 {
-	return normalTotals->update( cad );
+	return normalTotals->update( record->m_publicAd );
 }
 
-int CollectorDaemon::reportSubmittorScanFunc( ClassAd *cad )
+int CollectorDaemon::reportSubmittorScanFunc( CollectorRecord *record )
 {
 	++submittorNumAds;
 
 	int tmp1, tmp2;
-	if( !cad->LookupInteger( ATTR_RUNNING_JOBS , tmp1 ) ||
-		!cad->LookupInteger( ATTR_IDLE_JOBS, tmp2 ) )
+	if( !record->m_publicAd->LookupInteger( ATTR_RUNNING_JOBS , tmp1 ) ||
+		!record->m_publicAd->LookupInteger( ATTR_IDLE_JOBS, tmp2 ) )
 			return 0;
 	submittorRunningJobs += tmp1;
 	submittorIdleJobs	 += tmp2;
@@ -1728,14 +1704,14 @@ int CollectorDaemon::reportSubmittorScanFunc( ClassAd *cad )
 	return 1;
 }
 
-int CollectorDaemon::reportMiniStartdScanFunc( ClassAd *cad )
+int CollectorDaemon::reportMiniStartdScanFunc( CollectorRecord *record )
 {
     char buf[80];
 	int iRet = 0;
 
 	++startdNumAds;
 
-	if ( cad && cad->LookupString( ATTR_STATE, buf, sizeof(buf) ) )
+	if ( record->m_publicAd->LookupString( ATTR_STATE, buf, sizeof(buf) ) )
 	{
 		machinesTotal++;
 		switch ( buf[0] )
@@ -1753,7 +1729,7 @@ int CollectorDaemon::reportMiniStartdScanFunc( ClassAd *cad )
 
 		// Count the number of jobs in each universe
 		int universe;
-		if ( cad->LookupInteger( ATTR_JOB_UNIVERSE, universe ) )
+		if ( record->m_publicAd->LookupInteger( ATTR_JOB_UNIVERSE, universe ) )
 		{
 			ustatsAccum.accumulate( universe );
 		}
@@ -2110,18 +2086,31 @@ void CollectorDaemon::sendCollectorAd()
 	//
 	int error = 0;
 	ClassAd * selfAd = new ClassAd(*ad);
-	if( ! collector.collect( UPDATE_COLLECTOR_AD, selfAd, condor_sockaddr::null, error ) ) {
-		dprintf( D_ALWAYS | D_FAILURE, "Failed to add my own ad to myself (%d).\n", error );
-	}
-	collector.identifySelfAd(selfAd);
 
-	// inserting the selfAd into the collector hashtable will stomp the update counters
-	// so clear out the per-daemon Updates* stats to avoid confusion with the global stats
-	// and re-publish the global collector stats.
-	//PRAGMA_REMIND("tj: remove this code once the collector generates it's ad when queried.")
-	selfAd->Delete(ATTR_UPDATESTATS_HISTORY);
-	selfAd->Delete(ATTR_UPDATESTATS_SEQUENCED);
-	collectorStats.publishGlobal(selfAd, NULL);
+		// Administrative security sessions are added directly in the daemon core code; since we
+		// are bypassing DC and invoking collector.collect on the selfAd, invoke it here as well.
+	std::string capability;
+	if (daemonCore->SetupAdministratorSession(1800, capability)) {
+		selfAd->InsertAttr(ATTR_REMOTE_ADMIN_CAPABILITY, capability);
+	}
+
+	CollectorRecord* self_rec = nullptr;
+	if( ! (self_rec = collector.collect( UPDATE_COLLECTOR_AD, selfAd, condor_sockaddr::null, error )) ) {
+		dprintf( D_ALWAYS | D_FAILURE, "Failed to add my own ad to myself (%d).\n", error );
+		delete selfAd;
+	}
+
+	if (self_rec) {
+		collector.identifySelfAd(self_rec);
+
+		// inserting the selfAd into the collector hashtable will stomp the update counters
+		// so clear out the per-daemon Updates* stats to avoid confusion with the global stats
+		// and re-publish the global collector stats.
+		//PRAGMA_REMIND("tj: remove this code once the collector generates it's ad when queried.")
+		selfAd->Delete(ATTR_UPDATESTATS_HISTORY);
+		selfAd->Delete(ATTR_UPDATESTATS_SEQUENCED);
+		collectorStats.publishGlobal(selfAd, NULL);
+	}
 
 	// Send the ad
 	int num_updated = collectorsToUpdate->sendUpdates(UPDATE_COLLECTOR_AD, ad, NULL, false);
@@ -2195,7 +2184,7 @@ CollectorDaemon::forward_classad_to_view_collector(int cmd,
 				type.c_str(), getCommandString(cmd));
 	}
 
-	ClassAd *pvtAd = NULL;
+	ClassAd *pvtAd = nullptr;
 	if (cmd == UPDATE_STARTD_AD) {
 		// Forward the startd private ad as well.  This allows the
 		// target collector to act as an aggregator for multiple collectors
@@ -2203,11 +2192,12 @@ CollectorDaemon::forward_classad_to_view_collector(int cmd,
 		// the rest of the pool.
 		AdNameHashKey hk;
 		ASSERT( makeStartdAdHashKey (hk, theAd) );
-		pvtAd = collector.lookup(STARTD_PVT_AD,hk);
-		if (pvtAd && !forwardClaimedPrivateAds){
+		CollectorRecord* pvt_rec = collector.lookup(STARTD_PVT_AD,hk);
+		pvtAd = pvt_rec ? pvt_rec->m_pvtAd : nullptr;
+		if (pvt_rec && !forwardClaimedPrivateAds){
 			std::string state;
 			if (theAd->LookupString(ATTR_STATE, state) && state == "Claimed") {
-				pvtAd = NULL;
+				pvtAd = nullptr;
 			}
 		}
 	}
@@ -2225,7 +2215,15 @@ CollectorDaemon::forward_classad_to_view_collector(int cmd,
 
 	// Transform ad
 	//
-	m_forward_ad_xfm.transform(theAd, nullptr);
+	// If we're forwarding an update, then theAd points to the private
+	// ad in our collection. We want to transform the public ad that it's
+	// chained to.
+	// If we're forwarding an invalidate, then there is no chained parent.
+	ClassAd* xfm_ad = theAd->GetChainedParentAd();
+	if (!xfm_ad) {
+		xfm_ad = theAd;
+	}
+	m_forward_ad_xfm.transform(xfm_ad, nullptr);
 
     for (auto e(vc_list.begin());  e != vc_list.end();  ++e) {
         DCCollector* view_coll = e->collector;
@@ -2294,7 +2292,7 @@ CollectorDaemon::forward_classad_to_view_collector(int cmd,
             if (proj_expr) {
                 classad::Value val;
                 const char * proj_str = NULL;
-                if (EvalExprTree(proj_expr, theAd, NULL, val) && val.IsStringValue(proj_str)) {
+                if (EvalExprToString(proj_expr, theAd, NULL, val) && val.IsStringValue(proj_str)) {
                     add_attrs_from_string_tokens(proj, proj_str);
                 }
                 if ( ! proj.empty()) { whitelist = &proj; }

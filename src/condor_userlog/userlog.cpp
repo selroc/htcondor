@@ -26,6 +26,7 @@
 #include "condor_distribution.h"
 #include "condor_sockaddr.h"
 #include "ipv6_hostname.h"
+#include <algorithm>
 
 /* 
 ** Job Record format: cluster.proc evict_time wall_time good_time cpu_usage
@@ -101,7 +102,6 @@ main(int argc, char *argv[])
 	bool log_read = false;
 	int select_cluster = -1, select_proc = -1;
 
-	myDistro->Init( argc, argv );
 	if (argc == 1) {
 		fprintf(stderr, usage, argv[0]);
 		exit(1);
@@ -173,19 +173,18 @@ main(int argc, char *argv[])
 	return 0;
 }
 
-int
-statsort(const void *vi, const void *vj)
-{
-	const JobStatistics* const *i;
-	const JobStatistics* const *j;
-	i = (const JobStatistics* const *)vi;
-	j = (const JobStatistics* const *)vj;
-	int clustercomp;
-	clustercomp = (*i)->cluster - (*j)->cluster;
-	if (clustercomp == 0) {
-		return (*i)->proc - (*j)->proc;
+bool clusterProcLessThan(const JobStatistics *lhs, const JobStatistics *rhs) {
+	if (lhs->cluster < rhs->cluster) {
+		return true;
 	}
-	return clustercomp;
+	if (lhs->cluster > rhs->cluster) {
+		return false;
+	}
+
+	if (lhs->proc < rhs->proc) {
+		return true;
+	}
+	return false;
 }
 
 void
@@ -229,14 +228,14 @@ display_stats()
 		statarray[i] = js;
 	}
 
-	qsort(statarray, numJobStats, sizeof(JobStatistics *), statsort);
+	std::sort(statarray, &statarray[i], clusterProcLessThan);
 
 	int allocations=0, kills=0;
 	int wall_time=0, good_time=0, cpu_usage=0;
 	char job[40];
 	for (i=0; i < numJobStats; i++) {
 		js = statarray[i];
-		sprintf(job, "%d.%d", js->cluster, js->proc);
+		snprintf(job, sizeof(job), "%d.%d", js->cluster, js->proc);
 		printf("%-15.15s ", job);
 		printf("%9.9s ", format_time_nosecs(js->wall_time));
 		printf("%9.9s ", format_time_nosecs(js->good_time));
@@ -299,7 +298,7 @@ new_record(int cluster, int proc, int start_time, int evict_time,
 		return;
 	}
 
-	sprintf(hash, "%d.%d", cluster, proc);
+	snprintf(hash, sizeof(hash), "%d.%d", cluster, proc);
 
 	JobStatistics *js = NULL;
 	if (Stats.lookup(hash, js) < 0) {
@@ -389,7 +388,7 @@ read_log(const char *filename, int select_cluster, int select_proc)
 				delete event;
 				break;
 			case ULOG_EXECUTE: {
-				sprintf(hash, "%d.%d", event->cluster, event->proc);
+				snprintf(hash, sizeof(hash), "%d.%d", event->cluster, event->proc);
 				// check if we already have an execute event for this job
 				ExecuteEvent *execEvent;
 				if (ExecRecs.lookup(hash, execEvent) >= 0) {
@@ -433,7 +432,7 @@ read_log(const char *filename, int select_cluster, int select_proc)
 				break;
 			}
 			case ULOG_CHECKPOINTED: {
-				sprintf(hash, "%d.%d", event->cluster, event->proc);
+				snprintf(hash, sizeof(hash), "%d.%d", event->cluster, event->proc);
 				// remove any previous ckpt events for this job
 				CheckpointedEvent *ckptEvent;
 				if (CkptRecs.lookup(hash, ckptEvent) >= 0) {
@@ -453,7 +452,7 @@ read_log(const char *filename, int select_cluster, int select_proc)
 			case ULOG_JOB_EVICTED: {
 				ExecuteEvent *execEvent;
 				JobEvictedEvent *evictEvent = (JobEvictedEvent *)event;
-				sprintf(hash, "%d.%d", event->cluster, event->proc);
+				snprintf(hash, sizeof(hash), "%d.%d", event->cluster, event->proc);
 				if (ExecRecs.lookup(hash, execEvent) < 0) {
 					if (debug_mode) {
 						fprintf(stderr,
@@ -505,7 +504,7 @@ read_log(const char *filename, int select_cluster, int select_proc)
 				ExecuteEvent *execEvent;
 				JobTerminatedEvent *terminateEvent =
 					(JobTerminatedEvent *)event;
-				sprintf(hash, "%d.%d", event->cluster, event->proc);
+				snprintf(hash, sizeof(hash), "%d.%d", event->cluster, event->proc);
 				if (ExecRecs.lookup(hash, execEvent) < 0) {
 					if (debug_mode) {
 						fprintf(stderr,
@@ -548,7 +547,7 @@ read_log(const char *filename, int select_cluster, int select_proc)
 			case ULOG_JOB_RECONNECT_FAILED:
 			case ULOG_SHADOW_EXCEPTION: {
 				ExecuteEvent *execEvent;
-				sprintf(hash, "%d.%d", event->cluster, event->proc);
+				snprintf(hash, sizeof(hash), "%d.%d", event->cluster, event->proc);
 				if (ExecRecs.lookup(hash, execEvent) < 0) {
 					if (debug_mode) {
 						fprintf(stderr,

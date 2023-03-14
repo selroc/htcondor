@@ -61,8 +61,6 @@
 #define PREEN_EXIT_STATUS_FAILURE       1
 #define PREEN_EXIT_STATUS_EMAIL_FAILURE 2
 
-using namespace std;
-
 State get_machine_state();
 
 extern void		_condor_set_debug_flags( const char *strflags, int flags );
@@ -98,7 +96,6 @@ void good_file( const char *, const char * );
 int send_email();
 bool is_valid_shared_exe( const char *name );
 bool is_ckpt_file_or_submit_digest(const char *name, JOB_ID_KEY & jid);
-bool is_myproxy_file( const char *name, JOB_ID_KEY & jid );
 bool is_ccb_file( const char *name );
 bool touched_recently(char const *fname,time_t delta);
 bool linked_recently(char const *fname,time_t delta);
@@ -119,7 +116,7 @@ usage()
 
 
 int
-main( int argc, char *argv[] )
+main( int /*argc*/, char *argv[] )
 {
 #ifndef WIN32
 		// Ignore SIGPIPE so if we cannot connect to a daemon we do
@@ -132,7 +129,6 @@ main( int argc, char *argv[] )
 	
 		// Initialize things
 	MyName = argv[0];
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 
@@ -528,7 +524,7 @@ check_spool_dir()
 		} else {
 			// file was not a directory, we can deal with it right now.
 			JOB_ID_KEY jid;
-			if (is_ckpt_file_or_submit_digest(f, jid) || is_myproxy_file(f, jid)) {
+			if (is_ckpt_file_or_submit_digest(f, jid)) {
 				maybe_stale.add(jid, f);
 			} else {
 				// not a directory, and also clearly not a checkpoint or submit file
@@ -696,22 +692,9 @@ is_ckpt_file_or_submit_digest(const char *name, JOB_ID_KEY & jid)
 	return false;
 }
 
-bool
-is_myproxy_file(const char *name, JOB_ID_KEY & jid)
-{
-	// TODO This will accept files that look like a valid MyProxy
-	//   password file with extra characters on the end of the name.
-	int rc = sscanf( name, "mpp.%d.%d", &jid.cluster, &jid.proc );
-	if ( rc != 2 ) {
-		return false;
-	}
-	return jid.cluster > 0 && jid.proc >= 0;
-}
-
 
 /*
-  Check whether the given file could be a valid MyProxy password file
-  for a queued job.
+  Check whether the given file is a CCB reconnect file
 */
 bool
 is_ccb_file( const char *name )
@@ -790,11 +773,19 @@ check_log_dir()
 {
 	const char	*f;
 	Directory dir(Log, PRIV_ROOT);
-	int coreFileMaxSize = param_integer("PREEN_COREFILE_MAX_SIZE", 50000000);
-	int coreFileStaleAge = param_integer("PREEN_COREFILE_STAGE_AGE", 5184000);
+	long long coreFileMaxSize;
+	param_longlong("PREEN_COREFILE_MAX_SIZE", coreFileMaxSize, true, 50000000);
+	int coreFileStaleAge = param_integer("PREEN_COREFILE_STALE_AGE", 5184000);
 	unsigned int coreFilesPerProgram = param_integer("PREEN_COREFILES_PER_PROCESS", 10);
+	//Max Disk space daemon type core files can take up (schedd:5GB can have files 1GB 1GB 3GB)
+	long long scheddCoresMaxSum, negotiatorCoresMaxSum, collectorCoresMaxSum;
+	param_longlong("PREEN_SCHEDD_COREFILES_TOTAL_DISK", scheddCoresMaxSum, true, 4 * coreFileMaxSize);
+	param_longlong("PREEN_NEGOTIATOR_COREFILES_TOTAL_DISK", negotiatorCoresMaxSum, true, 4 * coreFileMaxSize);
+	param_longlong("PREEN_COLLECTOR_COREFILES_TOTAL_DISK", collectorCoresMaxSum, true, 4 * coreFileMaxSize);
 	StringList invalid;
 	std::map<std::string, std::map<int, std::string>> programCoreFiles;
+	//Corefiles for daemons with large base sizes (schedd, negotiator, collector)
+	std::map<std::string, std::map<time_t, std::pair<std::string, filesize_t>>> largeCoreFiles;
 
 	invalid.initializeFromString (InvalidLogFiles ? InvalidLogFiles : "");
 
@@ -809,14 +800,24 @@ check_log_dir()
 				if ( coreFile ) {
 					StatInfo statinfo( Log, f );
 					if( statinfo.Error() == 0 ) {
-						// If this core file is stal	e, flag it for removal
+						// If this core file is stale, flag it for removal
 						if( abs((int)( time(NULL) - statinfo.GetModifyTime() )) > coreFileStaleAge ) {
 							bad_file( Log, f, dir );
 							continue;
 						}
 						// If this core file exceeds a certain size, flag for removal
 						if( statinfo.GetFileSize() > coreFileMaxSize ) {
-							bad_file( Log, f, dir );
+							//If core file belongs to schedd, negotiator, or collector daemon then
+							//add to data struct for later processing else flag for removal
+							std::string daemonExe = get_corefile_program( f, dir.GetDirectoryPath() );
+							if (daemonExe.find("condor_schedd") != std::string::npos ||
+								daemonExe.find("condor_negotiator") != std::string::npos ||
+								daemonExe.find("condor_collector") != std::string::npos) {
+									largeCoreFiles[condor_basename(daemonExe.c_str())].insert(std::make_pair(statinfo.GetModifyTime(),
+															std::pair<std::string,filesize_t>(std::string(f),statinfo.GetFileSize())));
+							} else {
+								bad_file( Log, f, dir );
+							}
 							continue;
 						}
 					}
@@ -841,6 +842,38 @@ check_log_dir()
 				good_file( Log, f );
 			}
 		#endif
+	}
+
+	/*
+	*	Now iterate over each daemons core files. Remove oldests files if
+	*	needed until under alotted disk disk space/max sum limit.
+	*	Because std::map sorts alphabetically by key, and the timestamp
+	*	is the key so the inner map goes from oldest to newest.
+	*/
+	for (auto& d : largeCoreFiles) {
+		//Set maximum core file sizes sum to daemons limit
+		long long maxSum = 0;
+		if (d.first.find("condor_schedd") != std::string::npos) { maxSum = scheddCoresMaxSum; }
+		else if (d.first.find("condor_negotiator") != std::string::npos) { maxSum = negotiatorCoresMaxSum; }
+		else if (d.first.find("condor_collector") != std::string::npos) { maxSum = collectorCoresMaxSum; }
+
+		//Reverse through inner map contents to see how many files from newest to
+		//oldest we can sum up before we pass the maxiumum sum. We will attempt
+		//to fit as many core files as we can. Mark good/bad file as we go.
+		filesize_t fileSum = 0;
+		for (auto it = d.second.rbegin(); it != d.second.rend(); it++) {
+			if (fileSum + it->second.second > maxSum) {
+				bad_file(Log, it->second.first.c_str(), dir);
+				double fileSize = static_cast<double>(it->second.second)/1024/1024/1024;
+				double availSpace = static_cast<double>(maxSum-fileSum)/1024/1024/1024;
+				double maxSpace = static_cast<double>(maxSum)/1024/1024/1024;
+				dprintf(D_ALWAYS, "Marking %s as bad file due to size %.2f GB exceeding the remaining available space of %.2f GB out of a %.2f GB max.\n",
+							it->second.first.c_str(), fileSize, availSpace, maxSpace);
+			} else {
+				fileSum += it->second.second;
+				good_file(Log, it->second.first.c_str());
+			}
+		}
 	}
 
 	// Now iterate over the processes we tracked core files for.
@@ -1036,13 +1069,12 @@ init_params()
 		Execute = NULL;
 	}
 		// In addition to EXECUTE, there may be SLOT1_EXECUTE, ...
-#if 1
-	ExtArray<const char *> params;
-	Regex re; int err = 0; const char * pszMsg = 0;
-	ASSERT(re.compile("slot([0-9]*)_execute", &pszMsg, &err, PCRE_CASELESS));
+	std::vector<std::string> params;
+	Regex re; int errnumber = 0, erroffset = 0;
+	ASSERT(re.compile("slot([0-9]*)_execute", &errnumber, &erroffset, PCRE2_CASELESS));
 	if (param_names_matching(re, params)) {
-		for (int ii = 0; ii < params.length(); ++ii) {
-			Execute = param(params[ii]);
+		for (size_t ii = 0; ii < params.size(); ++ii) {
+			Execute = param(params[ii].c_str());
 			if (Execute) {
 				if ( ! ExecuteDirs.contains(Execute)) {
 					ExecuteDirs.append(Execute);
@@ -1051,26 +1083,6 @@ init_params()
 			}
 		}
 	}
-	params.truncate(0);
-#else
-	ExtArray<ParamValue> *params = param_all();
-	for( int p=params->length(); p--; ) {
-		char const *name = (*params)[p].name.Value();
-		char *tail = NULL;
-		if( strncasecmp( name, "SLOT", 4 ) != 0 ) continue;
-		long l = strtol( name+4, &tail, 10 );
-		if( l == LONG_MIN || tail <= name || strcasecmp( tail, "_EXECUTE" ) != 0 ) continue;
-
-		Execute = param(name);
-		if( Execute ) {
-			if( !ExecuteDirs.contains( Execute ) ) {
-				ExecuteDirs.append( Execute );
-			}
-			free( Execute );
-		}
-	}
-	delete params;
-#endif
 
 	if ( MailFlag ) {
 		if( (PreenAdmin = param("PREEN_ADMIN")) == NULL ) {
@@ -1233,7 +1245,7 @@ get_corefile_program( const char* corefile, const char* dir ) {
 
 		std::array<char, 128> buffer;
 		std::string cmd_output;
-		std::unique_ptr<FILE, decltype(&my_pclose)> process_pipe( my_popen( args, "r", 0 ), my_pclose );
+		std::unique_ptr<FILE, int (*)(FILE *)> process_pipe( my_popen( args, "r", 0 ), my_pclose );
 
 		// Run the file command and capture output.
 		// On any error, return an empty string.

@@ -22,7 +22,6 @@
 #define _PROC_FAMILY_PROXY_H
 
 #include "proc_family_interface.h"
-#include "MyString.h"
 
 class ProcFamilyClient;
 
@@ -57,9 +56,7 @@ public:
 #if defined(LINUX)
 	bool track_family_via_allocated_supplementary_group(pid_t, gid_t&);
 #endif
-#if defined(HAVE_EXT_LIBCGROUP)
-	bool track_family_via_cgroup(pid_t, const char*);
-#endif
+	bool track_family_via_cgroup(pid_t, const FamilyInfo *fi);
 
 	// ask the procd for usage information about a process
 	// family
@@ -87,11 +84,6 @@ public:
 	// more
 	//
 	bool unregister_family(pid_t);
-
-	// tell the procd it'll need to use glexec (with the given
-	// proxy) in order to send signals to this family
-	//
-	bool use_glexec_for_family(pid_t, const char* proxy);
 
 	// called by the master prior to exiting to insure that the procd child process is reaped
 	//
@@ -124,11 +116,11 @@ private:
 
 	// the address that our ProcD is using
 	//
-	MyString m_procd_addr;
+	std::string m_procd_addr;
 
 	// the log file that our ProcD will use
 	//
-	MyString m_procd_log;
+	std::string m_procd_log;
 
 	// the ProcD's pid, if we started one and haven't told it to exit yet;
 	// otherwise, -1

@@ -80,8 +80,8 @@ class BaseJob : public Service
 	virtual void NotifyResourceDown();
 	virtual void NotifyResourceUp();
 
-	static HashTable<PROC_ID, BaseJob *> JobsByProcId;
-	static HashTable<std::string, BaseJob *> JobsByRemoteId;
+	static std::unordered_map<PROC_ID, BaseJob *> JobsByProcId;
+	static std::unordered_map<std::string, BaseJob *> JobsByRemoteId;
 
 	ClassAd *jobAd;
 	PROC_ID procID;
@@ -132,11 +132,6 @@ bool WriteAbortEventToUserLog( ClassAd *job_ad );
 bool WriteTerminateEventToUserLog( ClassAd *job_ad );
 bool WriteEvictEventToUserLog( ClassAd *job_ad );
 bool WriteHoldEventToUserLog( ClassAd *job_ad );
-bool WriteGlobusResourceUpEventToUserLog( ClassAd *job_ad );
-bool WriteGlobusResourceDownEventToUserLog( ClassAd *job_ad );
-bool WriteGlobusSubmitEventToUserLog( ClassAd *job_ad );
-bool WriteGlobusSubmitFailedEventToUserLog( ClassAd *job_ad, int failure_code,
-											const char *failure_mesg = NULL );
 bool WriteGridResourceUpEventToUserLog( ClassAd *job_ad );
 bool WriteGridResourceDownEventToUserLog( ClassAd *job_ad );
 bool WriteGridSubmitEventToUserLog( ClassAd *job_ad );

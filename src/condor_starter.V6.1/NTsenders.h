@@ -24,7 +24,6 @@
 #include "condor_common.h"
 #include "condor_classad.h"
 
-extern "C" {
 	int REMOTE_CONDOR_register_job_info( ClassAd *ad );
 	int REMOTE_CONDOR_register_mpi_master_info( ClassAd *ad );
 	int REMOTE_CONDOR_register_starter_info( ClassAd *ad );
@@ -48,7 +47,6 @@ extern "C" {
 	int REMOTE_CONDOR_ulog_printf( int hold_reason_code, int hold_reason_subcode, char const *str, ... ) CHECK_PRINTF_FORMAT(3,4);
 	int REMOTE_CONDOR_ulog_error( int hold_reason_code, int hold_reason_subcode, char const *str );
 	int REMOTE_CONDOR_ulog( ClassAd *ad );
-	int REMOTE_CONDOR_phase( char *phase );
 	int REMOTE_CONDOR_get_job_attr( char *name, char *&expr );
 	int REMOTE_CONDOR_set_job_attr( char *name, char *expr );
 	int REMOTE_CONDOR_constrain( char *expr );
@@ -99,7 +97,6 @@ extern "C" {
 
 	// Why are these all C-linkage?
 	int REMOTE_CONDOR_event_notification(ClassAd * event);
-}
 
 #endif
 

@@ -36,7 +36,6 @@
 #include "dagman_main.h"
 #include "tmp_dir.h"
 #include "basename.h"
-#include "condor_string.h"  /* for strnewp() */
 #include "condor_getcwd.h"
 
 static const char   COMMENT    = '#';
@@ -46,6 +45,7 @@ static const char * ILLEGAL_CHARS = "+";
 static std::vector<char*> _spliceScope;
 static bool _useDagDir = false;
 static bool _useDirectSubmit = true;
+static bool _appendVars = false;
 
 // _thisDagNum will be incremented for each DAG specified on the
 // condor_submit_dag command line.
@@ -171,7 +171,7 @@ int parse_up_to_close_brace(SubmitHash & hash, MacroStream &ms, std::string & er
 
 //-----------------------------------------------------------------------------
 bool parse(Dag *dag, const char *filename, bool useDagDir,
-			DCSchedd *schedd, bool incrementDagNum)
+			DCSchedd *schedd, bool appendVars, bool incrementDagNum )
 {
 	ASSERT( dag != NULL );
 
@@ -181,6 +181,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 
 	_useDagDir = useDagDir;
 	_useDirectSubmit = param_boolean("DAGMAN_USE_DIRECT_SUBMIT", true);
+	_appendVars = appendVars;
 	_schedd = schedd;
 
 		//
@@ -1730,7 +1731,7 @@ static bool parse_dot(Dag *dag, const char *filename, int lineNumber)
 //-----------------------------------------------------------------------------
 static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 {
-	const char* example = "Vars JobName VarName1=\"value1\" VarName2=\"value2\"";
+	const char* example = "Vars JobName [PREPEND | APPEND] VarName1=\"value1\" VarName2=\"value2\"";
 	const char *jobName = strtok( NULL, DELIMITERS );
 	if ( jobName == NULL ) {
 		debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Missing job name\n",
@@ -1745,8 +1746,27 @@ static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 
 	std::string varName;
 	std::string varValue;
+	bool prepend; //Bool for if variable is prepended or appended. Default is false
 
-	char *varsStr = strtok( NULL, "\n" ); // just get all the rest -- we'll be doing this by hand
+	char *varsStr = strtok( NULL, "\n" ); // just get all the rest and we will manually parse vars
+
+/*	
+*	Check to see if PREPEND or APPEND was specified before variables to be passed.
+*	If option is found then we set prepend boolean appropriately and increment
+*	the original varsStr pointer to point at char after option. -Cole Bollig
+*/
+
+	if (starts_with(varsStr,"PREPEND") ){//See if PREPEND is at beginning of token
+		prepend = true;
+		varsStr += 7;
+	} else if ( starts_with(varsStr,"APPEND") ){//See if APPEND is at beginning of token
+		prepend = false;
+		varsStr += 6;
+	} else {
+		//If options aren't found then set to global knob
+		// !append -> prepend
+		prepend = !_appendVars;
+	}
 
 	Job *job;
 	while ( ( job = dag->FindAllNodesByName( jobName,
@@ -1778,7 +1798,7 @@ static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 				break;
 			}
 
-			job->AddVar(varName.c_str(), varValue.c_str(), filename, lineNumber);
+			job->AddVar(varName.c_str(), varValue.c_str(), filename, lineNumber, prepend);
 			debug_printf(DEBUG_DEBUG_1,
 				"Argument added, Name=\"%s\"\tValue=\"%s\"\n",
 				varName.c_str(), varValue.c_str());
@@ -2148,13 +2168,15 @@ parse_splice(
 		debug_printf( DEBUG_QUIET,
 					"ERROR: can't change to directory %s: %s\n",
 					directory.c_str(), errMsg.c_str() );
+		delete splice_dag;
 		return false;
 	}
 
 	// parse the splice file into a separate dag.
-	if (!parse(splice_dag, spliceFile.c_str(), _useDagDir, _schedd, false)) {
+	if (!parse(splice_dag, spliceFile.c_str(), _useDagDir, _schedd, _appendVars, false)) {
 		debug_error(1, DEBUG_QUIET, "ERROR: Failed to parse splice %s in file %s\n",
 			spliceName.c_str(), spliceFile.c_str());
+		delete splice_dag;
 		return false;
 	}
 
@@ -2163,6 +2185,7 @@ parse_splice(
 		debug_printf( DEBUG_QUIET,
 					"ERROR: can't change to original directory: %s\n",
 					errMsg.c_str() );
+		delete splice_dag;
 		return false;
 	}
 
@@ -2170,6 +2193,7 @@ parse_splice(
 	if ( splice_dag->HasFinalNode() ) {
 		debug_printf( DEBUG_QUIET, "ERROR: splice %s has a final node; "
 					"splices cannot have final nodes\n", spliceName.c_str() );
+		delete splice_dag;
 		return false;
 	}
 
@@ -2193,12 +2217,16 @@ parse_splice(
 		debug_printf( DEBUG_QUIET, "ERROR: Splice name '%s' used for multiple "
 			"splices. Splice names must be unique per dag file.\n", 
 			spliceName.c_str());
+		delete splice_dag;
 		return false;
 	}
 	debug_printf(DEBUG_DEBUG_1, "Done parsing splice %s\n", spliceName.c_str());
 
-	// pop the just pushed value off of the end of the ext array
+	// pop the just pushed value off of the end of the vector and free it
+	char *tmp = _spliceScope.back();
 	_spliceScope.pop_back();
+	free(tmp);
+
 	debug_printf(DEBUG_DEBUG_1, "_spliceScope has length %zu\n", _spliceScope.size());
 
 	return true;
@@ -2770,7 +2798,7 @@ parse_include(
 		// include file path is always relative to the submit directory,
 		// *not* relative to the DAG file's directory, even if
 		// 'condor_submit -usedagdir' is specified.
-	return parse( dag, tmpFilename.c_str(), false, _schedd, false );
+	return parse( dag, tmpFilename.c_str(), false, _schedd, _appendVars, false);
 }
 
 static std::string munge_job_name(const char *jobName)
@@ -2861,7 +2889,12 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	}
 
 	if ( *str != '=' ) {
-		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): Illegal character (%c) in or after macroname %s\n", filename, lineNumber, *str, varName.c_str() );
+		if ( varName.compare("PREPEND") == 0 || varName.compare("APPEND") == 0){
+			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): %s not declared before all passed variables.\n"
+						,filename,lineNumber,varName.c_str());
+		} else {
+			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): Illegal character (%c) in or after macroname %s\n", filename, lineNumber, *str, varName.c_str() );
+		}
 		return false;
 	}
 	str++;

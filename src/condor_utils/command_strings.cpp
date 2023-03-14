@@ -49,7 +49,7 @@ const struct Translation DCTranslation[] = {
 	{ "NEGOTIATE", NEGOTIATE },
 	{ "NEGOTIATE_WITH_SIGATTRS", NEGOTIATE_WITH_SIGATTRS},
 	{ "SEND_JOB_INFO", SEND_JOB_INFO },
-	{ "SEND_RESOURCE_REQUEST_LIST", SEND_RESOURCE_REQUEST_LIST }
+	{ "SEND_RESOURCE_REQUEST_LIST", SEND_RESOURCE_REQUEST_LIST },
 	{ "NO_MORE_JOBS", NO_MORE_JOBS },
 	{ "JOB_INFO", JOB_INFO },
 //	{ "GIVE_STATUS", GIVE_STATUS },					/* Not used */
@@ -107,7 +107,7 @@ const struct Translation DCTranslation[] = {
 	{ "DAEMON_OFF_PEACEFUL", DAEMON_OFF_PEACEFUL },
 	{ "DAEMON_ON", DAEMON_ON },
 	{ "GIVE_TOTALS_CLASSAD", GIVE_TOTALS_CLASSAD },
-	{ "DUMP_STATE", DUMP_STATE },
+//	{ "DUMP_STATE", DUMP_STATE },	/* Not used */
 	{ "PERMISSION_AND_AD", PERMISSION_AND_AD },
 //	{ "REQUEST_NETWORK", REQUEST_NETWORK },			/* Not used */
 	{ "VACATE_ALL_FAST", VACATE_ALL_FAST },
@@ -157,16 +157,16 @@ const struct Translation DCTranslation[] = {
 	{ "CHILD_OFF", CHILD_OFF },
 	{ "CHILD_OFF_FAST", CHILD_OFF_FAST },
 	{ "CHILD_ON", CHILD_ON },
-	{ "VM_REGISTER", VM_REGISTER },
+//	{ "VM_REGISTER", VM_REGISTER },					/* Not used */
 	{ "DELEGATE_GSI_CRED_SCHEDD", DELEGATE_GSI_CRED_SCHEDD },
 	{ "DELEGATE_GSI_CRED_STARTER", DELEGATE_GSI_CRED_STARTER },
 	{ "DELEGATE_GSI_CRED_STARTD", DELEGATE_GSI_CRED_STARTD },
-	{ "REQUEST_SANDBOX_LOCATION", REQUEST_SANDBOX_LOCATION },
+//	{ "REQUEST_SANDBOX_LOCATION", REQUEST_SANDBOX_LOCATION },	/* Not used */
 	/* maybe not right place, but so what for now */
-	{ "TRANSFERD_REGISTER", TRANSFERD_REGISTER },
-	{ "TRANSFERD_CONTROL_CHANNEL", TRANSFERD_CONTROL_CHANNEL},
-	{ "TRANSFERD_WRITE_FILES", TRANSFERD_WRITE_FILES},
-	{ "TRANSFERD_READ_FILES", TRANSFERD_READ_FILES},
+//	{ "TRANSFERD_REGISTER", TRANSFERD_REGISTER },	/* Not used */
+//	{ "TRANSFERD_CONTROL_CHANNEL", TRANSFERD_CONTROL_CHANNEL},	/* Not used */
+//	{ "TRANSFERD_WRITE_FILES", TRANSFERD_WRITE_FILES},	/* Not used */
+//	{ "TRANSFERD_READ_FILES", TRANSFERD_READ_FILES},	/* Not used */
 	{ "VM_UNIV_GAHP_ERROR", VM_UNIV_GAHP_ERROR },
 	{ "VM_UNIV_VMPID", VM_UNIV_VMPID },
 	{ "VM_UNIV_GUEST_IP", VM_UNIV_GUEST_IP },
@@ -208,7 +208,7 @@ const struct Translation DCTranslation[] = {
 	{ "TRANSFER_DATA", TRANSFER_DATA },
 	{ "TRANSFER_DATA_WITH_PERMS", TRANSFER_DATA_WITH_PERMS },
 	{ "UPDATE_GSI_CRED", UPDATE_GSI_CRED },
-	{ "GET_MYPROXY_PASSWORD", GET_MYPROXY_PASSWORD },
+//	{ "GET_MYPROXY_PASSWORD", GET_MYPROXY_PASSWORD },	/* Not used */
 	{ "GIVE_MATCHES", GIVE_MATCHES },
 	{ "SET_ACCUMUSAGE", SET_ACCUMUSAGE },
 	{ "SET_BEGINTIME", SET_BEGINTIME },
@@ -495,9 +495,10 @@ getUnknownCommandString(int num)
 	}
 
 	static const char fmt[] = "command %u";
-	char * pstr = (char*)malloc(sizeof(fmt)+8); // max int string is 10 bytes (-2 for %d)
+	size_t pstr_sz = sizeof(fmt)+8;
+	char * pstr = (char*)malloc(pstr_sz); // max int string is 10 bytes (-2 for %d)
 	if ( ! pstr) return "malloc-fail!";
-	sprintf(pstr, fmt, num);
+	snprintf(pstr, pstr_sz, fmt, num);
 	(*pcmds)[num] = pstr;
 	return pstr;
 }

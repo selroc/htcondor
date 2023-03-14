@@ -50,7 +50,7 @@ public:
 	bool	signal(int);
 	bool	killfamily();
 	void	exited(Claim *, int status);
-	int 	spawn(Claim *, time_t now, Stream* s );
+	pid_t 	spawn(Claim *, time_t now, Stream* s );
 	pid_t	pid() const {return s_pid;};
 	bool	active() const;
 	const ProcFamilyUsage & updateUsage(void);
@@ -109,20 +109,6 @@ private:
 #if HAVE_BOINC
 	int 	execBOINCStarter( Claim * );
 #endif /* HAVE_BOINC */
-
-#if !defined(WIN32)
-		// support for spawning starter using glexec
-	bool    prepareForGlexec( const ArgList&,
-	                          const Env*,
-	                          const int[3],
-	                          ArgList&,
-	                          Env&,
-	                          int[3],
-	                          int[2],
-	                          int&);
-	bool    handleGlexecEnvironment(pid_t, Env&, int[2], int);
-	void    cleanupAfterGlexec(Claim *);
-#endif
 
 	void	initRunData( void );
 

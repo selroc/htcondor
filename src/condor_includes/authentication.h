@@ -73,15 +73,6 @@ class Authentication {
 	//          if not currently authenticated, see next.
     //------------------------------------------
 
-    const char* getFQAuthenticatedName();
-    //------------------------------------------
-    // PURPOSE: Return the full unmapped name from the authencation
-    // REQUIRE: That authentication has already happened
-    // RETURNS: pointer to a string you should NOT free
-    //          which is the unmapped peer name, or NULL
-    //          if not currently authenticated, see next.
-    //------------------------------------------
-
     const char* getAuthenticatedName();
     //------------------------------------------
     // PURPOSE: Return the unmapped name from the authencation
@@ -197,7 +188,7 @@ class Authentication {
     
     int selectAuthenticationType( const std::string& my_methods, int remote_methods );
 
-	void map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name);
+	void map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name, std::string& canonical_user);
 
     int authenticate_inner( char *hostAddr, const char* auth_methods, CondorError* errstack, int timeout, bool non_blocking);
     
@@ -217,6 +208,7 @@ class Authentication {
 	time_t		m_auth_timeout_time;
 	bool		m_continue_handshake;
 	bool		m_continue_auth;
+	bool		m_continue_plugin;
 	bool		m_should_try_token_request{false};
 
 	static MapFile* global_map_file;

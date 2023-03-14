@@ -23,10 +23,6 @@
 #include "proc_family_monitor.h"
 #include "procd_common.h"
 
-#if !defined(WIN32)
-#include "glexec_kill.unix.h"
-#endif
-
 #if defined(HAVE_EXT_LIBCGROUP)
 #include "libcgroup.h"
 
@@ -69,9 +65,6 @@ ProcFamily::ProcFamily(ProcFamilyMonitor* monitor,
 	, m_last_signal_was_sigstop(false)
 #endif
 {
-#if !defined(WIN32)
-	m_proxy = NULL;
-#endif
 #ifdef LINUX
 	m_perf_counter.start();
 #endif
@@ -92,14 +85,6 @@ ProcFamily::~ProcFamily()
 		delete member;
 		member = next_member;
 	}
-
-#if !defined(WIN32)
-	// delete the proxy if we've been given one
-	//
-	if (m_proxy != NULL) {
-		free(m_proxy);
-	}
-#endif
 }
 
 #if defined(HAVE_EXT_LIBCGROUP)
@@ -604,6 +589,14 @@ ProcFamily::aggregate_usage_cgroup_io_wait(ProcFamilyUsage* usage) {
 	}
 
 	// kernels with BFQ enabled don't have io_wait_time, don't spam logs if it isn't here
+
+	// Errors like ENOENT are encoded by returning ECGOTHER, and saving the real kernel errno
+	// in cgroup_get_last_errno.  cgroup error start at 50,000, so there's no
+	// worry about collisions with Linux errno
+	if (ret == ECGOTHER) {
+		ret = cgroup_get_last_errno();
+	}
+
 	if ((ret != ECGEOF) && (ret != ENOENT)) {
 		dprintf(D_ALWAYS, "Internal cgroup error when retrieving iowait statistics: %s\n", cgroup_strerror(ret));
 		return 1;
@@ -810,12 +803,6 @@ ProcFamily::aggregate_usage(ProcFamilyUsage* usage)
 void
 ProcFamily::signal_root(int sig)
 {
-#if !defined(WIN32)
-	if (m_proxy != NULL) {
-		glexec_kill(m_proxy, m_root_pid, sig);
-		return;
-	}
-#endif
 	send_signal(m_root_pid, sig);
 }
 
@@ -830,14 +817,6 @@ ProcFamily::spree(int sig)
 
 	ProcFamilyMember* member;
 	for (member = m_member_list; member != NULL; member = member->m_next) {
-#if !defined(WIN32)
-		if (m_proxy != NULL) {
-			glexec_kill(m_proxy,
-			            member->m_proc_info->pid,
-			            sig);
-			continue;
-		}
-#endif
 		send_signal(member->m_proc_info->pid, sig);
 	}
 }
@@ -986,18 +965,6 @@ ProcFamily::fold_into_parent(ProcFamily* parent)
 	parent->m_member_list = m_member_list;
 	m_member_list = NULL;
 }
-
-#if !defined(WIN32)
-void
-ProcFamily::set_proxy(char* proxy)
-{
-	if (m_proxy != NULL) {
-		free(m_proxy);
-	}
-	m_proxy = strdup(proxy);
-	ASSERT(m_proxy != NULL);
-}
-#endif
 
 void
 ProcFamily::dump(ProcFamilyDump& fam)

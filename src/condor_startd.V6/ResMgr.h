@@ -58,8 +58,11 @@
 #define NUM_ELEMENTS(_ary)   (sizeof(_ary) / sizeof((_ary)[0]))
 #endif
 
-typedef float (Resource::*ResourceFloatMember)();
-typedef void (Resource::*ResourceMaskMember)(amask_t);
+#ifdef LINUX
+#include "VolumeManager.h"
+#endif
+
+typedef double (Resource::*ResourceFloatMember)();
 typedef void (Resource::*VoidResourceMember)();
 typedef int (*ComparisonFunc)(const void *, const void *);
 
@@ -145,26 +148,27 @@ public:
 
 	void	init_socks( void );
 	void	init_resources( void );
-	bool	reconfig_resources( void );
+	void	reconfig_resources( void );
 
-private:
-	void	compute_dead( amask_t );
-public:
 	void	compute_static();
-	void	compute_dynamic(bool for_update, Resource * rip=NULL);
+	// recompute and refresh dynamic attrs for all slots before update or policy evaluation
+	void	compute_dynamic(bool for_update);
+	// recompute and re-publish dynamic attrs on d-slot create or on any slot Activation
+	void	compute_and_refresh(Resource * rip);
 	void	publish_static(ClassAd* cp) { Starter::publish(cp); }
-	void	publish_dynamic(ClassAd*);
+	// publish statistics, hibernation, STARTD_CRON and TTL
+	void	publish_resmgr_dynamic(ClassAd*);
 	void	publishSlotAttrs( ClassAd* cap );
 
-	void	assign_load( void );
-	void	assign_keyboard( void );
+	void	assign_load_and_idle();
 
 	bool 	needsPolling( void );
 	bool 	hasAnyClaim( void );
 	bool	is_smp( void ) { return( num_cpus() > 1 ); }
 	int		num_cpus( void ) const { return m_attr->num_cpus(); }
 	int		num_real_cpus( void ) const { return m_attr->num_real_cpus(); }
-	int		numSlots( void ) const { return nresources; }
+	//Resource * Slot(int ix) const { return slots[ix]; }
+	int		numSlots( void ) const { return (int)slots.size(); }
 
 	int		send_update( int, ClassAd*, ClassAd*, bool nonblocking );
 	void	final_update( void );
@@ -177,24 +181,56 @@ public:
 
 		// The first one is special, since we already computed
 		// everything and we don't need to recompute anything.
-	void	update_all( void );	
-	// These two functions walk through the array of rip pointers and
-	// call the specified function on each resource.  The first takes
-	// functions that take a rip as an arg.  The second takes Resource
-	// member functions that take no args.  The third takes a Resource
-	// member function that takes an amask_t as its only arg.
+	void	update_all( void );
+
+	void vacate_all(bool fast) {
+		if (fast) { walk( [](Resource* rip) { rip->kill_claim(); } ); }
+		else { walk( [](Resource* rip) { rip->retire_claim(false); } ); }
+	}
+
+	void checkpoint_all() { walk( [](Resource* rip) { rip->periodic_checkpoint(); } ); }
+
+	// called from the ~Resource destructor when the deleted slot has a parent
+	// this gives a chance to trigger updates of backfill p-slots
+	void res_conflict_change(Resource* pslot, bool dslot_deleted) {
+		// when we delete a non-backfill d-slot the backfill pslot has more
+		// resources to report so we want to trigger and update
+		// TODO: find a better way to handle this?
+		if ( ! pslot->r_backfill_slot && dslot_deleted) {
+			walk ( [](Resource * rip) {
+						if (rip->r_backfill_slot && rip->can_create_dslot()) {
+							rip->update_needed(Resource::WhyFor::wf_refreshRes);
+						}
+					} );
+		}
+	}
+
+	// called from StartdCronJob::Publish after one or more adlist ads with an ad_name prefix are updated
+	// this gives a chance to refresh the startd cron ads right away
+	// TODO: TJ, figure out is this necessary?
+	void adlist_updated(const char * /*ad_name*/) {
+		// TODO: be more selective about what we refresh here?
+		walk(&Resource::refresh_startd_cron_attrs);
+	}
+
+private:
+	int in_walk = 0;
+
+	// This function walks through the array of rip pointers and
+	// calls the specified Resource:: member function on each resource.
+	// It can call Resource::member functions that take no args
 	void	walk( VoidResourceMember );
-	void	walk( ResourceMaskMember, amask_t );
 
 	// This function walks through the array of rip pointers, calls
 	// the specified function on each one, sums the resulting return
 	// values, and returns the total.
-	float	sum( ResourceFloatMember );
+	double	sum( ResourceFloatMember );
 
 	// Sort our Resource pointer array with the given comparison
 	// function.  
 	void resource_sort( ComparisonFunc );
 
+public:
 	// Manipulate the supplemental Class Ad list
 	int		adlist_register( StartdNamedClassAd *ad );
 	StartdNamedClassAd* adlist_find( const char *name );
@@ -203,7 +239,9 @@ public:
 	int		adlist_delete( const char *name ) { return extra_ads.Delete( name ); }
 	int		adlist_delete( StartdCronJob * job ) { return extra_ads.DeleteJob( job ); }
 	int		adlist_clear( StartdCronJob * job )  { return extra_ads.ClearJob( job ); } // delete child ads, and clear the base job ad
-	int		adlist_publish( unsigned r_id, ClassAd *resAd, amask_t mask, const char * r_id_str );
+	int		adlist_publish( unsigned r_id, ClassAd *resAd, const char * r_id_str) {
+		return extra_ads.Publish(resAd, r_id, r_id_str);
+	}
 	void	adlist_reset_monitors( unsigned r_id, ClassAd * forWhom );
 	void	adlist_unset_monitors( unsigned r_id, ClassAd * forWhom );
 
@@ -260,7 +298,21 @@ public:
 	void		markShutdown() { is_shutting_down = true; };
 	bool		isShuttingDown() const { return is_shutting_down; };
 
+	void directAttachToSchedd();
+	time_t m_lastDirectAttachToSchedd;
+
 	VMUniverseMgr m_vmuniverse_mgr;
+
+	bool AllocVM(pid_t starter_pid, ClassAd & vm_classad, Resource* rip)
+	{
+		if ( ! m_vmuniverse_mgr.allocVM(starter_pid, vm_classad, rip->executeDir())) {
+			return false;
+		}
+		// update VM related info
+		walk(&Resource::update_walk_for_vm_change);
+		return true;
+	}
+
 
 	AdTransforms m_execution_xfm;
 
@@ -281,7 +333,19 @@ public:
 	bool hibernating () const;
 #endif /* HAVE_HIBERNATION */
 
-	time_t	now( void ) const { return cur_time; };
+	time_t	now(void) const { return cur_time; };
+	time_t	time_to_live(void) const { return deathTime ? (cur_time - deathTime) : INT_MAX; }
+	time_t	update_cur_time(bool update_ads=false) {
+		time_t now = time(nullptr);
+		if (now != cur_time) {
+			cur_time = now;
+			if (update_ads) refresh_cur_time(now);
+		}
+		return now;
+	}
+	void refresh_cur_time(time_t now) {
+		walk([now](Resource * rip) { if (rip) rip->r_classad->Assign(ATTR_MY_CURRENT_TIME, now); } );
+	}
 
 	StartdStats startd_stats;
 
@@ -321,9 +385,9 @@ public:
 	bool considerResumingAfterDraining();
 
 		// how_fast: DRAIN_GRACEFUL, DRAIN_QUICK, DRAIN_FAST
-	bool startDraining(int how_fast,const std::string & reason, int on_completion,ExprTree *check_expr,ExprTree *start_expr,std::string &new_request_id,std::string &error_msg,int &error_code);
+	bool startDraining(int how_fast,time_t deadline,const std::string & reason, int on_completion,ExprTree *check_expr,ExprTree *start_expr,std::string &new_request_id,std::string &error_msg,int &error_code);
 
-	bool cancelDraining(std::string request_id,std::string &error_msg,int &error_code);
+	bool cancelDraining(std::string request_id,bool reconfig,std::string &error_msg,int &error_code);
 
 	void publish_draining_attrs(Resource *rip, ClassAd *cap);
 
@@ -344,11 +408,31 @@ public:
 		stats.Drain.Add( last_drain_stop_time - last_drain_start_time );
 	}
 
+	bool compute_resource_conflicts();
+	void printSlotAds(const char * slot_types) const;
+
+	template <typename Func>
+	void walk(Func fn) {
+		if (++in_walk > 1) { dprintf(D_ZKM | D_BACKTRACE, "recursive <>ResMgr::walk\n"); }
+		for (Resource* rip : slots) { if (rip) fn(rip); }
+		if (--in_walk <= 0) { if ( ! _pending_removes.empty()) _complete_removes(); }
+	}
+
+	void releaseAllClaims()           { walk( [](Resource* rip) { rip->shutdownAllClaims(true); } ); }
+	void releaseAllClaimsReversibly() { walk( [](Resource* rip) { rip->shutdownAllClaims(true, true); } ); }
+	void killAllClaims()              { walk( [](Resource* rip) { rip->shutdownAllClaims(false); } ); }
+	void initResourceAds()            { walk( [](Resource* rip) { rip->init_classad(); } ); }
+
+#ifdef LINUX
+	VolumeManager *getVolumeManager() const {return m_volume_mgr.get();}
+#endif //LINUX
+
 private:
 	static void token_request_callback(bool success, void *miscdata);
 
-	Resource**	resources;		// Array of pointers to Resource objects
-	int			nresources;		// Size of the array
+	// The main slot collection, this should normally be sorted by slot id / slot sub-id
+	// but may not be for brief periods during slot creation
+	std::vector<Resource*> slots;
 
 	IdDispenser* id_disp;
 	bool 		is_shutting_down;
@@ -359,6 +443,7 @@ private:
 	int		m_cred_sweep_tid;	// DaemonCore timer id for polling timer
 	time_t	startTime;		// Time that we started
 	time_t	cur_time;		// current time
+	time_t	deathTime = 0;		// If non-zero, time we will SIGTERM
 
 	StringList**	type_strings;	// Array of StringLists that
 		// define the resource types specified in the config file.  
@@ -366,20 +451,45 @@ private:
 	int*		new_type_nums;	// New numbers of each type.
 	int			max_types;		// Maximum # of types.
 
-		// Data members we need to handle dynamic reconfig:
-	SimpleList<CpuAttributes*>		alloc_list;		
-	SimpleList<Resource*>			destroy_list;
+	// private helper for deleting slot Resource* objects after a walk
+	std::vector<Resource*>	_pending_removes;
+	void _remove_and_delete_slot_res(Resource*);
+	void _complete_removes();
+
+	// search helper templates
+	template <typename Ret, typename Filter>
+	Ret get_by(Filter filter) const {
+		for (Resource* rip : slots) {
+			if ( ! rip) continue;
+			Ret r = filter(rip);
+			if (r) return r;
+		}
+		return NULL;
+	}
+	template <typename Ret, typename Member>
+	Ret call_until(Member member) const {
+		for (Resource* rip : slots) {
+			if ( ! rip) continue;
+			Ret r = (rip->*member)();
+			if (r) return r;
+		}
+		return NULL;
+	}
+	template <typename Ret, typename Member, typename Arg>
+	Ret call_until(Member member, Arg arg) const {
+		for (Resource* rip : slots) {
+			if ( ! rip) continue;
+			Ret r = (rip->*member)(arg);
+			if (rip && r) return r;
+		}
+		return NULL;
+	}
 
 	// List of Supplemental ClassAds to publish
 	StartdNamedClassAdList			extra_ads;
 
-		/* 
-		  See if the destroy_list is empty.  If so, allocate whatever
-		  we need to allocate.
-		*/
-	bool processAllocList( void );
 
-	int last_in_use;	// Timestamp of the last time we were in use.
+	time_t last_in_use;	// Timestamp of the last time we were in use.
 
 		/* 
 		   Function to deal with checking if we're in use, or, if not,
@@ -426,6 +536,7 @@ private:
 	bool draining_is_graceful;
 	unsigned char on_completion_of_draining;
 	int draining_id;
+	time_t drain_deadline;
 	time_t last_drain_start_time;
 	time_t last_drain_stop_time;
 	int expected_graceful_draining_completion;
@@ -436,34 +547,14 @@ private:
 	int total_draining_unclaimed;
 	int max_job_retirement_time_override;
 
+#ifdef LINUX
+	std::unique_ptr<VolumeManager> m_volume_mgr;
+#endif
+
 	DCTokenRequester m_token_requester;
 	std::unique_ptr<htcondor::DataReuseDirectory> m_reuse_dir;
 };
 
-
-// Comparison function for sorting resources:
-
-// natural order is slotid / slot_sub_id
-int naturalSlotOrderCmp(const void*, const void*);
-
-// Sort on State, with Owner state resources coming first, etc.
-int ownerStateCmp( const void*, const void* );
-
-// Sort on State, with Claimed state resources coming first.  Break
-// ties with the value of the Rank expression for Claimed resources.
-int claimedRankCmp( const void*, const void* );
-
-/*
-  Sort resource so their in the right order to give out a new COD
-  Claim.  We give out COD claims in the following order:  
-  1) the Resource with the least # of existing COD claims (to ensure
-     round-robin across resources
-  2) in case of a tie, the Resource in the best state (owner or
-     unclaimed, not claimed)
-  3) in case of a tie, the Claimed resource with the lowest value of
-     machine Rank for its claim
-*/
-int newCODClaimCmp( const void*, const void* );
 
 bool OtherSlotEval(const char * /*name*/,
 	const classad::ArgumentList &arg_list,

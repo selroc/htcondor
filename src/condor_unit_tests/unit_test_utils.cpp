@@ -147,7 +147,7 @@ void make_big_string(
 	if (quoted_string != NULL) {
 		*quoted_string = (char *) malloc(length + 3);
 		ASSERT( quoted_string );
-		sprintf(*quoted_string,	"\"%s\"", *string);
+		snprintf(*quoted_string, length+3, "\"%s\"", *string);
 		}
 	return;
 }
@@ -175,9 +175,9 @@ ClassAd* get_classad_from_file(){
 	return classad_from_file;
 }
 
-/* Returns true if given floats differ by less than or equal to diff */
-bool floats_close( float one, float two, float diff) {
-	float ftmp = fabs(one) - fabs(two);
+/* Returns true if given double differ by less than or equal to diff */
+bool floats_close( double one, double two, double diff) {
+	double ftmp = fabs(one) - fabs(two);
 	if(fabs(ftmp) <= diff) {
 		return(true);
 	} else {
@@ -191,13 +191,31 @@ bool strings_similar(const MyString* str1, const MyString* str2,
 	return strings_similar(str1->Value(), str2->Value(), delims);
 }
 
+bool strings_similar(const std::string& str1, const std::string& str2,
+	const char* delims)
+{
+	return strings_similar(str1.c_str(), str2.c_str(), delims);
+}
+
 bool strings_similar(const char* str1, const char* str2, const char* delims) 
 {
 	StringList sl1(str1, delims);
 	StringList sl2(str2, delims);
-	return sl1.number() == sl2.number() && 
-		sl1.contains_list(sl2, false) && 
-		sl2.contains_list(sl1, false);
+	if (sl1.number() != sl2.number()) {
+		return false;
+	}
+	sl1.qsort();
+	sl2.qsort();
+	sl1.rewind();
+	sl2.rewind();
+	const char* el1;
+	const char* el2;
+	while ( (el1 = sl1.next()) && (el2 = sl2.next())) {
+		if (strcmp(el1, el2) != MATCH) {
+			return false;
+		}
+	}
+	return true;
 }
 
 MyString* convert_string_array(char** str, int size, const char* delim){
@@ -229,18 +247,16 @@ void delete_helper(char** array, int num_strs) {
 	free(array);
 }
 
-void get_tm(ISO8601Type type, const struct tm &time, MyString* str)
+void get_tm(ISO8601Type type, const struct tm &time, std::string& str)
 {
-	if(str) {
-		if (type == ISO8601_DateOnly) {
-			str->formatstr("%d-%d-%d", time.tm_year, time.tm_mon, time.tm_mday);
-		} else if (type == ISO8601_TimeOnly) {
-			str->formatstr("%d:%d:%d", time.tm_hour, time.tm_min, time.tm_sec);
-		} else {
-			str->formatstr("%d-%d-%dT%d:%d:%d",
-						 time.tm_year, time.tm_mon, time.tm_mday,
-						 time.tm_hour, time.tm_min, time.tm_sec);
-		}
+	if (type == ISO8601_DateOnly) {
+		formatstr(str, "%d-%d-%d", time.tm_year, time.tm_mon, time.tm_mday);
+	} else if (type == ISO8601_TimeOnly) {
+		formatstr(str, "%d:%d:%d", time.tm_hour, time.tm_min, time.tm_sec);
+	} else {
+		formatstr(str, "%d-%d-%dT%d:%d:%d",
+		          time.tm_year, time.tm_mon, time.tm_mday,
+		          time.tm_hour, time.tm_min, time.tm_sec);
 	}
 
 }

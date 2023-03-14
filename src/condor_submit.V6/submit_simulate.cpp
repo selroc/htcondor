@@ -43,13 +43,11 @@
 #include "directory.h"
 #include "filename_tools.h"
 #include "fs_util.h"
-#include "dc_transferd.h"
-#include "condor_ftp.h"
 #include "condor_crontab.h"
-#include <scheduler.h>
 #include "condor_holdcodes.h"
 #include "condor_url.h"
 #include "condor_version.h"
+#include "shortfile.h"
 
 #include "list.h"
 #include "condor_vm_universe_types.h"
@@ -121,7 +119,15 @@ int SimScheddQ::destroy_Cluster(int cluster_id, const char * /*reason*/) {
 int SimScheddQ::get_Capabilities(ClassAd & caps) {
 	caps.Assign("LateMaterialize", true);
 	caps.Assign("LateMaterializeVersion", 2);
+	caps.Assign("UseJobsets", param_boolean("USE_JOBSETS", false));
 	return true;
+}
+int SimScheddQ::get_ExtendedHelp(std::string &content) {
+	auto_free_ptr helpfile = param("EXTENDED_SUBMIT_HELPFILE");
+	if (helpfile) {
+		htcondor::readShortFile(helpfile.ptr(), content);
+	}
+	return (int)content.size();
 }
 
 bool SimScheddQ::has_extended_submit_commands(ClassAd &cmds) {
@@ -131,7 +137,9 @@ bool SimScheddQ::has_extended_submit_commands(ClassAd &cmds) {
 	}
 	return cmds.size() > 0;
 }
-
+bool SimScheddQ::has_extended_help(std::string & filename) {
+	return param(filename, "EXTENDED_SUBMIT_HELPFILE");
+}
 
 // hack for 8.7.8 testing
 extern int attr_chain_depth;
@@ -232,6 +240,18 @@ int SimScheddQ::send_Itemdata(int cluster_id, SubmitForeachArgs & o)
 	return 0;
 }
 
+int SimScheddQ::send_Jobset(int cluster_id, const ClassAd * jobset_ad)
+{
+	ASSERT(cluster_id == cluster);
+	if (fp) { 
+		fprintf(fp, "::send_Jobset(%d,%p):\n", cluster_id, jobset_ad);
+		if (jobset_ad) {
+			std::string buf; buf.reserve(1000);
+			fputs(formatAd(buf, *jobset_ad, "  ", nullptr, false), fp);
+		}
+	}
+	return 0;
+}
 
 int SimScheddQ::send_SpoolFile(char const * filename) {
 	if (fp) { fprintf(fp, "::send_SpoolFile: %s\n", filename); }

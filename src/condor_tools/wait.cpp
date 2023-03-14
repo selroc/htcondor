@@ -121,7 +121,6 @@ int main( int argc, char *argv[] )
 	int format_opts = 0;
 	const char * pcolon;
 
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 
@@ -138,9 +137,9 @@ int main( int argc, char *argv[] )
 		} else if(!strcmp(argv[i],"-version")) {
 			version();
 			EXIT_FAILURE;
-		} else if(!strcmp(argv[i],"-debug")) {
+		} else if(is_dash_arg_colon_prefix(argv[i], "debug", &pcolon, 1)) {
 			// dprintf to console
-			dprintf_set_tool_debug("TOOL", 0);
+			dprintf_set_tool_debug("TOOL", (pcolon && pcolon[1]) ? pcolon+1 : nullptr);
 			print_status = false;
 		} else if(!strcmp(argv[i],"-status")) {
 			if (dprintf_to_term_check()) {
@@ -267,7 +266,7 @@ int main( int argc, char *argv[] )
 		outcome = wful.readEvent( event, initial_scan ? 0 : timeout_ms );
 		if( outcome == ULOG_OK ) {
 			char key[1024];
-			sprintf(key,"%d.%d.%d",event->cluster,event->proc,event->subproc);
+			snprintf(key,sizeof(key),"%d.%d.%d",event->cluster,event->proc,event->subproc);
 			if( jobnum_matches( event, cluster, process, subproc ) ) {
 				if (echo_events) {
 					std::string event_str;

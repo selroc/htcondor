@@ -42,14 +42,9 @@ version()
 int main( int argc, char *argv[] )
 {
 	int i;
-	std::string condor_prefix;
 
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
-
-	// Set prefix to be "condor_" 
-	formatstr(condor_prefix,"%s_",myDistro->Get());
 
 	for( i=1; i<argc; i++ ) {
 		if(is_arg_prefix(argv[i],"-help")) {

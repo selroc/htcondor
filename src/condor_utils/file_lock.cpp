@@ -18,7 +18,6 @@
  ***************************************************************/
 
 #include "condor_common.h"
-#include "condor_constants.h"
 #include "condor_debug.h"
 #include "condor_config.h"
 #include "condor_uid.h"
@@ -749,10 +748,10 @@ FileLock::CreateHashName(const char *orig, bool useDefault)
 	char *dest = new char[len];
 #if !defined(WIN32)
 	if (useDefault) 
-		sprintf(dest, "%s", "/tmp/condorLocks/" );
+		snprintf(dest, len, "%s", "/tmp/condorLocks/" );
 	else 
 #endif
-		sprintf(dest, "%s", path  );
+		snprintf(dest, len, "%s", path  );
 	delete []temp_filename; 
 
 	char *destPtr = dest + strlen(dest);

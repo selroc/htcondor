@@ -26,9 +26,6 @@
  */
 #define _STARTD_NO_DECLARE_GLOBALS 1
 #include "startd.h"
-#include "vm_common.h"
-#include "VMManager.h"
-#include "VMRegister.h"
 #include "classadHistory.h"
 #include "misc_utils.h"
 #include "slot_builder.h"
@@ -86,6 +83,9 @@ int		disconnected_keyboard_boost;	// # of seconds before when we
 int		startd_noclaim_shutdown = 0;	
     // # of seconds we can go without being claimed before we "pull
     // the plug" and tell the master to shutdown.
+
+int		docker_cached_image_size_interval = 0; // how often we ask docker for the size of the cache, 0 means don't
+
 
 char* Name = NULL;
 
@@ -174,6 +174,12 @@ main_init( int, char* argv[] )
 		// keyboard idle time on SMP machines, etc.
 	startd_startup = time( 0 );
 
+#ifdef WIN32
+	// get the Windows sysapi load average thread going early
+	dprintf(D_FULLDEBUG, "starting Windows load averaging thread\n");
+	sysapi_load_avg();
+#endif
+
 		// Instantiate the Resource Manager object.
 	resmgr = new ResMgr;
 
@@ -231,7 +237,8 @@ main_init( int, char* argv[] )
 	bench_job_mgr->Initialize( "benchmarks" );
 
 		// this does a bit of work that isn't valid yet 
-	resmgr->walk( &Resource::init_classad );
+	resmgr->update_cur_time();
+	resmgr->initResourceAds();
 
 	// Now that we have our classads, we can compute things that
 		// need to be evaluated
@@ -254,8 +261,7 @@ main_init( int, char* argv[] )
 		// you need DAEMON permission.
 	daemonCore->Register_Command( ALIVE, "ALIVE", 
 								  command_handler,
-								  "command_handler", DAEMON,
-								  D_FULLDEBUG ); 
+								  "command_handler", DAEMON ); 
 	daemonCore->Register_Command( DEACTIVATE_CLAIM,
 								  "DEACTIVATE_CLAIM",  
 								  command_handler,
@@ -270,11 +276,6 @@ main_init( int, char* argv[] )
 	daemonCore->Register_Command( REQ_NEW_PROC, "REQ_NEW_PROC", 
 								  command_handler,
 								  "command_handler", DAEMON );
-	if (param_boolean("ALLOW_SLOT_PAIRING", false)) {
-		daemonCore->Register_Command( SWAP_CLAIM_AND_ACTIVATION, "SWAP_CLAIM_AND_ACTIVATION",
-								  command_with_opts_handler,
-								  "command_handler", DAEMON );
-	}
 
 		// These commands are special and need their own handlers
 		// READ permission commands
@@ -316,8 +317,7 @@ main_init( int, char* argv[] )
 	daemonCore->Register_Command( X_EVENT_NOTIFICATION,
 								  "X_EVENT_NOTIFICATION",
 								  command_x_event,
-								  "command_x_event", ALLOW,
-								  D_FULLDEBUG ); 
+								  "command_x_event", ALLOW ); 
 	daemonCore->Register_Command( PCKPT_ALL_JOBS, "PCKPT_ALL_JOBS", 
 								  command_pckpt_all,
 								  "command_pckpt_all", DAEMON );
@@ -365,36 +365,23 @@ main_init( int, char* argv[] )
 								  command_classad_handler,
 								  "command_classad_handler", WRITE );
 
-	// Virtual Machine commands
-	if( vmapi_is_host_machine() == TRUE ) {
-		daemonCore->Register_Command( VM_REGISTER,
-				"VM_REGISTER",
-				command_vm_register,
-				"command_vm_register", DAEMON,
-				D_FULLDEBUG );
-	}
-
 		// Commands from starter for VM universe
 	daemonCore->Register_Command( VM_UNIV_GAHP_ERROR, 
 								"VM_UNIV_GAHP_ERROR",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_VMPID, 
 								"VM_UNIV_VMPID",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_GUEST_IP, 
 								"VM_UNIV_GUEST_IP",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_GUEST_MAC, 
 								"VM_UNIV_GUEST_MAC",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 
 	daemonCore->Register_CommandWithPayload( DRAIN_JOBS,
 								  "DRAIN_JOBS",
@@ -450,15 +437,12 @@ main_init( int, char* argv[] )
 void
 main_config()
 {
-	bool done_allocating;
-
 		// Reread config file for global settings.
 	init_params(0);
+
 		// Process any changes in the slot type specifications
-	done_allocating = resmgr->reconfig_resources();
-	if( done_allocating ) {
-		finish_main_config();
-	}
+	resmgr->reconfig_resources();
+	finish_main_config();
 }
 
 
@@ -471,7 +455,7 @@ finish_main_config( void )
 		// Recompute machine-wide attributes object.
 	resmgr->compute_static();
 		// Rebuild ads for each resource.  
-	resmgr->walk( &Resource::init_classad );  
+	resmgr->initResourceAds();
 		// Reset various settings in the ResMgr.
 	resmgr->reset_timers();
 
@@ -581,6 +565,9 @@ init_params( int first_time)
 
 	startd_noclaim_shutdown = param_integer( "STARTD_NOCLAIM_SHUTDOWN", 0 );
 
+	// how often we query docker for the size of the image cache, 0 is never
+	docker_cached_image_size_interval = param_integer("DOCKER_CACHE_ADVERTISE_INTERVAL", 1200);
+
 	// a 0 or negative value for the timer interval will disable cleanup reminders entirely
 	cleanup_reminder_timer_interval = param_integer( "STARTD_CLEANUP_REMINDER_TIMER_INTERVAL", 62 );
 
@@ -603,30 +590,6 @@ init_params( int first_time)
 	if (tmp) {
 		valid_cod_users = new StringList();
 		valid_cod_users->initializeFromString( tmp );
-	}
-
-	if( vmapi_is_virtual_machine() == TRUE ) {
-		vmapi_destroy_vmregister();
-	}
-	tmp.set(param("VMP_HOST_MACHINE"));
-	if (tmp) {
-		if (vmapi_is_my_machine(tmp.ptr())) {
-			dprintf( D_ALWAYS, "WARNING: VMP_HOST_MACHINE should be the hostname of host machine. In host machine, it doesn't need to be defined\n");
-		} else {
-			vmapi_create_vmregister(tmp.ptr());
-		}
-	}
-
-	if( vmapi_is_host_machine() == TRUE ) {
-		vmapi_destroy_vmmanager();
-	}
-	tmp.set(param("VMP_VM_LIST"));
-	if (tmp) {
-		if( vmapi_is_virtual_machine() == TRUE ) {
-			dprintf( D_ALWAYS, "WARNING: both VMP_HOST_MACHINE and VMP_VM_LIST are defined. Assuming this machine is a virtual machine\n");
-		}else {
-			vmapi_create_vmmanager(tmp.ptr());
-		}
 	}
 
 	InitJobHistoryFile( "STARTD_HISTORY" , "STARTD_PER_JOB_HISTORY_DIR");
@@ -745,8 +708,9 @@ startd_exit()
 {
 	// print resources into log.  we need to do this before we free them
 	if(param_boolean("STARTD_PRINT_ADS_ON_SHUTDOWN", false)) {
+		auto_free_ptr slot_types(param("STARTD_PRINT_ADS_FILTER"));
 		dprintf(D_ALWAYS, "*** BEGIN AD DUMP ***\n");
-		resmgr->walk(&Resource::dropAdInLogFile);
+		resmgr->printSlotAds(slot_types);
 		dprintf(D_ALWAYS, "*** END AD DUMP ***\n");
 	}
 
@@ -782,14 +746,12 @@ startd_exit()
 		
 			// clean-up stale claim-id files
 		int i;
-		char* filename;
+		std::string filename;
 		for( i = 0; i <= resmgr->numSlots(); i++ ) { 
 			filename = startdClaimIdFile( i );
-			if (unlink(filename) < 0) {
-				dprintf( D_FULLDEBUG, "startd_exit: Failed to remove file '%s'\n", filename );
+			if (unlink(filename.c_str()) < 0) {
+				dprintf( D_FULLDEBUG, "startd_exit: Failed to remove file '%s'\n", filename.c_str());
 			}
-			free( filename );
-			filename = NULL;
 		}
 
 		delete resmgr;
@@ -835,7 +797,7 @@ main_shutdown_fast()
 								 "shutdown_reaper" );
 
 		// Quickly kill all the starters that are running
-	resmgr->walk( &Resource::killAllClaims );
+	resmgr->killAllClaims();
 
 	daemonCore->Register_Timer( 0, 5, 
 								startd_check_free,
@@ -870,7 +832,7 @@ main_shutdown_graceful()
 								 "shutdown_reaper" );
 
 		// Release all claims, active or not
-	resmgr->walk( &Resource::releaseAllClaims );
+	resmgr->releaseAllClaims();
 
 	daemonCore->Register_Timer( 0, 5, 
 								startd_check_free,
@@ -929,7 +891,8 @@ do_cleanup(int,int,const char*)
 			// If the machine is already free, we can exit right away.
 		startd_check_free();		
 			// Otherwise, quickly kill all the active starters.
-		resmgr->walk( &Resource::void_kill_claim );
+		const bool fast = true;
+		resmgr->vacate_all(fast);
 		dprintf( D_FAILURE|D_ALWAYS, "startd exiting because of fatal exception.\n" );
 	}
 
@@ -959,7 +922,7 @@ startd_check_free()
 int
 main( int argc, char **argv )
 {
-	set_mySubSystem( "STARTD", SUBSYSTEM_TYPE_STARTD );
+	set_mySubSystem( "STARTD", true, SUBSYSTEM_TYPE_STARTD );
 
 	dc_main_init = main_init;
 	dc_main_config = main_config;

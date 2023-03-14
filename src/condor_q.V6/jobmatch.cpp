@@ -71,6 +71,8 @@ static	ExprTree	*preemptRankCondition;
 static	ExprTree	*preemptPrioCondition;
 static	ExprTree	*preemptionReq;
 
+std::vector<PrioEntry> prioTable;
+
 #ifdef INCLUDE_ANALYSIS_SUGGESTIONS
 const int SHORT_BUFFER_SIZE = 8192;
 #endif
@@ -234,13 +236,13 @@ int setupAnalysis(
 
 
 	// setup condition expressions
-    sprintf( buffer, "MY.%s > MY.%s", ATTR_RANK, ATTR_CURRENT_RANK );
+    snprintf( buffer, sizeof(buffer), "MY.%s > MY.%s", ATTR_RANK, ATTR_CURRENT_RANK );
     ParseClassAdRvalExpr( buffer, stdRankCondition );
 
-    sprintf( buffer, "MY.%s >= MY.%s", ATTR_RANK, ATTR_CURRENT_RANK );
+    snprintf( buffer, sizeof(buffer), "MY.%s >= MY.%s", ATTR_RANK, ATTR_CURRENT_RANK );
     ParseClassAdRvalExpr( buffer, preemptRankCondition );
 
-	sprintf( buffer, "MY.%s > TARGET.%s + %f", ATTR_REMOTE_USER_PRIO, 
+	snprintf( buffer, sizeof(buffer), "MY.%s > TARGET.%s + %f", ATTR_REMOTE_USER_PRIO,
 			ATTR_SUBMITTOR_PRIO, PriorityDelta );
 	ParseClassAdRvalExpr( buffer, preemptPrioCondition ) ;
 
@@ -307,7 +309,7 @@ void setupUserpriosForAnalysis(DCCollector* pool, const char *userprios_file)
 		ClassAd *ad = it->second.get();
 		if (ad->LookupString( ATTR_REMOTE_USER , remoteUser)) {
 			int index;
-			if ((index = findSubmittor(remoteUser.c_str())) != -1) {
+			if ((index = findSubmittor(remoteUser)) != -1) {
 				ad->Assign(ATTR_REMOTE_USER_PRIO, prioTable[index].prio);
 			}
 		}
@@ -315,12 +317,11 @@ void setupUserpriosForAnalysis(DCCollector* pool, const char *userprios_file)
 }
 
 
-int fetchSubmittorPriosFromNegotiator(DCCollector* pool, ExtArray<PrioEntry> & prios)
+int fetchSubmittorPriosFromNegotiator(DCCollector* pool, std::vector<PrioEntry> & prios)
 {
 	ClassAd	al;
 	char  	attrName[32], attrPrio[32];
-  	char  	name[128];
-  	float 	priority;
+  	double 	priority;
 
 	Daemon	negotiator( DT_NEGOTIATOR, NULL, pool ? pool->addr() : NULL );
 
@@ -346,16 +347,16 @@ int fetchSubmittorPriosFromNegotiator(DCCollector* pool, ExtArray<PrioEntry> & p
 
 
 	int cPrios = 0;
+	std::string name;
 	while( true ) {
-		sprintf( attrName , "Name%d", cPrios+1 );
-		sprintf( attrPrio , "Priority%d", cPrios+1 );
+		snprintf( attrName, sizeof(attrName), "Name%d", cPrios+1 );
+		snprintf( attrPrio, sizeof(attrPrio), "Priority%d", cPrios+1 );
 
-		if( !al.LookupString( attrName, name, sizeof(name) ) || 
-			!al.LookupFloat( attrPrio, priority ) )
+		if( !al.LookupString( attrName, name) || 
+			!al.LookupFloat( attrPrio, priority))
 			break;
 
-		prios[cPrios].name = name;
-		prios[cPrios].prio = priority;
+		prios.emplace_back(PrioEntry{name,static_cast<float>(priority)});
 		++cPrios;
 	}
 
@@ -402,7 +403,7 @@ static int parse_userprio_line(const char * line, std::string & attr, std::strin
 	return id;
 }
 
-int read_userprio_file(const char *filename, ExtArray<PrioEntry> & prios)
+int read_userprio_file(const char *filename, std::vector<PrioEntry> & prios)
 {
 	int cPrios = 0;
 
@@ -423,9 +424,15 @@ int read_userprio_file(const char *filename, ExtArray<PrioEntry> & prios)
 
 			if (attr == "Priority") {
 				float priority = atof(value.c_str());
+				if (id >= (int) prios.size()) {
+					prios.resize(1 + id * 2);
+				}
 				prios[id].prio = priority;
 				cPrios = MAX(cPrios, id);
 			} else if (attr == "Name") {
+				if (id >= (int) prios.size()) {
+					prios.resize(1 + id * 2);
+				}
 				prios[id].name = value;
 				cPrios = MAX(cPrios, id);
 			}
@@ -521,7 +528,7 @@ static bool is_exhausted_partionable_slot(ClassAd* slotAd, ClassAd* jobAd)
 	if (slotAd->LookupBool("PartitionableSlot", is_pslot) && is_pslot) {
 		ExprTree * expr = slotAd->Lookup(ATTR_WITHIN_RESOURCE_LIMITS);
 		classad::Value val;
-		if (expr && EvalExprTree(expr, slotAd, jobAd, val) && val.IsBooleanValueEquiv(within)) {
+		if (expr && EvalExprToBool(expr, slotAd, jobAd, val) && val.IsBooleanValueEquiv(within)) {
 			return ! within;
 		}
 		return false;
@@ -576,7 +583,7 @@ static bool checkPremption (
 		string remoteUser;
 		if ( ! offer->LookupString(ATTR_REMOTE_USER, remoteUser)) {
 			// no remote user
-			if (EvalExprTree(stdRankCondition, offer, request, eval_result) &&
+			if (EvalExprToBool(stdRankCondition, offer, request, eval_result) &&
 				eval_result.IsBooleanValue(val) && val) {
 				// both sides satisfied and no remote user
 				//if( verbose ) strcat(return_buff, "Available\n");
@@ -613,11 +620,11 @@ static bool checkPremption (
 			ac.machinesRunningUsersJobs++;
 
 		// 4. Satisfies preemption priority condition?
-		} else if (EvalExprTree(preemptPrioCondition, offer, request, eval_result) &&
+		} else if (EvalExprToBool(preemptPrioCondition, offer, request, eval_result) &&
 			eval_result.IsBooleanValue(val) && val) {
 
 			// 5. Satisfies standard rank condition?
-			if (EvalExprTree(stdRankCondition, offer, request, eval_result) &&
+			if (EvalExprToBool(stdRankCondition, offer, request, eval_result) &&
 				eval_result.IsBooleanValue(val) && val )  
 			{
 				//if( verbose ) strcat( return_buff, "Available\n");
@@ -625,11 +632,11 @@ static bool checkPremption (
 				continue;
 			} else {
 				// 6.  Satisfies preemption rank condition?
-				if (EvalExprTree(preemptRankCondition, offer, request, eval_result) &&
+				if (EvalExprToBool(preemptRankCondition, offer, request, eval_result) &&
 					eval_result.IsBooleanValue(val) && val)
 				{
 					// 7.  Tripped on PREEMPTION_REQUIREMENTS?
-					if (EvalExprTree( preemptionReq, offer, request, eval_result) &&
+					if (EvalExprToBool( preemptionReq, offer, request, eval_result) &&
 						eval_result.IsBooleanValue(val) && !val) 
 					{
 						ac.fPreemptReqTest++;
@@ -855,7 +862,7 @@ bool doJobRunAnalysis (
 			ExprTree * expr = offer->Lookup(ATTR_WITHIN_RESOURCE_LIMITS);
 			classad::Value val;
 			bool within = false;
-			if (expr && EvalExprTree(expr, offer, request, val) && val.IsBooleanValueEquiv(within) && ! within) {
+			if (expr && EvalExprToBool(expr, offer, request, val) && val.IsBooleanValueEquiv(within) && ! within) {
 				// if the slot doesn't fit within the pslot, try applying an overlay ad that restores the pslot to full health
 				ClassAd * pov = make_pslot_overlay_ad(offer);
 				if (pov) {
@@ -928,7 +935,7 @@ bool doJobRunAnalysis (
 			continue;
 #else  // i think this is bogus
 			// no remote user
-			if (EvalExprTree(stdRankCondition, offer, request, eval_result) &&
+			if (EvalExprToBool(stdRankCondition, offer, request, eval_result) &&
 				eval_result.IsBooleanValue(val) && val) {
 				// both sides satisfied and no remote user
 				//if( verbose ) strcat(return_buff, "Available\n");
@@ -966,14 +973,14 @@ bool doJobRunAnalysis (
 			ac.machinesRunningUsersJobs++;
 
 		// 4. Satisfies preemption priority condition?
-		} else if (EvalExprTree(preemptPrioCondition, offer, request, eval_result) &&
+		} else if (EvalExprToBool(preemptPrioCondition, offer, request, eval_result) &&
 			eval_result.IsBooleanValue(val) && val) {
 
 #if 1
 			{
 #else		// this test is bogus
 			// 5. Satisfies standard rank condition?
-			if (EvalExprTree(stdRankCondition, offer, request, eval_result) &&
+			if (EvalExprToBool(stdRankCondition, offer, request, eval_result) &&
 				eval_result.IsBooleanValue(val) && val )  
 			{
 				//if( verbose ) strcat( return_buff, "Available\n");
@@ -982,11 +989,11 @@ bool doJobRunAnalysis (
 			} else {
 #endif
 				// 6.  Satisfies preemption rank condition?
-				if (EvalExprTree(preemptRankCondition, offer, request, eval_result) &&
+				if (EvalExprToBool(preemptRankCondition, offer, request, eval_result) &&
 					eval_result.IsBooleanValue(val) && val)
 				{
 					// 7.  Tripped on PREEMPTION_REQUIREMENTS?
-					if (EvalExprTree( preemptionReq, offer, request, eval_result) &&
+					if (EvalExprToBool( preemptionReq, offer, request, eval_result) &&
 						eval_result.IsBooleanValue(val) && !val) 
 					{
 						ac.fPreemptReqTest++;
@@ -1192,7 +1199,7 @@ const char * doJobMatchAnalysisToBuffer(std::string & return_buf, ClassAd *reque
 	request->LookupInteger(ATTR_CLUSTER_ID, jid.cluster);
 	request->LookupInteger(ATTR_PROC_ID, jid.proc);
 	char request_id[33];
-	sprintf(request_id, "%d.%03d", jid.cluster, jid.proc);
+	snprintf(request_id, sizeof(request_id), "%d.%03d", jid.cluster, jid.proc);
 
 	int cSlots = (int)startdAds.size();
 
@@ -1377,7 +1384,7 @@ const char * doSlotRunAnalysisToBuffer(ClassAd *slot, JobClusterMap & clusters, 
 
 	bool offline = false;
 	if (slot->LookupBool(ATTR_OFFLINE, offline) && offline) {
-		sprintf(return_buff, "%-24.24s  is offline\n", slotname.c_str());
+		snprintf(return_buff, sizeof(return_buff), "%-24.24s  is offline\n", slotname.c_str());
 		return return_buff;
 	}
 
@@ -1428,7 +1435,7 @@ const char * doSlotRunAnalysisToBuffer(ClassAd *slot, JobClusterMap & clusters, 
 
 	if ( ! tabular && analStartExpr) {
 
-		sprintf(return_buff, "\n-- Slot: %s : Analyzing matches for %d Jobs in %d autoclusters\n", 
+		snprintf(return_buff, sizeof(return_buff), "\n-- Slot: %s : Analyzing matches for %d Jobs in %d autoclusters\n", 
 				slotname.c_str(), cTotalJobs, cUniqueJobs);
 
 		classad::References inline_attrs; // don't show this as 'referenced' attrs, because we display them differently.
@@ -1511,9 +1518,9 @@ const char * doSlotRunAnalysisToBuffer(ClassAd *slot, JobClusterMap & clusters, 
 	} else {
 		char fmt[sizeof("%-nnn.nnns %-4s %12d %12d %10.2f\n")];
 		int name_width = MAX(longest_slot_machine_name+7, longest_slot_name);
-		sprintf(fmt, "%%-%d.%ds", MAX(name_width, 16), MAX(name_width, 16));
+		snprintf(fmt, sizeof(fmt), "%%-%d.%ds", MAX(name_width, 16), MAX(name_width, 16));
 		strcat(fmt, " %-4s %12d %12d %10.2f\n");
-		sprintf(return_buff, fmt, slotname.c_str(), slot_type, 
+		snprintf(return_buff, sizeof(return_buff), fmt, slotname.c_str(), slot_type, 
 				cOffConstraint, cReqConstraint, 
 				cTotalJobs ? (100.0 * cBothMatch / cTotalJobs) : 0.0);
 	}
@@ -1540,7 +1547,6 @@ void buildJobClusterMap(IdToClassaAdMap & jobs, const char * attr, JobClusterMap
 
 		int acid = -1;
 		if (job->LookupInteger(attr, acid)) {
-			//std::map<int, ClassAdListDoesNotDeleteAds>::iterator it;
 			autoclusters[acid].push_back(job);
 		} else {
 			// stick auto-clusterless jobs into the -1 slot.
@@ -1551,18 +1557,13 @@ void buildJobClusterMap(IdToClassaAdMap & jobs, const char * attr, JobClusterMap
 }
 
 
-int findSubmittor( const char *name ) 
+int findSubmittor( const std::string &name ) 
 {
-	std::string sub(name);
-	int			last = prioTable.getlast();
+	size_t			last = prioTable.size();
 	
-	for(int i = 0 ; i <= last ; i++ ) {
-		if( prioTable[i].name == sub ) return i;
+	for(size_t i = 0 ; i < last ; i++ ) {
+		if( prioTable[i].name == name ) return i;
 	}
-
-	//prioTable[last+1].name = sub;
-	//prioTable[last+1].prio = 0.5;
-	//return last+1;
 
 	return -1;
 }
@@ -1586,12 +1587,12 @@ fixSubmittorName( const char *name, int niceUser )
 
     // potential buffer overflow! Hao
 	if( strchr( name , '@' ) ) {
-		sprintf( buffer, "%s%s%s", 
+		snprintf( buffer, sizeof(buffer), "%s%s%s", 
 					niceUser ? NiceUserName : "",
 					niceUser ? "." : "",
 					name );
 	} else {
-		sprintf( buffer, "%s%s%s@%s", 
+		snprintf( buffer, sizeof(buffer), "%s%s%s@%s", 
 					niceUser ? NiceUserName : "",
 					niceUser ? "." : "",
 					name, uid_domain );
@@ -1757,7 +1758,7 @@ bool print_jobs_analysis(
 					int cluster_id = 0, proc_id = 0;
 					job->LookupInteger(ATTR_CLUSTER_ID, cluster_id);
 					job->LookupInteger(ATTR_PROC_ID, proc_id);
-					sprintf(achJobId, "%d.%d", cluster_id, proc_id);
+					snprintf(achJobId, sizeof(achJobId), "%d.%d", cluster_id, proc_id);
 
 					string owner;
 					if (summarize_with_owner) job->LookupString(ATTR_OWNER, owner);
@@ -1777,9 +1778,9 @@ bool print_jobs_analysis(
 
 					if (it->first >= 0) {
 						if (verbose) {
-							sprintf(achAutocluster, "%d:%d/%d", it->first, cJobsToInc, cIdle);
+							snprintf(achAutocluster, sizeof(achAutoCluster), "%d:%d/%d", it->first, cJobsToInc, cIdle);
 						} else {
-							sprintf(achAutocluster, "%d/%d", cJobsToInc, cIdle);
+							snprintf(achAutocluster, sizeof(achAutoCluster), "%d/%d", cJobsToInc, cIdle);
 						}
 					} else {
 						achAutocluster[0] = 0;

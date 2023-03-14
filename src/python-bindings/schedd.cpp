@@ -696,7 +696,7 @@ struct SubmitStepFromPyIter {
 	{
 		if (num > 0) { m_fea.queue_num = num; }
 
-		// get an interator for the foreach data. this grabs a refcount
+		// get an iterator for the foreach data. this grabs a refcount
 		if (PyIter_Check(from.ptr())) {
 			m_items = PyObject_GetIter(from.ptr());
 		}
@@ -706,7 +706,7 @@ struct SubmitStepFromPyIter {
 		// release the iterator refcount (if any)
 		Py_XDECREF(m_items);
 
-		// disconnnect the hashtable from our livevars pointers
+		// disconnect the hashtable from our livevars pointers
 		unset_live_vars();
 	}
 
@@ -1102,6 +1102,7 @@ private:
     bool m_connected;
     bool m_transaction;
     bool m_queried_capabilities;
+    bool m_deferred_reschedule;
     int  m_cluster_id; // non-zero when there is a submit transaction and newCluster has been called already
     int  m_proc_id; // the last value returned from newProc
     SetAttributeFlags_t m_flags;
@@ -1436,6 +1437,11 @@ struct Schedd {
         }
 
         CondorQ q;
+
+		// Existing uses of the bindings is relying on the presence of
+		// ServerTime in all of the job ads returned by the schedd.
+		// To avoid breaking this code, keep requesting it from the schedd.
+        q.requestServerTime(true);
 
         if (constraint.size())
             q.addAND(constraint.c_str());
@@ -1879,7 +1885,7 @@ struct Schedd {
 
         if (param_boolean("SUBMIT_SEND_RESCHEDULE",true))
         {
-            reschedule();
+            sentry.reschedule();
         }
         return cluster;
     }
@@ -2582,6 +2588,7 @@ struct Schedd {
         }
 
         classad::ClassAd ad;
+        ad.Assign(ATTR_SEND_SERVER_TIME, false);
         ad.Insert(ATTR_REQUIREMENTS, expr_copy);
         ad.InsertAttr(ATTR_LIMIT_RESULTS, limit);
         if (fetch_opts)
@@ -2622,7 +2629,7 @@ private:
 };
 
 ConnectionSentry::ConnectionSentry(Schedd &schedd, bool transaction, SetAttributeFlags_t flags, bool continue_txn)
-     : m_connected(false), m_transaction(false), m_queried_capabilities(false), m_cluster_id(0), m_proc_id(-1), m_flags(flags), m_schedd(schedd)
+     : m_connected(false), m_transaction(false), m_queried_capabilities(false), m_deferred_reschedule(false), m_cluster_id(0), m_proc_id(-1), m_flags(flags), m_schedd(schedd)
 {
     if (schedd.m_connection)
     {
@@ -2689,7 +2696,11 @@ ConnectionSentry::newProc()
 void
 ConnectionSentry::reschedule()
 {
-    m_schedd.reschedule();
+    if (m_connected) {
+        m_deferred_reschedule = true;
+    } else {
+        m_schedd.reschedule();
+    }
 }
 
 
@@ -2791,6 +2802,10 @@ ConnectionSentry::disconnect()
             std::string esMsg = errstack.getFullText();
             if( ! esMsg.empty() ) { errmsg += " " + esMsg; }
             THROW_EX(HTCondorIOError, errmsg.c_str());
+        }
+        if (m_deferred_reschedule) {
+            reschedule();
+            m_deferred_reschedule = false;
         }
     }
     if (throw_commit_error)
@@ -2895,6 +2910,12 @@ void SetDagOptions(boost::python::dict opts, SubmitDagShallowOptions &shallow_op
             deep_opts.updateSubmit = (value == "true") ? true : false;
         else if (key_lc == "import_env")
             deep_opts.importEnv = (value == "true") ? true : false;
+        else if (key_lc == "include_env")
+            deep_opts.getFromEnv += value;
+        else if (key_lc == "insert_env") {
+            trim(value);
+            deep_opts.addToEnv.push_back(value);
+            }
         else if (key_lc == "dumprescue")
             shallow_opts.dumpRescueDag = (value == "true") ? true : false;
         else if (key_lc == "valgrind")
@@ -3160,11 +3181,8 @@ public:
     static boost::shared_ptr<Submit>
     from_dag(std::string dag_filename, boost::python::dict opts)
     {
-        char* sub_data;
         DagmanUtils dagman_utils;
         FILE* sub_fp = NULL;
-        size_t sub_size;
-        std::string sub_args;
         std::string sub_filename = dag_filename + std::string(".condor.sub");
         std::list<std::string> dag_file_attr_lines;
         SubmitDagDeepOptions deep_opts;
@@ -3204,18 +3222,9 @@ public:
             THROW_EX(HTCondorIOError, "Could not read generated DAG submit file" );
         }
 
-        // Determine size of the file and store its contents in a buffer
-        fseek(sub_fp, 0, SEEK_END);
-        sub_size = ftell(sub_fp);
-        sub_data = new char[sub_size];
-        rewind(sub_fp);
-        if(fread(sub_data, sizeof(char), sub_size, sub_fp) != sub_size) {
-            printf("ERROR: DAG submit file %s returned wrong size\n", sub_filename.c_str());
+        std::string sub_args;
+        while (readLine(sub_args, sub_fp, true /*append to string*/)) {
         }
-        fclose(sub_fp);
-
-        sub_args = sub_data;
-        delete[] sub_data;
 
         // Create a Submit object with contents of the .condor.sub file
         boost::shared_ptr<Submit> sub(new Submit(sub_args));
@@ -3279,6 +3288,28 @@ public:
         return obj.attr("__repr__")();
     }
 
+	// helper function for determining if schedd supports jobsets
+	bool push_jobset_if_supported(boost::shared_ptr<ConnectionSentry> txn, int cluster)
+	{
+		bool use_jobsets = false;
+		const ClassAd *capabilities = txn->capabilites();
+		if (capabilities) {
+			capabilities->LookupBool("UseJobsets", use_jobsets);
+		}
+		if (use_jobsets) {
+			const classad::ClassAd * jobsetAd = m_hash.getJOBSET();
+			if (jobsetAd) {
+				int rval = SendJobsetAd(cluster, *jobsetAd, 0);
+				if (rval < 0) {
+					m_hash.error_stack()->pushf("Submit", SCHEDD_ERR_SET_ATTRIBUTE_FAILED,  "Could not send jobset attributes");
+				} else {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	// helper function for determining if this is a factory submit for a job submit
 	bool is_factory(long long & max_materialize, boost::shared_ptr<ConnectionSentry> txn)
 	{
@@ -3300,7 +3331,7 @@ public:
 			bool allows_late = false;
 			if (capabilities && capabilities->LookupBool("LateMaterialize", allows_late) && allows_late) {
 				int late_ver = 0;
-				// we require materialize version 2 or later (digest is pruned, requirments generated from job ad)
+				// we require materialize version 2 or later (digest is pruned, requirements generated from job ad)
 				if (capabilities->LookupInteger("LateMaterializeVersion", late_ver) && late_ver >= 2) {
 					factory_submit = true;
 				} else {
@@ -3471,7 +3502,7 @@ public:
 			// send the submit digest to the schedd. the schedd will parse the digest at this point
 			// and return success or failure.
 			if (SetJobFactory(cluster, (int)max_materialize, NULL, submit_digest.c_str()) < 0) {
-				THROW_EX(HTCondorIOError, "Failed to send job factory for max_materilize.");
+				THROW_EX(HTCondorIOError, "Failed to send job factory for max_materialize.");
 			}
 
 		} else {
@@ -3597,6 +3628,7 @@ public:
 			// send the cluster ad
 			classad::ClassAd * clusterad = proc_ad->GetChainedParentAd();
 			if (clusterad) {
+				push_jobset_if_supported(txn, cluster);
 				rval = SendJobAttributes(JOB_ID_KEY(cluster, -1), *clusterad, SetAttribute_NoAck, m_hash.error_stack(), "Submit");
 				process_submit_errstack(m_hash.error_stack());
 				if (rval < 0) {
@@ -3632,7 +3664,7 @@ public:
 			// send the submit digest to the schedd. the schedd will parse the digest at this point
 			// and return success or failure.
 			if (SetJobFactory(cluster, (int)max_materialize, NULL, submit_digest.c_str()) < 0) {
-				THROW_EX(HTCondorIOError, "Failed to send job factory for max_materilize.");
+				THROW_EX(HTCondorIOError, "Failed to send job factory for max_materialize.");
 			}
 
 
@@ -3658,6 +3690,8 @@ public:
 				if (rval == 2) {
 					classad::ClassAd * clusterad = proc_ad->GetChainedParentAd();
 					if (clusterad) {
+						// before the cluster ad, send the jobset ad if we have one, and can send it
+						push_jobset_if_supported(txn, cluster);
 						rval = SendJobAttributes(JOB_ID_KEY(cluster, -1), *clusterad, SetAttribute_NoAck, m_hash.error_stack(), "Submit");
 					}
 				}
@@ -3798,7 +3832,7 @@ public:
 		bool use_remainder = true;
 
 		if ( ! qline.empty()) {
-			// incase they sent a string that starts with the word "queue", skip over that now.
+			// in case they sent a string that starts with the word "queue", skip over that now.
 			pqargs = SubmitHash::is_queue_statement(qline.c_str());
 			if ( ! pqargs) pqargs = qline.c_str();
 			use_remainder = false;
@@ -4288,8 +4322,9 @@ void export_schedd()
             :param bool spool: If ``True``, jobs will be submitted in a spooling hold mode
                so that input files can be spooled to a remote *condor_schedd* daemon before starting the jobs.
                This parameter is necessary for jobs submitted to a remote *condor_schedd* that use HTCondor file transfer.
+               When True, job will be left in the HOLD state until the :func:`spool` method is called.
             :param ad_results: deprecated. If set to a list and a raw job ClassAd is passed as the first argument, the list object will contain the job ads
-                that were submitted. These are passed to the spool method to send files to the remote Schedd.
+                that were submitted.
             :type ad_results: list[:class:`~classad.ClassAd`]
             :return: a :class:`SubmitResult`, containing the cluster ID, cluster ClassAd and
                 range of Job ids of the submitted job(s).  If using the deprecated first argument, the return value
@@ -4337,13 +4372,13 @@ void export_schedd()
             :param list proc_ads: A list of 2-tuples; each tuple has the format of ``(proc_ad, count)``.
                 For each list entry, this will result in count jobs being submitted inheriting from
                 both ``cluster_ad`` and ``proc_ad``.
-            :param bool spool: If ``True``, the clinent inserts the necessary attributes
+            :param bool spool: If ``True``, the client inserts the necessary attributes
                 into the job for it to have the input files spooled to a remote
                 *condor_schedd* daemon. This parameter is necessary for jobs submitted
                 to a remote *condor_schedd* that use HTCondor file transfer.
+                When True, job will be left in the HOLD state until the :func:`spool` method is called.
             :param ad_results: If set to a list, the list object will contain the job ads
                 resulting from the job submission.
-                These are needed for interacting with the job spool after submission.
             :type ad_results: list[:class:`~classad.ClassAd`]
             :return: The newly created cluster ID.
             :rtype: int
@@ -4358,7 +4393,7 @@ void export_schedd()
             to the *condor_schedd*.
 
             :param ad_list: A list of job descriptions; typically, this is the list
-                filled by the ``ad_results`` argument of the :meth:`submit` method call.
+                returned by the :meth:`jobs` method on the submit result object.
             :type ad_list: list[:class:`~classad.ClassAds`]
             :raises RuntimeError: if there are any errors.
             )C0ND0R",
@@ -4458,7 +4493,7 @@ void export_schedd()
             R"C0ND0R(
             Import results from previously exported jobs, and take those jobs back out of the externally managed state.
 
-            :param str import_dir: The path to the modified form of a previously-exported direcory.
+            :param str import_dir: The path to the modified form of a previously-exported directory.
             :return: A ClassAd containing information about the import operation.
             :rtype: :class:`~classad.ClassAd`
             )C0ND0R",
@@ -4712,7 +4747,7 @@ void export_schedd()
             )
         .def("getQArgs", &Submit::getQArgs,
             R"C0ND0R(
-            Returns arguments specified in the ``QUEUE`` statement passed to the contructor.
+            Returns arguments specified in the ``QUEUE`` statement passed to the constructor.
             These are the arguments that will be used by the :meth:`Submit.queue`
             and :meth:`Submit.queue_with_itemdata` methods if not overridden by arguments to those methods.
             )C0ND0R",

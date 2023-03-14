@@ -21,7 +21,11 @@
 #include "classad/indexfile.h"
 #include <iostream>
 
-using namespace std;
+using std::string;
+using std::pair;
+using std::cout;
+using std::endl;
+
 
 namespace classad {
 
@@ -76,13 +80,13 @@ TruncateStorageFile()
 		}
 		m=m+'\n';
 		if (m[0]!='*'){
-			if (write(new_filed,(void *)(m.c_str()),m.size())<0){
+			if (write(new_filed,(void *)(m.c_str()),(unsigned int)m.size())<0){
 				close(new_filed);
 				return false;
 			} else {
 				fsync(filed);
 				ptr->second=cur_set; 
-				cur_set+=m.size();
+				cur_set+=(int)m.size();
 			}
 		}
 	}
@@ -91,12 +95,10 @@ TruncateStorageFile()
 	close(new_filed);
 	if( rename(filename, logfilename) < 0 ) {
 		CondorErrno = ERR_CACHE_FILE_ERROR;
-		char buf[10];
-		sprintf( buf, "%d", errno );
 		CondorErrMsg = "failed to truncate storagefile: rename(" 
 			+ string(filename) + " , " 
 			+ string(logfilename) +", errno=" 
-			+ string(buf);    
+			+ std::to_string(errno);
 		return( false );
 	}
 	return true;
@@ -130,8 +132,7 @@ string IndexFile::
 GetClassadFromFile(string, int offset) const
 {
 	if (filed != 0){
-		int curset;
-		curset = lseek(filed,offset,SEEK_SET);
+		lseek(filed,offset,SEEK_SET);
 		char  k[1];
 		string m;
 		int l;
@@ -177,7 +178,7 @@ WriteBack(string key, string ad)
 	int k=lseek(filed,0,SEEK_END);
 	Index[key]=k;
 	ad=ad+"\n";
-	if (write(filed,(void *)(ad.c_str()),ad.size())<0){
+	if (write(filed,(void *)(ad.c_str()),(unsigned int)ad.size())<0){
 		return false;
 	} else {
 		fsync(filed);
@@ -221,7 +222,7 @@ DeleteFromStorageFile(string key)
 		m[0]='*';
 		m=m+'\n';
 		lseek(filed,offset,SEEK_SET);
-		int ret = write(filed,(void *)(m.c_str()),m.size());
+		int ret = write(filed,(void *)(m.c_str()),(unsigned int)m.size());
 		if (ret < 0) {
 			fsync(filed);
 			return false;

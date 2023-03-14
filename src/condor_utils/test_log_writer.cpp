@@ -353,10 +353,9 @@ void handle_sig(int sig)
 int
 main(int argc, const char **argv)
 {
-	set_mySubSystem( "TEST_LOG_WRITER", SUBSYSTEM_TYPE_TOOL );
+	set_mySubSystem( "TEST_LOG_WRITER", false, SUBSYSTEM_TYPE_TOOL );
 
 		// initialize to read from config file
-	myDistro->Init( argc, argv );
 	config();
 
 		// Set up the dprintf stuff...
@@ -1457,8 +1456,8 @@ EventInfo::GenEventSubmit( void )
 		// Note: the line below is designed specifically to work with
 		// Kent's dummy stork_submit script for testing DAGs with
 		// DATA nodes.
-	e->submitEventLogNotes  = strnewp(m_options.m_submitNote);
-	e->submitEventUserNotes = strnewp("User info");
+	e->submitEventLogNotes  = m_options.m_submitNote;
+	e->submitEventUserNotes = "User info";
 
 	return SetEvent( e );
 }
@@ -1521,8 +1520,8 @@ EventInfo::GenEventJobEvicted( void )
 {
 	SetName( "Evicted" );
 	JobEvictedEvent *e = new JobEvictedEvent;
-	e->setReason("EVICT");
-	e->setCoreFile("corefile");
+	e->reason = "EVICT";
+	e->core_file = "corefile";
 	e->checkpointed = randint(10) > 8;
 	e->sent_bytes = GetSize( );
 	e->recvd_bytes = GetSize( );
@@ -1559,7 +1558,7 @@ EventInfo::GenEventJobAborted( void )
 {
 	SetName( "Job aborted" );
 	JobAbortedEvent *e = new JobAbortedEvent;
-	e->setReason("ABORT");
+	e->reason = "ABORT";
 
 	return SetEvent( e );
 }
@@ -1579,9 +1578,9 @@ EventInfo::GenEventJobHeld( void )
 {
 	SetName( "Job held" );
 	JobHeldEvent *e = new JobHeldEvent;
-	e->setReason("HELD");
-	e->setReasonCode(404);
-	e->setReasonSubCode(0xff);
+	e->reason = "HELD";
+	e->code = 404;
+	e->subcode = 0xff;
 
 	return SetEvent( e );
 }
@@ -1591,7 +1590,7 @@ EventInfo::GenEventJobReleased( void )
 {
 	SetName( "Job released" );
 	JobReleasedEvent *e = new JobReleasedEvent;
-	e->setReason("RELEASED");
+	e->reason = "RELEASED";
 
 	return SetEvent( e );
 }

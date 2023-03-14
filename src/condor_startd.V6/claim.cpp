@@ -287,8 +287,7 @@ Claim::publish( ClassAd* cad )
 		// put the image size value from the last call to updateUsage into the ad.
 		cad->Assign(ATTR_IMAGE_SIZE, c_image_size);
 		// also the CpusUsage value
-		cad->Assign("CPUsUsage", c_cpus_usage);
-		//PRAGMA_REMIND("put CpusUsage into the standard attributes header file.")
+		cad->Assign(ATTR_CPUS_USAGE, c_cpus_usage);
 	}
 
 	// If this claim is for vm universe, update some info about VM
@@ -634,7 +633,7 @@ Claim::match_timed_out()
 			// restore our reqexp, and update the CM. 
 		res_ip->removeClaim( c );
 		res_ip->r_reqexp->restore();
-		res_ip->update();
+		res_ip->update_needed(Resource::WhyFor::wf_removeClaim);
 	}		
 	return;
 }
@@ -1004,7 +1003,7 @@ Claim::sendAlive()
 	int reg_rc = daemonCore->
 			Register_Socket( sock, "<Alive Contact Socket>",
 			  (SocketHandlercpp)&Claim::sendAliveConnectHandler,
-			  to_schedd, this, ALLOW );
+			  to_schedd, this );
 
 	if(reg_rc < 0) {
 		dprintf( D_ALWAYS,
@@ -1087,7 +1086,7 @@ Claim::sendAliveConnectHandler(Stream *s)
 	int reg_rc = daemonCore->
 			Register_Socket( sock, "<Alive Contact Socket>",
 			  (SocketHandlercpp)&Claim::sendAliveResponseHandler,
-			  to_schedd, this, ALLOW );
+			  to_schedd, this );
 
 	if(reg_rc < 0) {
 		dprintf( D_ALWAYS,
@@ -1386,7 +1385,7 @@ Claim::getCODMgr( void )
 // on successful spawn, the claim will take ownership of the job classad.
 // job can be NULL in the case where we are doing a delayed spawn because of preemption
 // or when doing fetchwork.  when job is NULL, the c_ad member of this class must not be.
-int Claim::spawnStarter( Starter* starter, ClassAd * job, Stream* s)
+pid_t Claim::spawnStarter( Starter* starter, ClassAd * job, Stream* s)
 {
 	if( ! starter ) {
 			// Big error!
@@ -2062,7 +2061,7 @@ Claim::changeState( ClaimState s )
 		// everytime a COD claim changes state, we want to update the
 		// collector. 
 	if( c_type == CLAIM_COD ) {
-		c_rip->update();
+		c_rip->update_needed(Resource::WhyFor::wf_cod);
 	}
 }
 
@@ -2142,7 +2141,6 @@ Client::Client()
 	c_acctgrp = NULL;
 	c_addr = NULL;
 	c_host = NULL;
-	c_proxyfile = NULL;
 	c_concurrencyLimits = NULL;
     c_rmtgrp = NULL;
     c_neggrp = NULL;
@@ -2253,19 +2251,6 @@ Client::sethost( const char* updated_host )
 }
 
 void
-Client::setProxyFile( const char* pf )
-{
-	if( c_proxyfile ) {
-		free( c_proxyfile );
-	}
-	if ( pf ) {
-		c_proxyfile = strdup( pf );
-	} else {
-		c_proxyfile = NULL;
-	}
-}
-
-void
 Client::setConcurrencyLimits( const char* limits )
 {
 	if( c_concurrencyLimits ) {
@@ -2343,12 +2328,7 @@ newIdString( char** id_str_ptr )
 	formatstr( id, "%s#%d#%d#", daemonCore->publicNetworkIpAddr(),
 	           (int)startd_startup, sequence_num );
 
-		// keylen is 20 in order to avoid generating claim ids that
-		// overflow the 80 byte buffer in pre-7.1.3 negotiators
-		// Note: Claim id strings have been longer than 80 characters
-		//   ever since we started putting a security session ad in them.
-	const size_t keylen = 20;
-	char *keybuf = Condor_Crypt_Base::randomHexKey(keylen);
+	char *keybuf = Condor_Crypt_Base::randomHexKey(SEC_SESSION_KEY_LENGTH_V9);
 	id += keybuf;
 	free( keybuf );
 
@@ -2371,7 +2351,7 @@ ClaimId::ClaimId( ClaimType claim_type, char const * /*slotname*/ /*UNUSED*/ )
 	}
 
 	if( claim_type == CLAIM_OPPORTUNISTIC
-		&& param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) )
+		&& param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION", true) )
 	{
 		MyString session_id;
 		MyString session_key;
@@ -2460,16 +2440,14 @@ ClaimId::dropFile( int slot_id )
 	if( ! param_boolean("STARTD_SHOULD_WRITE_CLAIM_ID_FILE", true) ) {
 		return;
 	}
-	char* filename = startdClaimIdFile( slot_id );  
-	if( ! filename ) {
+	std::string filename = startdClaimIdFile( slot_id );  
+	if( filename.empty() ) {
 		dprintf( D_ALWAYS, "Error getting claim id filename, not writing\n" );
 		return;
 	}
 
 	std::string filename_final = filename;
 	std::string filename_tmp = filename;
-	free( filename );
-	filename = NULL;
 
 	filename_tmp += ".new";
 

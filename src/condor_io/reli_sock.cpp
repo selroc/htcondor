@@ -19,7 +19,6 @@
 
 
 #include "condor_common.h"
-#include "condor_constants.h"
 #include "authentication.h"
 #include "condor_debug.h"
 #include "condor_config.h"
@@ -1355,8 +1354,9 @@ ReliSock::type() const
 
 char * ReliSock::serializeMsgInfo() const
 {
-	char *buf = new char[20 + 3*m_final_mds.size()];
-	sprintf(buf, "%i*%i*%i*%i*%zu",
+	size_t buf_sz = 20 + 3*m_final_mds.size();
+	char *buf = new char[buf_sz];
+	snprintf(buf, buf_sz, "%i*%i*%i*%i*%zu",
 		m_final_send_header,
 		m_final_recv_header,
 		m_finished_send_header,
@@ -1642,8 +1642,8 @@ int ReliSock::authenticate_continue(CondorError* errstack, bool non_blocking, ch
 			*method_used = strdup(m_authob->getMethodUsed());
 		}
 	}
-	if ( m_authob->getFQAuthenticatedName() ) {
-		setAuthenticatedName( m_authob->getFQAuthenticatedName() );
+	if ( m_authob->getAuthenticatedName() ) {
+		setAuthenticatedName( m_authob->getAuthenticatedName() );
 	}
 	delete m_authob;
 	m_authob = NULL;

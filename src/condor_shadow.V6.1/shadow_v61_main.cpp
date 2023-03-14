@@ -196,6 +196,16 @@ readJobAd( void )
 			EXCEPT( "Failed to insert \"%s\" into ClassAd!", line.c_str() );
         }
     }
+
+	// If we are a shadow running under a schedd, expect only one
+	// classad on stdin, and close it, to free the pipe and
+	// the resources associated with it.
+
+	if (sendUpdatesToSchedd) {
+		fclose(fp);
+		fp = nullptr;
+	}
+
 	if( ! read_something ) {
 		EXCEPT( "reading ClassAd from (%s): file is empty",
 				is_stdin ? "STDIN" : job_ad_file );
@@ -471,7 +481,7 @@ main( int argc, char **argv )
 		exit(0);
 	}
 
-	set_mySubSystem( "SHADOW", SUBSYSTEM_TYPE_SHADOW );
+	set_mySubSystem( "SHADOW", true, SUBSYSTEM_TYPE_SHADOW );
 
 	dc_main_init = main_init;
 	dc_main_config = main_config;

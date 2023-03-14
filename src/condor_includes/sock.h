@@ -393,7 +393,7 @@ public:
 	void setAuthenticatedName(char const *auth_name);
 	const char *getAuthenticatedName() const;
 
-	bool isAuthorizationInBoundingSet(const std::string &);
+	bool isAuthorizationInBoundingSet(const std::string &) const;
 
 	void setCryptoMethodUsed(char const *crypto_method);
 	const char* getCryptoMethodUsed() const;
@@ -595,7 +595,7 @@ protected:
 	// Helper function: if host is a Sinful string with an addrs attribute,
 	// return a Sinful string in addr with the primary address rewritten to
 	// be the best address in addrs.
-	bool chooseAddrFromAddrs( const char * host, std::string & addr );
+	static bool chooseAddrFromAddrs( const char * host, std::string & addr, condor_sockaddr* saddr = nullptr );
 
 private:
 	bool initialize_crypto(KeyInfo * key);

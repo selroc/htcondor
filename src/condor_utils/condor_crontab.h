@@ -26,9 +26,7 @@
 #include "dc_service.h"
 #include "condor_debug.h"
 #include "condor_attributes.h"
-#include "MyString.h"
-#include "extArray.h"
-#include "Regex.h"
+#include "condor_regex.h"
 
 //
 // Attributes for a parameter will be separated by the this character
@@ -131,34 +129,9 @@ public:
 		 * @param ad - the ClassAd to pull the CronTab attributes from.
 		 **/
 	CronTab( ClassAd* );
+
 		/**
-		 * Constuctor
-		 * Provided to add backwards capabilities for cronos.c
-		 * Using integers really limits what can be done for scheduling
-		 * The STAR constant has been replaced with CRONTAB_CRONOS_STAR
-		 * Note that we are also not providing scheduling down to the second
-		 * 
-		 * @param minutes - the minutes attribute (0 - 59)
-		 * @param hours - the hours attribute (0 - 23)
-		 * @param days_of_month - a day in a month (1 - 31, depending on the month)
-		 * @param months - the months attribute (1 - 12)
-		 * @param days_of_week - a day in the week (0 - 7, Sunday is 0 or 7)
-		 **/
-	CronTab( int, int, int, int, int );
-		/**
-		 * Constructor
-		 * Instead of being given a ClassAd, we can be given string values
-		 * following the same format to create a cron schedule
-		 * 
-		 * @param minutes
-		 * @param hours
-		 * @param days_of_month
-		 * @param months
-		 * @param days_of_week
-		 **/
-	CronTab( const char*, const char*, const char*, const char*, const char* );
-		/**
-		 * Deconstructor
+		 * Destructor
 		 * Remove our array lists and parameters that we have
 		 * dynamically allocated
 		 **/
@@ -185,7 +158,7 @@ public:
 		 * @param error - where the error message will be stored if there's a problem
 		 * @return true if ad had valid CronTab paramter syntax
 		 **/
-	static bool validate( ClassAd*, MyString& );
+	static bool validate( ClassAd*, std::string& );
 		/**
 		 * This method will return the error message for the calling object
 		 * This is what you'll want to use if you are trying to figure
@@ -193,7 +166,9 @@ public:
 		 * 
 		 * @return the error message for this object
 		 **/
-	MyString getError();
+	std::string getError() const {
+		return ( this->errorLog );
+	}
 		/**
 		 * Returns the next execution time for our cron schedule from
 		 * the current time.
@@ -210,12 +185,13 @@ public:
 		 * timestamp that we calculate here will be stored and can be accessed
 		 * again with lastRun().
 		 * The times are the number of seconds elapsed since 
-		 * 00:00:00 on January 1, 1970, Coordinated Universal Time (UTC)
+		 * 00:00:00 on January 1, 1970, in the local time zone, 
+		 * unless use_localtime is false, in which case, UTC.
 		 * 
 		 * @param timestamp - the starting time to get the next run time for
 		 * @return the next run time for the object's schedule
 		 **/
-	long nextRunTime( long );
+	long nextRunTime( long timestamp, bool use_localtime = true);
 		/**
 		 * If we were able to parse the parameters correctly
 		 * then we will let them query us for runtimes
@@ -244,7 +220,7 @@ public:
 		 * @param error - where the error message will be stored if there's a problem
 		 * @return true if the parameter was a valid CronTab attribute
 		 **/
-	static bool validateParameter(const char* param, const char * attr, MyString& error);
+	static bool validateParameter(const char* param, const char * attr, std::string& error);
 		//
 		// Attribute names
 		// A nice list that we can iterate through easily
@@ -293,23 +269,19 @@ protected:
 		 * @param elt - the value to search for in the array
 		 * @return true if the element exists in the list
 		 **/
-	bool contains( ExtArray<int>&, const int&  );
+	bool contains( std::vector<int>&, const int&  );
 		/**
 		 * Ascending Insertion Sort
 		 * 
 		 * @param list - the array to sort
 		 **/
-	void sort( ExtArray<int>& );
+	void sort( std::vector<int>& );
 
 protected:
 		//
-		// Static Error Log
-		//
-	static MyString staticErrorLog;
-		//
 		// Instantiated Error Log
 		//
-	MyString errorLog;
+	std::string errorLog;
 		//
 		// We need to know whether our fields are valid
 		// and we can proceed with looking for a runtime
@@ -325,12 +297,12 @@ protected:
 		// The various scheduling properties of the cron definition
 		// These will be in pulled by the various Constructors
 		//
-	MyString *parameters[CRONTAB_FIELDS];
+	std::string *parameters[CRONTAB_FIELDS];
 		//
 		// After we parse the cron schedule we will have ranges
 		// for the different properties.
 		//
-	ExtArray<int> *ranges[CRONTAB_FIELDS];
+	std::vector<int> *ranges[CRONTAB_FIELDS];
 		//
 		// The regular expresion object we will use to make sure 
 		// our parameters are in the proper format.

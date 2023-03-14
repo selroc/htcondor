@@ -69,7 +69,7 @@ NewClassAdJobLogConsumer::NewClassAd(const char *key,
 	if(proc.proc >= 0) {
 		char cluster_key[PROC_ID_STR_BUFLEN];
 			// NOTE: cluster keys start with a 0: e.g. 021.-1
-		sprintf(cluster_key,"0%d.-1", proc.cluster);
+		snprintf(cluster_key, sizeof(cluster_key), "0%d.-1", proc.cluster);
 		classad::ClassAd* cluster_ad =
 			m_collection.GetClassAd(cluster_key);
 		if (!cluster_ad) {
@@ -127,7 +127,7 @@ NewClassAdJobLogConsumer::SetAttribute(const char *key,
 		return true;
 	}
 	classad::ExprTree *expr;
-	ParseClassAdRvalExpr(value, expr, NULL);
+	ParseClassAdRvalExpr(value, expr);
 	if (!expr) {
 		dprintf(D_ALWAYS,
 				"error reading %s: failed to parse expression: %s\n",

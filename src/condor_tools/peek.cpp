@@ -137,7 +137,6 @@ HTCondorPeek::parse_args(int argc, char *argv[])
 {
 	std::string job_id;
 
-	myDistro->Init( argc, argv );
 	set_priv_initialize(); // allow uid switching if root
 	config();
 
@@ -288,7 +287,7 @@ HTCondorPeek::create_session()
 					EXECUTE_SIDE_MATCHSESSION_FQU,
 					m_starter_addr.c_str(),
 					0,
-					nullptr );
+					nullptr, false );
 		if( !success ) {
 			error_msg = "Failed to create security session to connect to starter.";
 		}

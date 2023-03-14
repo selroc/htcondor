@@ -4,7 +4,7 @@ if [[ $VERBOSE ]]; then
   set -x
 fi
 
-# makesrpm.sh - generates source and binary rpms with a source tarball
+# makerpm.sh - generates source and binary rpms with a source tarball
 # along with condor.spec and the source files in this directory
 
 usage () {
@@ -18,7 +18,7 @@ usage () {
   echo "Environment:"
   echo "  VERBOSE=1                         Show all commands run by script"
   echo
-  exit $1
+  exit 1
 }
 
 fail () { echo "$@" >&2; exit 1; }
@@ -43,7 +43,6 @@ if [[ $buildmethod = -bs ]]; then
   buildmethod+=" --nodeps"
 fi
 
-top_dir=$PWD
 [[ $dest_dir ]] || dest_dir=$PWD
 
 check_version_string () {
@@ -63,12 +62,17 @@ trap 'rm -rf "$tmpd"' EXIT
 
 cd "$tmpd"
 mkdir SOURCES BUILD BUILDROOT RPMS SPECS SRPMS
-mv ../condor-${condor_version}.tgz SOURCES/condor-${condor_version}.tar.gz
+mv "../condor-${condor_version}.tgz" "SOURCES/condor-${condor_version}.tar.gz"
 
-# copy srpm files from condor sources into the SOURCES directory
-tar xvfpz SOURCES/condor-${condor_version}.tar.gz condor-${condor_version}/build/packaging/srpm
-cp -p condor-${condor_version}/build/packaging/srpm/* SOURCES
-rm -rf condor-${condor_version}
+# copy rpm files from condor sources into the SOURCES directory
+tar xvfpz "SOURCES/condor-${condor_version}.tar.gz" "condor-${condor_version}/build/packaging/rpm" "condor-${condor_version}/CMakeLists.txt"
+cp -p condor-"${condor_version}"/build/packaging/rpm/* SOURCES
+
+# Extract prerelease value from top level CMake file
+PRE_RELEASE=$(grep '^set(PRE_RELEASE' condor-${condor_version}/CMakeLists.txt)
+PRE_RELEASE=${PRE_RELEASE#* } # Trim up to and including space
+PRE_RELEASE=${PRE_RELEASE%\)*} # Trim off the closing parenthesis
+rm -rf "condor-${condor_version}"
 
 # inject the version and build id into the spec file
 update_spec_define () {
@@ -78,10 +82,14 @@ update_spec_define () {
 update_spec_define git_build 0
 update_spec_define tarball_version "$condor_version"
 update_spec_define condor_build_id "$condor_build_id"
-# Set HTCondor base release for pre-release build
-update_spec_define condor_base_release "0.$condor_build_id"
-# Set HTCondor base release to 1 for final release.
-#update_spec_define condor_base_release "1"
+
+if [ "$PRE_RELEASE" = 'OFF' ]; then
+    # Set HTCondor base release to 1 for final release.
+    update_spec_define condor_base_release "1"
+else
+    # Set HTCondor base release for pre-release build
+    update_spec_define condor_base_release "0.$condor_build_id"
+fi
 
 VERBOSE=1
 export VERBOSE
@@ -89,8 +97,8 @@ export VERBOSE
 # Use as many CPUs as are in the condor slot we are in, 1 if undefined
 export RPM_BUILD_NCPUS=${OMP_NUM_THREADS-1}
 
-rpmbuild -v $buildmethod "$@" --define="_topdir $tmpd" SOURCES/condor.spec
+rpmbuild -v "$buildmethod" "$@" --define="_topdir $tmpd" SOURCES/condor.spec
 
-
-mv $(find *RPMS -name \*.rpm) "$dest_dir"
+readarray -t rpm_files < <(find ./*RPMS -name \*.rpm)
+mv "${rpm_files[@]}" "$dest_dir"
 ls -lh "$dest_dir"

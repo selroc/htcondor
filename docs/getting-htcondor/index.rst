@@ -43,9 +43,11 @@ If you have administrative privileges on your machine, choose the
 instructions corresponding to your operating system:
 
 * :doc:`Windows <install-windows-as-administrator>`.
-* :doc:`Linux <install-linux-as-root>`.  HTCondor supports Enterprise Linux 7
-  including RedHat and CentOS; Enterprise Linux 8 including RedHat and Rocky Linux;
-  Amazon Linux 2; Debian 10 and 11; and Ubuntu 18.04 and 20.04.
+* :doc:`Linux <install-linux-as-root>`.  HTCondor supports
+  Enterprise Linux 7 including Red Hat, CentOS, and Scientific Linux 7;
+  Enterprise Linux 8 including Red Hat, CentOS Stream, Alma Linux, and Rocky Linux;
+  Enterprise Linux 9 including Red Hat, CentOS Stream, Alma Linux, and Rocky Linux;
+  Debian 11; and Ubuntu 20.04 and 22.04.
 * :doc:`macOS <install-macos-as-root>`.  HTCondor supports macOS 10.15 and later.
 
 .. _hand_install_with_user_privileges:
@@ -58,9 +60,11 @@ limit the resource usage of the jobs it runs, but since it only
 works for the user who installed it, at least you know who to blame for
 misbehaving jobs.
 
-* :doc:`Linux <install-linux-as-user>`.  HTCondor supports Enterprise Linux 7
-  including RedHat and CentOS; Enterprise Linux 8 including RedHat and Rocky Linux;
-  Amazon Linux 2; Debian 10 and 11; and Ubuntu 18.04 and 20.04.
+* :doc:`Linux <install-linux-as-user>`.  HTCondor supports
+  Enterprise Linux 7 including Red Hat, CentOS, and Scientific Linux 7;
+  Enterprise Linux 8 including Red Hat, CentOS Stream, Alma Linux, and Rocky Linux;
+  Enterprise Linux 9 including Red Hat, CentOS Stream, Alma Linux, and Rocky Linux;
+  Debian 11; and Ubuntu 20.04 and 22.04.
 
 * :doc:`macOS <install-linux-as-user>`.  HTCondor supports macOS 10.15 and later.
 
@@ -101,10 +105,9 @@ HTCondor also supports cloud-native distribution.
   `minicondor image <https://aws.amazon.com/marketplace/pp/B073WHVRPR>`_
   preconfigured for use with :ref:`condor_annex <annex_users_guide>`,
   which allows to easily add cloud resources to your pool.
-* For Google Cloud Platform, we have a technology preview of a
-  :ref:`google_cloud_marketplace` that lets you construct an entire
-  HTCondor pool via your web browser.  If you're new to HTCondor,
-  you can proceed to the :ref:`quick_start_guide` immediately after
+* The :ref:`google_cloud_hpc_toolkit` lets you construct an entire HTCondor
+  pool that scales automatically to run submitted jobs. If you're new to
+  HTCondor, you can proceed to the :ref:`quick_start_guide` immediately after
   following those instructions.
 * We also have documention on creating a
   :doc:`../cloud-computing/condor-in-the-cloud` by hand.

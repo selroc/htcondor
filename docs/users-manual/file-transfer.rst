@@ -60,7 +60,7 @@ takes on one of three possible values:
 
 #. ``ON_EXIT`` (the default): HTCondor transfers the output sandbox
    back to the submit machine only when the job exits on its own. If the
-   job is preempted or removed, no files are transfered back.
+   job is preempted or removed, no files are transferred back.
 #. ``ON_EXIT_OR_EVICT``: HTCondor behaves the same as described for the
    value ON_EXIT when the job exits on its own. However, each
    time the job is evicted from a machine, the output sandbox is
@@ -77,7 +77,7 @@ takes on one of three possible values:
    resume from where it left off.
 #. ``ON_SUCCESS``: HTCondor transfers files like ``ON_EXIT``, but only if
    the job succeeds, as defined by the ``success_exit_code`` submit command.
-   The ``successs_exit_code`` command must be used, even for the default
+   The ``success_exit_code`` command must be used, even for the default
    exit code of 0.  (See the :doc:`/man-pages/condor_submit` man page.)
 
 The default values for these two submit commands make sense as used
@@ -718,7 +718,7 @@ and ``$_CONDOR_CREDS/mytokens_group.use``.
 **Transferring files using file transfer plugins**
 
 HTCondor comes with file transfer plugins
-that can communicate with Box.com, Google Drive, and Microsoft OneDrive.
+that can communicate with Box.com, Google Drive, Stash Cache, OSDF, and Microsoft OneDrive.
 Using one of these plugins requires that the HTCondor pool administrator
 has set up the mechanism for HTCondor to gather credentials
 for the desired service,
@@ -730,6 +730,8 @@ from the desired service (see :ref:`jobs_that_require_credentials`).
 To use a file transfer plugin,
 substitute ``https`` in a transfer URL with the service name
 (``box`` for Box.com,
+``stash`` for Stash Cache,
+``osdf`` for OSDF,
 ``gdrive`` for Google Drive, and
 ``onedrive`` for Microsoft OneDrive)
 and reference a file path starting at the root directory of the service.
@@ -817,12 +819,12 @@ Google Cloud Storage implements an `XML API which is interoperable with S3
 <https://cloud.google.com/storage/docs/interoperability>`_. This requires an
 extra step of `generating HMAC credentials
 <https://console.cloud.google.com/storage/settings;tab=interoperability>`_
-to access Cloud Storage through the XML API. Google Cloud best practices are
-to create a Service Account with read/write permission to the bucket and
-`generate HMAC credentials for the service account
-<https://cloud.google.com/storage/docs/migrating#keys>`_.
+to access Cloud Storage. Google Cloud best practices are to create a Service
+Account with read/write permission to the bucket. Read `HMAC keys for Cloud
+Storage <https://cloud.google.com/storage/docs/authentication/hmackeys>`_ for
+more details.
 
-After generating HMAC credentials, they can be used within an HTCondor job:
+After generating HMAC credentials, they can be used within a job:
 
 .. code-block:: condor-submit
 
@@ -833,7 +835,7 @@ After generating HMAC credentials, they can be used within an HTCondor job:
 
 If `Cloud Storage is configured with Private Service Connect
 <https://cloud.google.com/vpc/docs/private-service-connect>`_, then use the S3 URL
-approach defined above. e.g.
+approach with the private Cloud Storage endpoint. e.g.,
 
 .. code-block:: condor-submit
 

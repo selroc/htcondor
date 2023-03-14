@@ -35,7 +35,7 @@ For HTCondor to run a job, it must be given details such as the names
 and location of the executable and all needed input files. These details
 are specified in a submit description file.
 
-.. rubric: The executable
+.. rubric:: The executable
 
 Before presenting the details of the submit description file, consider this
 first HTCondor job.  It is a sleep job that waits for 6 seconds and then
@@ -81,7 +81,7 @@ executable by running the following command:
 
     chmod u+x sleep.sh
 
-.. rubric: The contents of the submit description file
+.. rubric:: The contents of the submit description file
 
 The submit description file describes the job.  To submit this sample
 job, again use an editor to create the file ``sleep.sub``.  The submit
@@ -457,7 +457,7 @@ Where to Go from Here
 * `Additional tutorials <https://www.youtube.com/playlist?list=PLO7gMRGDPNumCuo3pCdRk23GDLNKFVjHn>`_
   about other aspects of using HTCondor are available
   in our `YouTube channel <https://www.youtube.com/channel/UCd1UBXmZIgB4p85t2tu-gLw>`_.
-* Slides from `past HTCondor Weeks <https://research.cs.wisc.edu/htcondor/past_condor_weeks.html>`_ -- our annual conference -- include the tutorials given there.
+* Slides from `past HTCondor Weeks <https://htcondor.org/past_condor_weeks.html>`_ -- our annual conference -- include the tutorials given there.
 * The :doc:`../users-manual/index` is a good reference.
 * If you like what you've seen but want to run more jobs simultaneously, the
   :doc:`administrator's quick start guide <../getting-htcondor/admin-quick-start>`

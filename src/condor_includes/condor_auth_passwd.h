@@ -21,11 +21,6 @@
 #ifndef CONDOR_AUTH_PASSWD
 #define CONDOR_AUTH_PASSWD
 
-// Where HAVE_EXT_OPENSSL is defined.
-#include "config.h"
-
-#if defined(HAVE_EXT_OPENSSL)
-
 #include "condor_auth.h"        // Condor_Auth_Base class is defined here
 #include "condor_crypt_3des.h"
 
@@ -48,7 +43,11 @@ namespace classad {
 	class ClassAd;
 }
 namespace jwt {
+	template<typename json_traits>
 	class decoded_jwt;
+	namespace traits {
+		struct kazuho_picojson;
+	}
 }
 
 /** A class to implement the AKEP2 protocol for password-based authentication.
@@ -336,7 +335,7 @@ class Condor_Auth_Passwd : public Condor_Auth_Base {
 
 		/** Check to see if a given token has been revoked; returns
 		    true if the token is revoked. */
-	bool isTokenRevoked(const jwt::decoded_jwt &jwt);
+	bool isTokenRevoked(const jwt::decoded_jwt<jwt::traits::kazuho_picojson> &jwt);
 
 	int m_client_status;
 	int m_server_status;
@@ -372,7 +371,5 @@ class Condor_Auth_Passwd : public Condor_Auth_Base {
 	static bool m_should_search_for_tokens; // Should we search for tokens?
 	static bool m_tokens_avail; // Are any tokens known to be available?
 };
-
-#endif /* HAVE_EXT_OPENSSL */
 
 #endif /* CONDOR_AUTH_PASSWD */

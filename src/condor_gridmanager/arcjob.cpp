@@ -32,7 +32,6 @@
 #include "gridmanager.h"
 #include "arcjob.h"
 #include "condor_config.h"
-#include "nordugridjob.h" // for rsl_stringify()
 
 
 // GridManager job states
@@ -214,11 +213,11 @@ ArcJob::ArcJob( ClassAd *classad )
 
 	jobProxy = AcquireProxy( jobAd, error_string,
 							 (TimerHandlercpp)&BaseJob::SetEvaluateState, this );
-	if ( jobProxy == NULL ) {
-		if ( error_string == "" ) {
-			formatstr( error_string, "%s is not set in the job ad",
-								  ATTR_X509_USER_PROXY );
-		}
+
+	jobAd->LookupString( ATTR_SCITOKENS_FILE, m_tokenFile );
+
+	if (jobProxy == nullptr && m_tokenFile.empty()) {
+		error_string = "ARC job has no credentials";
 		goto error_exit;
 	}
 
@@ -227,8 +226,9 @@ ArcJob::ArcJob( ClassAd *classad )
 		error_string = "ARC_GAHP not defined";
 		goto error_exit;
 	}
-	snprintf( buff, sizeof(buff), "ARC/%s",
-			  jobProxy->subject->fqan );
+	snprintf( buff, sizeof(buff), "ARC/%s#%s",
+	          (m_tokenFile.empty() && jobProxy) ? jobProxy->subject->fqan : "",
+	          m_tokenFile.c_str() );
 	gahp = new GahpClient( buff, gahp_path );
 	gahp->setNotificationTimerId( evaluateStateTid );
 	gahp->setMode( GahpClient::normal );
@@ -267,7 +267,7 @@ ArcJob::ArcJob( ClassAd *classad )
 	}
 
 	myResource = ArcResource::FindOrCreateResource( resourceManagerString,
-														  jobProxy );
+	                 m_tokenFile.empty() ? jobProxy : nullptr, m_tokenFile );
 	myResource->RegisterJob( this );
 
 	buff[0] = '\0';
@@ -360,7 +360,7 @@ void ArcJob::doEvaluateState()
 				gmState = GM_HOLD;
 				break;
 			}
-			if ( gahp->Initialize( jobProxy ) == false ) {
+			if ( m_tokenFile.empty() && jobProxy && gahp->Initialize( jobProxy ) == false ) {
 				dprintf( D_ALWAYS, "(%d.%d) Error initializing GAHP\n",
 						 procID.cluster, procID.proc );
 
@@ -369,8 +369,20 @@ void ArcJob::doEvaluateState()
 				gmState = GM_HOLD;
 				break;
 			}
+			// TODO Ensure gahp command isn't issued for every new job
+			if ( !m_tokenFile.empty() && !gahp->UpdateToken( m_tokenFile ) ) {
+				dprintf( D_ALWAYS, "(%d.%d) Error initializing GAHP\n",
+				         procID.cluster, procID.proc );
 
-			gahp->setDelegProxy( jobProxy );
+				jobAd->InsertAttr( ATTR_HOLD_REASON,
+				                   "Failed to provide GAHP with token" );
+				gmState = GM_HOLD;
+				break;
+			}
+
+			if (m_tokenFile.empty() && jobProxy) {
+				gahp->setDelegProxy( jobProxy );
+			}
 
 			gmState = GM_START;
 			} break;
@@ -428,7 +440,7 @@ void ArcJob::doEvaluateState()
 				gmState = GM_UNSUBMITTED;
 				break;
 			}
-			if ( ! delegationId.empty() ) {
+			if ( ! jobProxy || ! delegationId.empty() ) {
 				gmState = GM_SUBMIT;
 				break;
 			}
@@ -436,7 +448,7 @@ void ArcJob::doEvaluateState()
 			std::string deleg_id;
 
 			rc = gahp->arc_delegation_new( resourceManagerString,
-			                               deleg_id );
+			                               jobProxy->proxy_filename, deleg_id );
 			if ( rc == GAHPCLIENT_COMMAND_NOT_SUBMITTED ||
 				 rc == GAHPCLIENT_COMMAND_PENDING ) {
 				break;
@@ -451,7 +463,7 @@ void ArcJob::doEvaluateState()
 				dprintf(D_ALWAYS,"(%d.%d) proxy delegation failed: %s\n",
 				        procID.cluster, procID.proc,
 				        errorString.c_str() );
-				gmState = GM_UNSUBMITTED;
+				gmState = GM_HOLD;
 			}
 
 			} break;
@@ -481,7 +493,6 @@ void ArcJob::doEvaluateState()
 				}
 
 				if ( RSL.empty() ) {
-//					if ( ! buildSubmitRSL() ) {
 					if ( ! buildJobADL() ) {
 						gmState = GM_HOLD;
 						break;
@@ -663,19 +674,65 @@ void ArcJob::doEvaluateState()
 				break;
 			}
 
-			if ( info_ad.Lookup("EndTime") == NULL ) {
+			// Element State is a list of strings, one of which is of
+			// the form "arcrest:XXX", where XXX is the job's status
+			// as reported in the rest of the REST interface.
+			// If that status isn't one of the terminal states, then
+			// we received stale data, and we should re-query after a
+			// short delay.
+			classad::ExprTree *expr = info_ad.Lookup("State");
+			if (expr == nullptr || expr->GetKind() != classad::ExprTree::EXPR_LIST_NODE) {
+				errorString = "Job exit information is missing State element";
+				dprintf(D_ALWAYS, "(%d.%d) Job exit information is missing State element\n",
+				        procID.cluster, procID.proc);
+				gmState = GM_CANCEL_CLEAN;
+				break;
+			}
+			std::string info_status;
+			std::vector<classad::ExprTree*> state_list;
+			((classad::ExprList*)expr)->GetComponents(state_list);
+			for (auto item : state_list) {
+				std::string str;
+				classad::Value value;
+				classad::Value::NumberFactor f;
+				if (item->GetKind() != classad::ExprTree::LITERAL_NODE) {
+					continue;
+				}
+				((classad::Literal*)item)->getValue(f).IsStringValue(str);
+				if (str.compare(0, 8, "arcrest:") == 0) {
+					info_status = str.substr(8);
+					break;
+				}
+			}
+			if (info_status.empty()) {
+				errorString = "Job exit information is missing arcrest element";
+				dprintf(D_ALWAYS, "(%d.%d) Job exit information is missing arcrest element\n",
+				        procID.cluster, procID.proc);
+				gmState = GM_CANCEL_CLEAN;
+				break;
+			}
+			if (info_status != REMOTE_STATE_FINISHED &&
+			    info_status != REMOTE_STATE_FAILED &&
+			    info_status != REMOTE_STATE_KILLED &&
+			    info_status != REMOTE_STATE_WIPED)
+			{
 				dprintf(D_FULLDEBUG, "(%d.%d) Job info is stale, will retry in %ds.\n", procID.cluster, procID.proc, jobInfoInterval);
 				daemonCore->Reset_Timer( evaluateStateTid, (lastJobInfoTime + jobInfoInterval) - now );
 				break;
 			}
+			if (info_status != remoteJobState) {
+				remoteJobState = info_status;
+				SetRemoteJobStatus(info_status.c_str());
+			}
 
-			if ( remoteJobState == REMOTE_STATE_FINISHED ) {
-				int exit_code = 0;
+			// With some LRMS, the job is FAILED if it has a non-zero exit
+			// code. So use the presence of an ExitCode attribute to
+			// determine whether the job ran to completion.
+			if (info_ad.LookupString("ExitCode", val)) {
+				int exit_code = atoi(val.c_str());
 				int wallclock = 0;
 				int cpu = 0;
-				if ( info_ad.LookupString("ExitCode", val ) ) {
-					exit_code = atoi(val.c_str());
-				}
+
 				if ( info_ad.LookupString("UsedTotalWallTime", val ) ) {
 					wallclock = atoi(val.c_str());
 				}
@@ -697,7 +754,7 @@ void ArcJob::doEvaluateState()
 				} else {
 					errorString = "ARC job failed for unknown reason";
 				}
-				gmState = GM_STAGE_OUT;
+				gmState = GM_CANCEL_CLEAN;
 			}
 			} break;
 		case GM_STAGE_OUT: {
@@ -736,8 +793,6 @@ void ArcJob::doEvaluateState()
 				dprintf( D_ALWAYS, "(%d.%d) File stage-out failed: %s\n",
 				         procID.cluster, procID.proc, gahp->getErrorString() );
 				gmState = GM_HOLD;
-			} else if ( remoteJobState != REMOTE_STATE_FINISHED ) {
-				gmState = GM_CANCEL_CLEAN;
 			} else {
 				gmState = GM_DONE_SAVE;
 			}
@@ -1059,12 +1114,12 @@ bool ArcJob::buildJobADL()
 	RSL += "</Path>";
 
 	ArgList args;
-	MyString arg_errors;
-	if(!args.AppendArgsFromClassAd(jobAd,&arg_errors)) {
+	std::string arg_errors;
+	if(!args.AppendArgsFromClassAd(jobAd,arg_errors)) {
 		dprintf(D_ALWAYS,"(%d.%d) Failed to read job arguments: %s\n",
-				procID.cluster, procID.proc, arg_errors.Value());
+				procID.cluster, procID.proc, arg_errors.c_str());
 		formatstr(errorString,"Failed to read job arguments: %s\n",
-				arg_errors.Value());
+				arg_errors.c_str());
 		RSL.clear();
 		return false;
 	}
@@ -1200,9 +1255,11 @@ bool ArcJob::buildJobADL()
 
 	// Now handle the <DataStaging> element.
 	RSL += "<DataStaging>";
-	RSL += "<ng-adl:DelegationID>";
-	RSL += escapeXML(delegationId);
-	RSL += "</ng-adl:DelegationID>";
+	if ( ! delegationId.empty() ) {
+		RSL += "<ng-adl:DelegationID>";
+		RSL += escapeXML(delegationId);
+		RSL += "</ng-adl:DelegationID>";
+	}
 
 	stage_list = buildStageInList();
 
@@ -1236,185 +1293,6 @@ bool ArcJob::buildJobADL()
 	RSL += "</ActivityDescription>";
 
 dprintf(D_FULLDEBUG,"*** ADL='%s'\n",RSL.c_str());
-	return true;
-}
-
-bool ArcJob::buildSubmitRSL()
-{
-	bool transfer_exec = true;
-	StringList *stage_list = NULL;
-	StringList *stage_local_list = NULL;
-	char *attr_value = NULL;
-	std::string rsl_suffix;
-	std::string iwd;
-	std::string executable;
-
-	RSL.clear();
-
-	if ( jobAd->LookupString( ATTR_ARC_RSL, rsl_suffix ) &&
-						   rsl_suffix[0] == '&' ) {
-		RSL = rsl_suffix;
-		return true;
-	}
-
-	if ( jobAd->LookupString( ATTR_JOB_IWD, iwd ) != 1 ) {
-		errorString = "ATTR_JOB_IWD not defined";
-		RSL.clear();
-		return false;
-	}
-
-	//Start off the RSL
-	attr_value = param( "FULL_HOSTNAME" );
-//	formatstr( RSL, "&(savestate=yes)(action=request)(hostname=%s)(DelegationID=%s)", attr_value, delegationId.c_str() );
-	formatstr( RSL, "&(savestate=yes)(action=request)(hostname=%s)", attr_value );
-	free( attr_value );
-	attr_value = NULL;
-
-	//We're assuming all job clasads have a command attribute
-	GetJobExecutable( jobAd, executable );
-	jobAd->LookupBool( ATTR_TRANSFER_EXECUTABLE, transfer_exec );
-
-	RSL += "(executable=";
-	// If we're transferring the executable, strip off the path for the
-	// remote machine, since it refers to the submit machine.
-	if ( transfer_exec ) {
-		RSL += condor_basename( executable.c_str() );
-	} else {
-		RSL += executable;
-	}
-
-	{
-		ArgList args;
-		MyString arg_errors;
-		MyString rsl_args;
-		if(!args.AppendArgsFromClassAd(jobAd,&arg_errors)) {
-			dprintf(D_ALWAYS,"(%d.%d) Failed to read job arguments: %s\n",
-					procID.cluster, procID.proc, arg_errors.Value());
-			formatstr(errorString,"Failed to read job arguments: %s\n",
-					arg_errors.Value());
-			RSL.clear();
-			return false;
-		}
-		if(args.Count() != 0) {
-			if(args.InputWasV1()) {
-					// In V1 syntax, the user's input _is_ RSL
-				if(!args.GetArgsStringV1Raw(&rsl_args,&arg_errors)) {
-					dprintf(D_ALWAYS,
-							"(%d.%d) Failed to get job arguments: %s\n",
-							procID.cluster,procID.proc,arg_errors.Value());
-					formatstr(errorString,"Failed to get job arguments: %s\n",
-							arg_errors.Value());
-					RSL.clear();
-					return false;
-				}
-			}
-			else {
-					// In V2 syntax, we convert the ArgList to RSL
-				for(int i=0;i<args.Count();i++) {
-					if(i) {
-						rsl_args += ' ';
-					}
-					rsl_args += rsl_stringify(args.GetArg(i));
-				}
-			}
-			RSL += ")(arguments=";
-			RSL += rsl_args;
-		}
-	}
-
-	// If we're transferring the executable, tell ARC to set the
-	// execute bit on the transferred executable.
-	if ( transfer_exec ) {
-		RSL += ")(executables=";
-		RSL += condor_basename( executable.c_str() );
-	}
-
-	if ( jobAd->LookupString( ATTR_JOB_INPUT, &attr_value ) == 1) {
-		// only add to list if not NULL_FILE (i.e. /dev/null)
-		if ( ! nullFile(attr_value) ) {
-			RSL += ")(stdin=";
-			RSL += condor_basename(attr_value);
-		}
-		free( attr_value );
-		attr_value = NULL;
-	}
-
-	stage_list = buildStageInList();
-
-	if ( stage_list->isEmpty() == false ) {
-		char *file;
-		stage_list->rewind();
-
-		RSL += ")(inputfiles=";
-
-		while ( (file = stage_list->next()) != NULL ) {
-			RSL += "(";
-			RSL += condor_basename(file);
-			if ( IsUrl( file ) ) {
-				formatstr_cat( RSL, " \"%s\")", file );
-			} else {
-				RSL += " \"\")";
-			}
-		}
-	}
-
-	delete stage_list;
-	stage_list = NULL;
-
-	if ( jobAd->LookupString( ATTR_JOB_OUTPUT, &attr_value ) == 1) {
-		// only add to list if not NULL_FILE (i.e. /dev/null)
-		if ( ! nullFile(attr_value) ) {
-			RSL += ")(stdout=";
-			RSL += REMOTE_STDOUT_NAME;
-		}
-		free( attr_value );
-		attr_value = NULL;
-	}
-
-	if ( jobAd->LookupString( ATTR_JOB_ERROR, &attr_value ) == 1) {
-		// only add to list if not NULL_FILE (i.e. /dev/null)
-		if ( ! nullFile(attr_value) ) {
-			RSL += ")(stderr=";
-			RSL += REMOTE_STDERR_NAME;
-		}
-		free( attr_value );
-	}
-
-	stage_list = buildStageOutList();
-	stage_local_list = buildStageOutLocalList( stage_list );
-
-	if ( stage_list->isEmpty() == false ) {
-		char *file;
-		char *local_file;
-		stage_list->rewind();
-		stage_local_list->rewind();
-
-		RSL += ")(outputfiles=";
-
-		while ( (file = stage_list->next()) != NULL ) {
-			local_file = stage_local_list->next();
-			RSL += "(";
-			RSL += condor_basename(file);
-			if ( IsUrl( local_file ) ) {
-				formatstr_cat( RSL, " \"%s\")", local_file );
-			} else {
-				RSL += " \"\")";
-			}
-		}
-	}
-
-	delete stage_list;
-	stage_list = NULL;
-	delete stage_local_list;
-	stage_local_list = NULL;
-
-	RSL += ')';
-
-	if ( !rsl_suffix.empty() ) {
-		RSL += rsl_suffix;
-	}
-
-dprintf(D_FULLDEBUG,"*** RSL='%s'\n",RSL.c_str());
 	return true;
 }
 
@@ -1509,7 +1387,7 @@ StringList *ArcJob::buildStageOutLocalList( StringList *stage_list )
 {
 	StringList *stage_local_list;
 	char *remaps = NULL;
-	MyString local_name;
+	std::string local_name;
 	char *remote_name;
 	std::string stdout_name = "";
 	std::string stderr_name = "";
@@ -1534,9 +1412,9 @@ StringList *ArcJob::buildStageOutLocalList( StringList *stage_list )
 			// stdout and stderr don't get remapped, and their paths
 			// are evaluated locally
 		if ( strcmp( REMOTE_STDOUT_NAME, remote_name ) == 0 ) {
-			local_name = stdout_name.c_str();
+			local_name = stdout_name;
 		} else if ( strcmp( REMOTE_STDERR_NAME, remote_name ) == 0 ) {
-			local_name = stderr_name.c_str();
+			local_name = stderr_name;
 		} else if( remaps && filename_remap_find( remaps, remote_name,
 												  local_name ) ) {
 				// file is remapped
@@ -1544,11 +1422,11 @@ StringList *ArcJob::buildStageOutLocalList( StringList *stage_list )
 			local_name = condor_basename( remote_name );
 		}
 
-		if ( (local_name.Length() && local_name[0] == '/')
-			 || IsUrl( local_name.Value() ) ) {
+		if ( (local_name.length() && local_name[0] == '/')
+			 || IsUrl( local_name.c_str() ) ) {
 			buff = local_name;
 		} else {
-			formatstr( buff, "%s%s", iwd.c_str(), local_name.Value() );
+			formatstr( buff, "%s%s", iwd.c_str(), local_name.c_str() );
 		}
 		stage_local_list->append( buff.c_str() );
 	}

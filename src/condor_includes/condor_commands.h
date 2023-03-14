@@ -104,7 +104,7 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define SET_PRIORITY		(SCHED_VERS+49)		// negotiator(priviliged) cmd 
 //#define GIVE_CLASSAD		(SCHED_VERS+50)		/* Not used */
 #define GET_PRIORITY		(SCHED_VERS+51)		// negotiator
-//#define GIVE_REQUEST_AD		(SCHED_VERS+52)		// Starter -> Startd, Not used
+#define DAEMONS_OFF_FLEX	(SCHED_VERS+52)		// DAEMON_OFF but with a classad payload and optional reply
 #define RESTART				(SCHED_VERS+53)
 #define DAEMONS_OFF			(SCHED_VERS+54)
 #define DAEMONS_ON			(SCHED_VERS+55)
@@ -123,7 +123,7 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define DAEMON_OFF_FAST		(SCHED_VERS+68)		// specific daemon, subsys follows 
 #define DAEMON_ON			(SCHED_VERS+69)		// specific daemon, subsys follows 
 #define GIVE_TOTALS_CLASSAD	(SCHED_VERS+70)
-#define DUMP_STATE          (SCHED_VERS+71)	// drop internal vars into classad
+//#define DUMP_STATE          (SCHED_VERS+71)	// drop internal vars into classad (Not used)
 #define PERMISSION_AND_AD	(SCHED_VERS+72) // negotiator is sending startad to schedd
 //#define REQUEST_NETWORK		(SCHED_VERS+73)	// negotiator network mgmt, Not used
 #define VACATE_ALL_FAST		(SCHED_VERS+74)		// fast vacate for whole machine
@@ -133,7 +133,7 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define ACT_ON_JOBS			(SCHED_VERS+78) // have the schedd act on some jobs (rm, hold, release)
 #define STORE_CRED			(SCHED_VERS+79)		// schedd, store a credential
 #define SPOOL_JOB_FILES		(SCHED_VERS+80)	// spool all job files via filetransfer object
-#define GET_MYPROXY_PASSWORD (SCHED_VERS+81) // gmanager->schedd: Give me MyProxy password
+//#define GET_MYPROXY_PASSWORD (SCHED_VERS+81) // gmanager->schedd: Give me MyProxy password, Not used
 #define DELETE_USER			(SCHED_VERS+82)		// negotiator  (actually, accountant)
 #define DAEMON_OFF_PEACEFUL  (SCHED_VERS+83)		// specific daemon, subsys follows
 #define DAEMONS_OFF_PEACEFUL (SCHED_VERS+84)
@@ -150,11 +150,11 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define SET_BEGINTIME	(SCHED_VERS+95)		// negotiator
 #define SET_LASTTIME	(SCHED_VERS+96)		// negotiator
 #define STORE_POOL_CRED		(SCHED_VERS+97)	// master, store password for daemon-to-daemon shared secret auth (PASSWORD)
-#define VM_REGISTER	(SCHED_VERS+98)		// Virtual Machine (*not* "slot") ;)
+//#define VM_REGISTER	(SCHED_VERS+98)		// Virtual Machine (*not* "slot") (Not used)
 #define DELEGATE_GSI_CRED_SCHEDD	(SCHED_VERS+99) // delegate refreshed gsi proxy to schedd
 #define DELEGATE_GSI_CRED_STARTER (SCHED_VERS+100) // delegate refreshed gsi proxy to starter
 #define DELEGATE_GSI_CRED_STARTD (SCHED_VERS+101) // delegate gsi proxy to startd
-#define REQUEST_SANDBOX_LOCATION (SCHED_VERS+102) // get the sinful of a transferd
+#define REQUEST_SANDBOX_LOCATION (SCHED_VERS+102) // get the sinful of a transferd (Not used)
 #define VM_UNIV_GAHP_ERROR   (SCHED_VERS+103) // report the error of vmgahp to startd
 #define VM_UNIV_VMPID		(SCHED_VERS+104) // PID of process for a VM
 #define VM_UNIV_GUEST_IP	(SCHED_VERS+105) // IP address of VM
@@ -175,7 +175,7 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define GET_PRIORITY_ROLLUP (SCHED_VERS+114) // negotiator
 #define QUERY_SCHEDD_HISTORY (SCHED_VERS+115)
 #define QUERY_JOB_ADS (SCHED_VERS+116)
-#define SWAP_CLAIM_AND_ACTIVATION (SCHED_VERS+117) // swap claim & activation between two STARTD resources, for moving a job into a 'transfer' slot.
+//#define SWAP_CLAIM_AND_ACTIVATION (SCHED_VERS+117) // swap claim & activation between two STARTD resources, for moving a job into a 'transfer' slot. (Not used)
 #define SEND_RESOURCE_REQUEST_LIST	(SCHED_VERS+118)     // used in negotiation protocol
 #define QUERY_JOB_ADS_WITH_AUTH (SCHED_VERS+119) // Same as QUERY_JOB_ADS but requires authentication
 #define FETCH_PROXY_DELEGATION (SCHED_VERS+120)
@@ -192,11 +192,16 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define EXPORT_JOBS (SCHED_VERS+126) // Schedd: export selected jobs to a new job_queue.log put jobs into externally managed state
 #define IMPORT_EXPORTED_JOB_RESULTS (SCHED_VERS+127) // Schedd: import changes to previously exported jobs and take them out of managed state
 #define UNEXPORT_JOBS (SCHED_VERS+128) // Schedd: undo previous export of selected jobs, taking them out of managed state
+// Get the Submitter Floor
+#define GET_FLOOR (SCHED_VERS+129)
+#define SET_FLOOR (SCHED_VERS+130)
+
+#define DIRECT_ATTACH (SCHED_VERS+131) // Provide slot ads to the schedd (not from the negotiator)
 
 // values used for "HowFast" in the draining request
-#define DRAIN_GRACEFUL 0
-#define DRAIN_QUICK 10
-#define DRAIN_FAST 20
+#define DRAIN_GRACEFUL 0  // retirement time and vacate time are honored
+#define DRAIN_QUICK 10	  // retirement time will not be honored, but vacate time will
+#define DRAIN_FAST 20	  // neither retirement time nor vacate time will be honored
 
 // values for OnCompletion for draining request
 // note that prior to 8.9.11 only Resume and Nothing are recognised
@@ -204,6 +209,7 @@ NAMETABLE_DIRECTIVE:TABLE:DCTranslation
 #define DRAIN_RESUME_ON_COMPLETION  1
 #define DRAIN_EXIT_ON_COMPLETION    2
 #define DRAIN_RESTART_ON_COMPLETION 3
+#define DRAIN_RECONFIG_ON_COMPLETION 4 // New for 9.11.0
 
 // HAD-related commands
 #define HAD_ALIVE_CMD                   (HAD_COMMANDS_BASE + 0)
@@ -503,17 +509,17 @@ NAMETABLE_DIRECTIVE:END_SECTION:collector
 /*
 *** Commands used by the transfer daemon
 */
-#define TRANSFERD_BASE 74000
+//#define TRANSFERD_BASE 74000
 /* This is used by the schedd when a transferd registers itself */
-#define TRANSFERD_REGISTER		(TRANSFERD_BASE+0)
+//#define TRANSFERD_REGISTER		(TRANSFERD_BASE+0)	// Not used
 /* a channel under which a transferd may be sent control message such as
 	being informed of a new a new transfer request 
 */
-#define TRANSFERD_CONTROL_CHANNEL	(TRANSFERD_BASE+1)
+//#define TRANSFERD_CONTROL_CHANNEL	(TRANSFERD_BASE+1)	// Not used
 /* Files are being written to the transferd for storage */
-#define TRANSFERD_WRITE_FILES	(TRANSFERD_BASE+2)
+//#define TRANSFERD_WRITE_FILES	(TRANSFERD_BASE+2)	// Not used
 /* files are being read from the transferd's storage */
-#define TRANSFERD_READ_FILES	(TRANSFERD_BASE+3)
+//#define TRANSFERD_READ_FILES	(TRANSFERD_BASE+3)	// Not used
 
 
 /*
@@ -556,11 +562,8 @@ NAMETABLE_DIRECTIVE:END_SECTION:collector
 
 /* Replies specific to the REQUEST_CLAIM command */
 #define REQUEST_CLAIM_LEFTOVERS		3
-#define REQUEST_CLAIM_PAIR			4
+//#define REQUEST_CLAIM_PAIR			4	// Not used
 #define REQUEST_CLAIM_LEFTOVERS_2	5
-#define REQUEST_CLAIM_PAIR_2		6
-
-/* Replies specific to the SWAP_CLAIM_AND_ACTIVATION command */
-#define SWAP_CLAIM_ALREADY_SWAPPED	4
+//#define REQUEST_CLAIM_PAIR_2		6		// Not used
 
 #endif  /* of ifndef _CONDOR_COMMANDS_H */

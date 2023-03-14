@@ -28,7 +28,6 @@
 #include "condor_common.h"
 #include "startd.h"
 #include "classad_merge.h"
-#include "condor_auth_x509.h"
 #include "setenv.h"
 #include "my_popen.h"
 #include "basename.h"
@@ -37,10 +36,6 @@
 #include "classad_helpers.h"
 #include "ipv6_hostname.h"
 #include "shared_port_endpoint.h"
-
-#if defined(LINUX)
-#include "glexec_starter.linux.h"
-#endif
 
 ClassAd* Starter::s_ad = nullptr; // starter capabilities ad, (not the job ad!)
 char* Starter::s_path = nullptr;
@@ -453,7 +448,7 @@ Starter::executeDir()
 // on success this object is owned by the global living_starters data structure and may be located by calling findStarterByPid()
 // on failure the caller is responsible for deleting this object.
 //
-int Starter::spawn(Claim * claim, time_t now, Stream* s)
+pid_t Starter::spawn(Claim * claim, time_t now, Stream* s)
 {
 		// if execute dir has not been set, choose one now
 	finalizeExecuteDir(claim);
@@ -576,11 +571,17 @@ Starter::exited(Claim * claim, int status) // Claim may be NULL.
 	ASSERT( executeDir() );
 	cleanup_execute_dir( s_pid, executeDir(), s_created_execute_dir );
 
-#if defined(LINUX)
-	if( param_boolean( "GLEXEC_STARTER", false ) ) {
-		cleanupAfterGlexec(claim);
-	}
-#endif
+#ifdef LINUX
+        if (claim && claim->rip() && claim->rip()->getVolumeManager()) {
+		auto &slot_name = claim->rip()->r_id_str;
+		CondorError err;
+                if (!claim->rip()->getVolumeManager()->CleanupSlot(slot_name, err)) {
+			dprintf(D_ALWAYS, "Failed to cleanup slot %s logical volume: %s",
+				slot_name, err.getFullText().c_str());
+		}
+        }
+#endif // LINUX
+	
 }
 
 
@@ -884,6 +885,22 @@ int Starter::execDCStarter(
 	ASSERT( executeDir() );
 	new_env.SetEnv( "_CONDOR_EXECUTE", executeDir() );
 
+#ifdef LINUX
+	if (claim && claim->rip() && claim->rip()->getVolumeManager()) {
+		auto &slot_name = claim->rip()->r_id_str;
+			// Cleanup from any previously-crashed starters.
+		CondorError err;
+                claim->rip()->getVolumeManager()->CleanupSlot(slot_name, err);
+
+		claim->rip()->getVolumeManager()->UpdateStarterEnv(new_env);
+		if (claim->rip()->r_attr) {
+			std::string size;
+			formatstr(size, "%lld", claim->rip()->r_attr->get_disk());
+			new_env.SetEnv("_CONDOR_THINPOOL_SIZE_KB", size.c_str());
+		}
+	}
+#endif // LINUX
+
 	env = &new_env;
 
 
@@ -925,7 +942,6 @@ int Starter::execDCStarter(
 		dprintf(D_ALWAYS, "Setting affinity env to %s\n", affinityString.c_str());
 	}
 
-
 	ReliSock child_job_update_sock;   // child inherits this socket
 	ASSERT( !s_job_update_sock );
 	s_job_update_sock = new ReliSock; // parent (yours truly) keeps this socket
@@ -954,40 +970,6 @@ int Starter::execDCStarter(
 	{
 		EXCEPT("Failed to register ClassAd update socket.");
 	}
-
-#if defined(LINUX)
-	// see if we should be using glexec to spawn the starter.
-	// if we are, the cmd, args, env, and stdin to use will be
-	// modified
-	ArgList glexec_args;
-	Env glexec_env;
-	int glexec_std_fds[3];
-	if( param_boolean( "GLEXEC_STARTER", false ) ) {
-		if ( ! claim) {
-			dprintf(D_ALWAYS, "ERROR: GLEXEC_STARTER is true, so a Starter cannot be created if there is no claim\n");
-			s_pid = 0;
-			return s_pid;
-		}
-		if( ! glexec_starter_prepare( s_path,
-		                              claim->client()->proxyFile(),
-		                              args,
-		                              env,
-		                              std_fds,
-		                              glexec_args,
-		                              glexec_env,
-		                              glexec_std_fds ) )
-		{
-			// something went wrong; prepareForGlexec will
-			// have already logged it
-			cleanupAfterGlexec(claim);
-			return 0;
-		}
-		final_path = glexec_args.GetArg(0);
-		final_args = &glexec_args;
-		env = &glexec_env;
-		std_fds = glexec_std_fds;
-	}
-#endif
 
 	int reaper_id;
 	if( s_reaper_id > 0 ) {
@@ -1018,43 +1000,8 @@ int Starter::execDCStarter(
 		s_pid = 0;
 	}
 
-#if defined(LINUX)
-	if( param_boolean( "GLEXEC_STARTER", false ) ) {
-		// if we used glexec to spawn the Starter, we now need to send
-		// the Starter's environment to our glexec wrapper script so it
-		// can exec the Starter with all the environment variablew we rely
-		// on it inheriting
-		//
-		if ( !glexec_starter_handle_env(s_pid) ) {
-			// something went wrong; handleGlexecEnvironment will
-			// have already logged it
-			cleanupAfterGlexec(claim);
-			return 0;
-		}
-	}
-#endif
-
 	return s_pid;
 }
-
-#if defined(LINUX)
-void
-Starter::cleanupAfterGlexec(Claim * claim)
-{
-	// remove the copy of the user proxy that we own
-	// (the starter should remove the one glexec created for it)
-	if( claim && claim->client()->proxyFile() != NULL ) {
-		if ( unlink( claim->client()->proxyFile() ) == -1) {
-			dprintf( D_ALWAYS,
-			         "error removing temporary proxy %s: %s (%d)\n",
-			         claim->client()->proxyFile(),
-			         strerror(errno),
-			         errno );
-		}
-		claim->client()->setProxyFile(NULL);
-	}
-}
-#endif
 
 bool
 Starter::active() const

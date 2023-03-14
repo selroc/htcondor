@@ -20,6 +20,7 @@
 #ifndef __MATCHMAKER_H__
 #define __MATCHMAKER_H__
 
+#include "compat_classad_list.h"
 #include "condor_daemon_core.h"
 #include "condor_accountant.h"
 #include "condor_io.h"
@@ -66,7 +67,8 @@ class Matchmaker : public Service
 		int DELETE_USER_commandHandler(int, Stream*);
 		int SET_PRIORITYFACTOR_commandHandler(int, Stream*);
 		int SET_PRIORITY_commandHandler(int, Stream*);
-		int SET_CEILING_commandHandler(int, Stream*);
+		int SET_CEILING_or_FLOOR_commandHandler(int, Stream*);
+		int SET_FLOOR_commandHandler(int, Stream*);
 		int SET_ACCUMUSAGE_commandHandler(int, Stream*);
 		int SET_BEGINTIME_commandHandler(int, Stream*);
 		int SET_LASTTIME_commandHandler(int, Stream*);
@@ -85,10 +87,10 @@ class Matchmaker : public Service
 		void invalidateNegotiatorAd( void );
 
 		Accountant & getAccountant() { return accountant; }
-		static float EvalNegotiatorMatchRank(char const *expr_name,ExprTree *expr,
+		static double EvalNegotiatorMatchRank(char const *expr_name,ExprTree *expr,
 		                              ClassAd &request,ClassAd *resource);
 
-		bool getGroupInfoFromUserId(const char* user, std::string& groupName, float& groupQuota, float& groupUsage);
+		bool getGroupInfoFromUserId(const char* user, std::string& groupName, double& groupQuota, double& groupUsage);
 
 		void forwardAccountingData(std::set<std::string> &names);
 		void forwardGroupAccounting(GroupEntry *ge);
@@ -112,11 +114,11 @@ class Matchmaker : public Service
 		void updateCollector();
 		
 		// auxillary functions
-		bool obtainAdsFromCollector (ClassAdList &allAds, ClassAdListDoesNotDeleteAds &startdAds, ClassAdListDoesNotDeleteAds &submitterAds, std::set<std::string> &submitterNames, ClaimIdHash &claimIds );	
+		bool obtainAdsFromCollector(ClassAdList &allAds, ClassAdListDoesNotDeleteAds &startdAds, std::vector<ClassAd *> &submitterAds, std::set<std::string> &submitterNames, ClaimIdHash &claimIds );	
 		char * compute_significant_attrs(ClassAdListDoesNotDeleteAds & startdAds);
-		bool consolidate_globaljobprio_submitter_ads(ClassAdListDoesNotDeleteAds & submitterAds) const;
+		bool consolidate_globaljobprio_submitter_ads(std::vector<ClassAd *>& submitterAds) const;
 
-		void SetupMatchSecurity(ClassAdListDoesNotDeleteAds &submitterAds);
+		void SetupMatchSecurity(std::vector<ClassAd *> &submitterAds);
 
 		/**
 		 * Start the network communication necessary for a negotiation cycle.
@@ -133,7 +135,7 @@ class Matchmaker : public Service
 		/**
 		 * Try starting negotiations with all schedds in parallel.
 		 */
-		void prefetchResourceRequestLists(ClassAdListDoesNotDeleteAds &submitterAds);
+		void prefetchResourceRequestLists(std::vector<ClassAd *> &submitterAds);
 		typedef std::map<std::string, classad_shared_ptr<ResourceRequestList> > RRLHash;
 		RRLHash m_cachedRRLs;
 
@@ -172,12 +174,14 @@ class Matchmaker : public Service
 		   bool ignore_schedd_limit, time_t deadline,
            int& numMatched, double &pieLeft);
 
-		int negotiateWithGroup ( int untrimmed_num_startds,
+		int negotiateWithGroup ( bool isFloorRound,
+								 int untrimmed_num_startds,
 								 double untrimmedSlotWeightTotal,
 								 double minSlotWeight,
-			ClassAdListDoesNotDeleteAds& startdAds, 
-			ClaimIdHash& claimIds, ClassAdListDoesNotDeleteAds& submitterAds, 
-			float groupQuota=INT_MAX, const char* groupName=NULL);
+								 ClassAdListDoesNotDeleteAds& startdAds, 
+								 ClaimIdHash& claimIds,
+								 std::vector<ClassAd *>& submitterAds, 
+								 double groupQuota=INT_MAX, const char* groupName=NULL);
 
 		
 		ClassAd *matchmakingAlgorithm(const char* submitterName, const char* scheddAddr, ClassAd& request, ClassAdListDoesNotDeleteAds& startdAds,
@@ -188,7 +192,7 @@ class Matchmaker : public Service
 		int matchmakingProtocol(ClassAd &request, ClassAd *offer, 
 						ClaimIdHash &claimIds, Sock *sock,
 						const char* submitterName, const char* scheddAddr);
-		void calculateNormalizationFactor (ClassAdListDoesNotDeleteAds &submitterAds, double &max, double &normalFactor,
+		void calculateNormalizationFactor (std::vector<ClassAd *> &submitterAds, double &max, double &normalFactor,
 										   double &maxAbs, double &normalAbsFactor);
 
 			// Take a submitter ad from the collector and apply any changes necessary.
@@ -228,6 +232,7 @@ class Matchmaker : public Service
 		                          double normalFactor,
 		                          double normalAbsFactor,
 								  double slotWeightTotal,
+								  bool isFloorRound,
 		                            /* result parameters: */
 								  double &submitterLimit,
                                   double& submitterLimitUnclaimed,
@@ -248,7 +253,7 @@ class Matchmaker : public Service
 			@param normalAbsFactor Normalization for prio factors
 			@param pieLeft Sum of submitterLimits
 		**/
-		void calculatePieLeft( ClassAdListDoesNotDeleteAds &submitterAds,
+		void calculatePieLeft( std::vector<ClassAd *> &submitterAds,
 		                       char const *groupAccountingName,
 		                       float groupQuota,
 				       float groupusage,
@@ -260,6 +265,7 @@ class Matchmaker : public Service
 		                            /* result parameters: */
 		                       double &pieLeft);
 
+		void findBelowFloorSubmitters(std::vector<ClassAd *> &submitterAds, std::vector<ClassAd*> &belowFloorSubmitters);
 			// rewrite the requirements expression to make matchmaking faster
 		void OptimizeMachineAdForMatchmaking(ClassAd *ad);
 
@@ -275,6 +281,8 @@ class Matchmaker : public Service
 		void updateNegCycleEndTime(time_t startTime, ClassAd *submitter);
 		friend int comparisonFunction (ClassAd *, ClassAd *,
 										void *);
+
+		friend struct submitterLessThan;
 
 		std::vector<std::pair<ClassAd*,ClassAd*> > unmutatedSlotAds;
 		std::map<std::string, ClassAd *> m_slotNameToAdMap;
@@ -299,17 +307,13 @@ class Matchmaker : public Service
 		bool SubmitterLimitPermits(ClassAd* request, ClassAd* candidate, double used, double allowed, double pieLeft);
 		double sumSlotWeights(ClassAdListDoesNotDeleteAds &startdAds,double *minSlotWeight, ExprTree* constraint);
 
-		/* ODBC insert functions */
-		void insert_into_rejects(char const *userName, ClassAd& job);
-		void insert_into_matches(char const *userName, ClassAd& request, ClassAd& offer);
-
 			// Returns a pslot to the match list (after consumption policies have been applied).
 			// Recalculates ranks and re-sorts match list.
 			// ASSUMES NO_PREEMPTION for pslots.
 		bool returnPslotToMatchList(ClassAd &request, ClassAd *offer);
 
 
-		void RegisterAttemptedOfflineMatch( ClassAd *job_ad, ClassAd *startd_ad );
+		void RegisterAttemptedOfflineMatch( ClassAd *job_ad, ClassAd *startd_ad, const char *schedd_addr );
 
 		// configuration information
 		char *AccountantHost;		// who (if at all) is the accountant?

@@ -44,12 +44,10 @@ schedd_main.cpp
 schedd_negotiate.cpp
 ScheddPluginManager.cpp
 schedd_stats.cpp
-schedd_td.cpp
-tdman.cpp
 transfer_queue.cpp
 )
 
 condor_daemon( EXE condor_schedd SOURCES "${scheddElements}"
-  LIBRARIES "${CONDOR_LIBS};${CONDOR_QMF}" INSTALL "${C_SBIN}")
+  LIBRARIES "${CONDOR_LIBS}" INSTALL "${C_SBIN}")
 
 set( QMGMT_UTIL_SRCS "${qmgmtElements};${CMAKE_CURRENT_SOURCE_DIR}/qmgmt_common.cpp" PARENT_SCOPE )

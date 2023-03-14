@@ -21,8 +21,12 @@
 #include "classad/operators.h"
 #include "classad/sink.h"
 #include "classad/util.h"
+#include <limits>
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+
 
 #include <algorithm>
 namespace classad {
@@ -427,7 +431,7 @@ _doOperation (OpKind op, Value &val1, Value &val2, Value &val3,
 			val2.IsStringValue(index);
 			
             if (!classad->Lookup(index)) {
-				result.SetErrorValue();
+				result.SetUndefinedValue();
 				return SIG_CHLD2;
             }
 			if (!classad->EvaluateAttr(index, result)) {
@@ -1144,18 +1148,29 @@ doArithmetic (OpKind op, Value &v1, Value &v2, Value &result)
 					return( SIG_CHLD1 | SIG_CHLD2 );
 
 				case DIVISION_OP:		
-					if (i2 != 0) {
-						result.SetIntegerValue(i1/i2);
+					// Don't throw SIGFPE for LONG_MIN / -1
+					if ((i1 == std::numeric_limits<int64_t>::min()) && (i2 == -1)) { 
+							// Off by one, but what else could you do?
+							result.SetIntegerValue(std::numeric_limits<int64_t>::max());
 					} else {
-						result.SetErrorValue ();
+						if (i2 != 0) {
+							result.SetIntegerValue(i1/i2);
+						} else {
+							result.SetErrorValue ();
+						}
 					}
 					return( SIG_CHLD1 | SIG_CHLD2 );
 					
 				case MODULUS_OP:
-					if (i2 != 0) {
-						result.SetIntegerValue(i1%i2);
+					// Don't throw SIGFPE for LONG_MIN % -1
+					if ((i1 == std::numeric_limits<int64_t>::min()) && (i2 == -1)) { 
+							result.SetIntegerValue(0);
 					} else {
-						result.SetErrorValue ();
+						if (i2 != 0) {
+							result.SetIntegerValue(i1%i2);
+						} else {
+							result.SetErrorValue ();
+						}
 					}
 					return( SIG_CHLD1 | SIG_CHLD2 );
 							
@@ -1184,7 +1199,8 @@ doArithmetic (OpKind op, Value &v1, Value &v2, Value &result)
 int Operation::
 doLogical (OpKind op, Value &v1, Value &v2, Value &result)
 {
-	bool		b1, b2;
+	bool		b1 = false;
+	bool		b2 = false;;
 
 		// first coerece inputs to boolean if they are considered equivalent
 	if( !v1.IsBooleanValue( b1 ) && v1.IsBooleanValueEquiv( b1 ) ) {

@@ -42,10 +42,12 @@
 #define ATTR_AGGREGATE_GROUP "AggregateGroup"
 #define ATTR_IP "IP"
 #define ATTR_SCALE "Scale"
+#define ATTR_LIFETIME "Lifetime"
 
 Metric::Metric():
 	derivative(false),
 	verbosity(0),
+	lifetime(-1),
     scale(1.0),
 	type(AUTO),
 	aggregate(NO_AGGREGATE),
@@ -67,7 +69,7 @@ Metric::whichMetric() const {
 }
 
 bool
-Metric::evaluate(char const *attr_name,classad::Value &result,classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,MetricTypeEnum type,ExtArray<std::string> *regex_groups,char const *regex_attr) const
+Metric::evaluate(char const *attr_name,classad::Value &result,classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,MetricTypeEnum type,std::vector<std::string> *regex_groups,char const *regex_attr) const
 {
 	bool retval = true;
 	ExprTree *expr = NULL;
@@ -108,7 +110,7 @@ Metric::evaluate(char const *attr_name,classad::Value &result,classad::ClassAd &
 	expr->SetParentScope(&metric_ad);
 
 	// do regex macro substitutions
-	if( regex_groups && regex_groups->length() > 0 ) {
+	if( regex_groups && regex_groups->size() > 0 ) {
 		std::string str_value;
 		if( result.IsStringValue(str_value) && str_value.find("\\")!=std::string::npos ) {
 			std::string new_str_value;
@@ -123,7 +125,7 @@ Metric::evaluate(char const *attr_name,classad::Value &result,classad::ClassAd &
 						char *endptr = NULL;
 						long index = strtol(ch,&endptr,10);
 						ch = endptr;
-						if( index < regex_groups->length() ) {
+						if( index < (ssize_t) regex_groups->size() ) {
 							new_str_value += (*regex_groups)[index];
 						}
 					}
@@ -140,7 +142,7 @@ Metric::evaluate(char const *attr_name,classad::Value &result,classad::ClassAd &
 }
 
 bool
-Metric::evaluateOptionalString(char const *attr_name,std::string &result,classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,ExtArray<std::string> *regex_groups)
+Metric::evaluateOptionalString(char const *attr_name,std::string &result,classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,std::vector<std::string> *regex_groups)
 {
 	classad::Value val;
 	if( !evaluate(attr_name,val,metric_ad,daemon_ad,STRING,regex_groups) ) {
@@ -154,7 +156,7 @@ Metric::evaluateOptionalString(char const *attr_name,std::string &result,classad
 }
 
 bool
-Metric::evaluateDaemonAd(classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,int max_verbosity,StatsD *statsd,ExtArray<std::string> *regex_groups,char const *regex_attr)
+Metric::evaluateDaemonAd(classad::ClassAd &metric_ad,classad::ClassAd const &daemon_ad,int max_verbosity,StatsD *statsd,std::vector<std::string> *regex_groups,char const *regex_attr)
 {
 	if( regex_attr ) {
 		name = regex_attr;
@@ -166,6 +168,8 @@ Metric::evaluateDaemonAd(classad::ClassAd &metric_ad,classad::ClassAd const &dae
 		// avoid doing more work; this metric requires higher verbosity
 		return false;
 	}
+
+	metric_ad.EvaluateAttrInt(ATTR_LIFETIME, lifetime);
 
 	std::string target_type_str;
 	if( !evaluateOptionalString(ATTR_TARGET_TYPE,target_type_str,metric_ad,daemon_ad,regex_groups) ) return false;
@@ -210,16 +214,16 @@ Metric::evaluateDaemonAd(classad::ClassAd &metric_ad,classad::ClassAd const &dae
 		if( !evaluateOptionalString(ATTR_REGEX,regex,metric_ad,daemon_ad,NULL) ) return false;
 		if( !regex.empty() ) {
 			Regex re;
-			const char *errptr=NULL;
+			int errcode;
 			int erroffset=0;
-			if( !re.compile(regex.c_str(),&errptr,&erroffset,PCRE_ANCHORED) ) {
+			if( !re.compile(regex.c_str(),&errcode,&erroffset,PCRE2_ANCHORED) ) {
 				EXCEPT("Invalid regex %s",regex.c_str());
 			}
 			for( classad::ClassAd::const_iterator itr = daemon_ad.begin();
 				 itr != daemon_ad.end();
 				 itr++ )
 			{
-				ExtArray<std::string> the_regex_groups;
+				std::vector<std::string> the_regex_groups;
 				if( re.match_str(itr->first.c_str(),&the_regex_groups) ) {
 					// make a new Metric for this attribute that matched the regex
 					std::shared_ptr<Metric> metric(statsd->newMetric());

@@ -18,14 +18,24 @@
 
 ##########################################################################
 # Set project
+cmake_minimum_required(VERSION 3.16)
 project(CONDOR LANGUAGES C CXX)
-cmake_minimum_required(VERSION 3.8)
 
-# Exactly c++ 11 for all platforms
-set(CMAKE_CXX_STANDARD 11)
+# Exactly c++ 20 for all platforms
+set(CMAKE_CXX_STANDARD 20) # when changing this, also change classad CMake
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(PREFER_CPP11 ON) # Still have some ifdefs on this
+
+# Remove warnings in cmake 3.24+.  This setting 
+# forces cmake to not update the timestamps on downloaded
+# tarballs.  The autoconf-built externals need this old setting
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.24)
+  cmake_policy(SET CMP0135 OLD)
+endif()
+ 
+# generate a compile_commands.json file which tools
+# like clang-tidy use
+SET(CMAKE_EXPORT_COMPILE_COMMANDS YES)
 
 ##########################################################################
 #Setup package meta-data (used in packaging)
@@ -37,7 +47,7 @@ set(TEST_PACKAGE "condor_tests")
 #   Condor and other systems parse this number. Keep it simple:
 #   Number.Number.Number. Do nothing else.  If you need to add
 #   more information, PRE_RELEASE is usually the right location.
-set(VERSION "9.9.0")
+set(VERSION "10.5.0")
 
 # Set PRE_RELEASE to either a string (i.e. "PRE-RELEASE-UWCS") or OFF
 #   This should be "PRE-RELEASE-UWCS" most of the time, "DAILY" for
@@ -82,7 +92,6 @@ include (CheckIncludeFiles)
 include (CheckFunctionExists)
 include (CheckSymbolExists)
 include (CheckStructHasMember)
-include (CheckTypeExists)
 include (CheckLibraryExists)
 include (CheckTypeSize)
 include (GetTimeDate)
@@ -98,11 +107,9 @@ include (CondorPlugin)
 include (CheckCCompilerFlag)
 include (CheckCXXCompilerFlag)
 include (CheckCXXSourceCompiles)
-include (AddSubdirectories)
 include (CTest)
 include (CondorPLTest)
 include (CondorExeTest)
-#include (CondorUnitTest)
 include (CondorPreExternal)
 include (CondorPostExternal)
 include (CondorConfigure)     # will initiate the configure
@@ -127,7 +134,7 @@ add_subdirectory (bindings/python)
 # logic here to support old nmi builds
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/_build/man")
 
-	if (NOT WANT_MAN_PAGES OR ${SPHINXBUILD} STREQUAL "SPHINXBUILD-NOTFOUND")
+	if (NOT WANT_MAN_PAGES OR "${SPHINXBUILD}" STREQUAL "SPHINXBUILD-NOTFOUND")
 		message(STATUS "NOTE: Skipping man-pages")
 	else()
 

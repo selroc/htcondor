@@ -45,19 +45,18 @@ CredDaemon::CredDaemon() : m_name(NULL), m_update_collector_tid(-1)
 	daemonCore->Register_Command( STORE_CRED, "STORE_CRED", 
 								&store_cred_handler, 
 								"store_cred_handler", WRITE, 
-								D_FULLDEBUG, true /*force authentication*/ );
+								true /*force authentication*/ );
 
 		// Command handler for daemons to get the password
 	daemonCore->Register_Command( CREDD_GET_PASSWD, "CREDD_GET_PASSWD", 
 								&cred_get_password_handler,
 								"cred_get_password_handler", DAEMON,
-								D_FULLDEBUG, true /*force authentication*/ );
+								true /*force authentication*/ );
 
 		// NOP command for testing authentication
 	daemonCore->Register_Command( CREDD_NOP, "CREDD_NOP",
 								(CommandHandlercpp)&CredDaemon::nop_handler,
-								"nop_handler", this, DAEMON,
-								D_FULLDEBUG );
+								"nop_handler", this, DAEMON );
 
 		// NOP command for testing authentication
 #if 1
@@ -65,15 +64,13 @@ CredDaemon::CredDaemon() : m_name(NULL), m_update_collector_tid(-1)
 #else
 	daemonCore->Register_Command( CREDD_REFRESH_ALL, "CREDD_REFRESH_ALL",
 								(CommandHandlercpp)&CredDaemon::refresh_all_handler,
-								"refresh_all_handler", this, DAEMON,
-								D_FULLDEBUG );
+								"refresh_all_handler", this, DAEMON );
 #endif
 
 		// See if creds are present for all modules requested
 	daemonCore->Register_Command( CREDD_CHECK_CREDS, "CREDD_CHECK_CREDS",
 								(CommandHandlercpp)&CredDaemon::check_creds_handler,
-								"check_creds_handler", this, WRITE,
-								D_FULLDEBUG, true);
+								"check_creds_handler", this, WRITE, true);
 
 		// set timer to periodically advertise ourself to the collector
 	daemonCore->Register_Timer(0, m_update_collector_interval,
@@ -252,7 +249,7 @@ CredDaemon::check_creds_handler( int, Stream* s)
 		is_cred_super_user = true;
 	}
 
-	ClassAdListDoesNotDeleteAds missing;
+	std::vector<ClassAd *> missing;
 	for(int i=0; i<numads; i++) {
 		std::string service;
 		std::string handle;
@@ -326,7 +323,7 @@ CredDaemon::check_creds_handler( int, Stream* s)
 		// if the file is not found, add this request to the collection of missing requests
 		if (rc==-1) {
 			dprintf(D_ALWAYS, "check_creds: did not find %s\n", tmpfname.c_str());
-			missing.Insert(&requests[i]);
+			missing.push_back(&requests[i]);
 		} else {
 			// check to see if new scopes and audience match previous cred
 			if (cred_matches(tmpfname, &requests[i]) == FAILURE_CRED_MISMATCH) {
@@ -343,7 +340,7 @@ CredDaemon::check_creds_handler( int, Stream* s)
 		}
 	}
 
-	if (missing.Length() > 0) {
+	if (!missing.empty()) {
 		// create unique request file with classad metadata
 		auto_free_ptr key(Condor_Crypt_Base::randomHexKey(32));
 
@@ -356,9 +353,7 @@ CredDaemon::check_creds_handler( int, Stream* s)
 
 		std::string contents; // what we will write to the credential directory for this URL
 
-		missing.Rewind();
-		ClassAd * req;
-		while ((req = missing.Next())) {
+		for (ClassAd *req: missing) {
 			// fill in everything we need to pass
 			ClassAd ad;
 			std::string tmpname;
@@ -461,7 +456,7 @@ CredDaemon::check_creds_handler( int, Stream* s)
 		std::string path;
 		dircat(cred_dir, key, path);
 
-		dprintf(D_ALWAYS, "check_creds: storing %zu bytes for %d services to %s\n", contents.length(), missing.Length(), path.c_str());
+		dprintf(D_ALWAYS, "check_creds: storing %zu bytes for %zu services to %s\n", contents.length(), missing.size(), path.c_str());
 		const bool as_root = false; // write as current user
 		const bool group_readable = true;
 		int rc = write_secure_file(path.c_str(), contents.c_str(), contents.length(), as_root, group_readable);
@@ -573,7 +568,7 @@ void main_shutdown_graceful()
 int
 main( int argc, char **argv )
 {
-	set_mySubSystem( "CREDD", SUBSYSTEM_TYPE_DAEMON );
+	set_mySubSystem( "CREDD", true, SUBSYSTEM_TYPE_DAEMON );
 
 	dc_main_init = main_init;
 	dc_main_config = main_config;

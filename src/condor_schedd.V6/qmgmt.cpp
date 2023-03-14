@@ -55,8 +55,10 @@
 #include "classad_helpers.h"
 #include "iso_dates.h"
 #include "jobsets.h"
+#include "exit.h"
 #include <algorithm>
 #include <param_info.h>
+#include <shortfile.h>
 
 #include "ScheddPlugin.h"
 
@@ -151,8 +153,35 @@ ClassAdLog<K,AD>::filter_iterator::operator++(int)
 }
 
 // force instantiation of the template types needed by the JobQueue
+#ifdef JOB_QUEUE_PAYLOAD_IS_BASE
+template <typename K, typename AD>
+class JobQueueCollection : public GenericClassAdCollection<K, AD>
+{
+public:
+	JobQueueCollection()
+		: GenericClassAdCollection<K, AD>(new ConstructClassAdLogTableEntry<JobQueuePayload>())
+		{}
+
+	bool Lookup(const JobQueueKey & k, JobQueuePayload & ad) {
+		return GenericClassAdCollection<K, AD>::Lookup(k, ad);
+	}
+
+	bool Lookup(const JobQueueKey & k, JobQueueJob* & job) {
+		job = nullptr;
+		AD b = nullptr;
+		if (Lookup(k, b) && k.cluster > 0 && k.proc >= -1) {
+			job = static_cast<JobQueueJob*>(b);
+			return true;
+		}
+		return false;
+	}
+};
+typedef JobQueueCollection<JobQueueKey, JobQueuePayload> JobQueueType;
+#else
 typedef GenericClassAdCollection<JobQueueKey, JobQueuePayload> JobQueueType;
+#endif
 template class ClassAdLog<JobQueueKey,JobQueuePayload>;
+
 
 extern char *Spool;
 extern char *Name;
@@ -188,6 +217,7 @@ static int next_proc_num = 0;
 static int jobs_added_this_transaction = 0;
 int active_cluster_num = -1;	// client is restricted to only insert jobs to the active cluster
 static bool JobQueueDirty = false;
+static bool in_DestroyJobQueue = false;
 static int in_walk_job_queue = 0;
 static time_t xact_start_time = 0;	// time at which the current transaction was started
 static int cluster_initial_val = 1;		// first cluster number to use
@@ -327,14 +357,6 @@ bool operator()(const prio_rec& a, const prio_rec& b) const
 
 	 /* here, all job_prios are both equal */
 
-	 /* check for job submit times */
-	 if( a.qdate < b.qdate ) {
-		  return true;
-	 }
-	 if( a.qdate > b.qdate ) {
-		  return false;
-	 }
-
 	 /* go in order of cluster id */
 	if ( a.id.cluster < b.id.cluster )
 		return true;
@@ -348,6 +370,46 @@ bool operator()(const prio_rec& a, const prio_rec& b) const
 		return false;
 
 	/* give up! very unlikely we'd ever get here */
+	return false;
+}
+};
+
+// Return the same comparison as above, but just comparing the submitter
+// field.  This allows us to binary search the PrioRecArray by submitter
+// Note the comparison up to the submitter must match the above
+struct prio_rec_submitter_lb {
+bool operator()(const prio_rec& a, const std::string &user) const {
+	if (a.submitter.length() < user.length()) {
+		return false;
+	}
+
+	if (a.submitter.length() > user.length()) {
+		return true;
+	}
+
+	if (a.submitter > user) {
+		return true;
+	}
+
+	return false;
+}
+};
+
+// The corresponding upper bound function, the negation of the above
+struct prio_rec_submitter_ub {
+bool operator()(const std::string &user, const prio_rec &a) const {
+	if (a.submitter.length() < user.length()) {
+		return true;
+	}
+
+	if (a.submitter.length() > user.length()) {
+		return false;
+	}
+
+	if (a.submitter < user) {
+		return true;
+	}
+
 	return false;
 }
 };
@@ -443,34 +505,32 @@ KeyToId(JobQueueKey &key,int & cluster,int & proc)
 }
 #endif
 
-static inline bool IsSpecialJobId( int cluster_id, int /* proc_id */ )
+static inline bool IsSpecialJobId( int cluster_id, int proc_id )
 {
 	// Return true if job id is special and should NOT be edited by
 	// the end user.  Currently this means job 0.0 (header ad) 
-	// and JobSet ads which are cluster 0 and a negative proc.
+	// and jobset ads <positive-integers>.-100
 	//
-	if (cluster_id == 0) {
+	if (cluster_id <= 0 || proc_id < -1) {
 		return true;
 	}
 
 	return false;
 }
 
-ClassAd* ConstructClassAdLogTableEntry<JobQueueJob*>::New(const char * key, const char * /* mytype */) const
+ClassAd* ConstructClassAdLogTableEntry<JobQueuePayload>::New(const char * key, const char * /* mytype */) const
 {
 	JOB_ID_KEY jid(key);
-	if (jid.cluster > 0 && jid.proc < 0) {
-		return new JobQueueCluster(jid);
-	} else 
-	if (jid.cluster > 0 && jid.proc >= 0) {
-		return new JobQueueJob();
+	if (jid.cluster > 0) {
+		if (jid.proc >= 0) {
+			return new JobQueueJob(jid);
+		} else if (jid.proc == CLUSTERID_qkey2) {
+			return new JobQueueCluster(jid);
+		} else if (jid.proc == JOBSETID_qkey2) {
+			return new JobQueueJobSet(qkey1_to_JOBSETID(jid.cluster));
+		}
 	}
-	else
-	if (jid.cluster == 0 && jid.proc < 0) {
-		return new JobQueueJobSet(qkey2_to_JOBSETID(jid.proc));
-	}
-	else
-		return new JobQueueBase();
+	return new JobQueueBase(jid, JobQueueBase::TypeOfJid(jid));
 }
 
 
@@ -570,33 +630,37 @@ JobQueueJob * JobQueueCluster::NextJob(JobQueueJob * job)
 
 // This is where we can clean up any data structures that refer to the job object
 void
-ConstructClassAdLogTableEntry<JobQueueJob*>::Delete(ClassAd* &ad) const
+ConstructClassAdLogTableEntry<JobQueuePayload>::Delete(ClassAd* &ad) const
 {
 	if ( ! ad) return;
-	JobQueueJob * job = (JobQueueJob*)ad;
-	if (job->jid.cluster > 0) {
-		if (job->jid.proc < 0) {
-			// this is a cluster, detach all jobs
-			JobQueueCluster * clusterad = static_cast<JobQueueCluster*>(job);
-			if (clusterad->HasAttachedJobs()) {
+	JobQueuePayload bad = dynamic_cast<JobQueuePayload>(ad);
+	if ( ! bad) {
+		delete ad;
+		return;
+	}
+	if (bad->IsCluster()) {
+		// this is a cluster, detach all jobs
+		JobQueueCluster * clusterad = static_cast<JobQueueCluster*>(bad);
+		if (clusterad->HasAttachedJobs()) {
+			if ( ! in_DestroyJobQueue) {
 				dprintf(D_ALWAYS, "WARNING - Cluster %d was deleted with proc ads still attached to it. This should only happen during schedd shutdown.\n", clusterad->jid.cluster);
-				clusterad->DetachAllJobs();
 			}
-		} else {
-			// this is a job
-			//PRAGMA_REMIND("tj: decrement autocluster use count here??")
+			clusterad->DetachAllJobs();
+		}
+	} else if (bad->IsJob()) {
+		JobQueueJob * job = static_cast<JobQueueJob*>(bad);
+		// this is a job
+		//PRAGMA_REMIND("tj: decrement autocluster use count here??")
 
-			// we do this here because DestroyProc could happen while we are in the middle of a transaction
-			// in which case the actual destruction would be delayed until the transaction commit. i.e. here...
-			IncrementLiveJobCounter(scheduler.liveJobCounts, job->Universe(), job->Status(), -1);
-			if (job->ownerinfo) { IncrementLiveJobCounter(job->ownerinfo->live, job->Universe(), job->Status(), -1); }
-
-			if (job->Cluster()) {
-				job->Cluster()->DetachJob(job);
-			}
+		// we do this here because DestroyProc could happen while we are in the middle of a transaction
+		// in which case the actual destruction would be delayed until the transaction commit. i.e. here...
+		IncrementLiveJobCounter(scheduler.liveJobCounts, job->Universe(), job->Status(), -1);
+		if (job->ownerinfo) { IncrementLiveJobCounter(job->ownerinfo->live, job->Universe(), job->Status(), -1); }
+		if (job->Cluster()) {
+			job->Cluster()->DetachJob(job);
 		}
 	}
-	delete job;
+	delete bad;
 }
 
 
@@ -652,16 +716,31 @@ ClusterCleanup(int cluster_id)
 	}
 }
 
-int GetSchedulerCapabilities(int /*mask*/, ClassAd & reply)
+int GetSchedulerCapabilities(int mask, ClassAd & reply)
 {
 	reply.Assign( "LateMaterialize", scheduler.getAllowLateMaterialize() );
 	reply.Assign("LateMaterializeVersion", 2);
+	bool use_jobsets = scheduler.jobSets ? true : false;
+	reply.Assign("UseJobsets", use_jobsets);
 	const ClassAd * cmds = scheduler.getExtendedSubmitCommands();
 	if (cmds && (cmds->size() > 0)) {
 		reply.Insert("ExtendedSubmitCommands", cmds->Copy());
 	}
-	dprintf(D_ALWAYS, "GetSchedulerCapabilities called, returning\n");
-	dPrintAd(D_ALWAYS, reply);
+	auto helpfile = scheduler.getExtendedSubmitHelpFile();
+	if ( ! helpfile.empty()) {
+		// if EXTENDED_SUBMIT_HELPFILE is not a URL, assume it is a small local file and return the content
+		if ((mask & GetsScheddCapabilities_F_HELPTEXT) && ! IsUrl(helpfile.c_str())) {
+			std::string contents;
+			htcondor::readShortFile(helpfile, contents);
+			reply.Assign("ExtendedSubmitHelp", contents);
+		} else {
+			reply.Assign("ExtendedSubmitHelpFile", helpfile);
+		}
+	}
+	if (IsDebugVerbose(D_COMMAND)) {
+		std::string buf;
+		dprintf(D_COMMAND | D_VERBOSE, "GetSchedulerCapabilities(%d) returning:\n%s", mask, formatAd(buf, reply, "\t"));
+	}
 	return 0;
 }
 
@@ -1432,9 +1511,9 @@ InitQmgmt()
 	std::string queue_super_user_may_impersonate;
 	if( param(queue_super_user_may_impersonate,"QUEUE_SUPER_USER_MAY_IMPERSONATE") ) {
 		queue_super_user_may_impersonate_regex = new Regex;
-		const char *errptr=NULL;
+		int errnumber;
 		int erroffset=0;
-		if( !queue_super_user_may_impersonate_regex->compile(queue_super_user_may_impersonate.c_str(),&errptr,&erroffset) ) {
+		if( !queue_super_user_may_impersonate_regex->compile(queue_super_user_may_impersonate.c_str(),&errnumber,&erroffset) ) {
 			EXCEPT("QUEUE_SUPER_USER_MAY_IMPERSONATE is an invalid regular expression: %s",queue_super_user_may_impersonate.c_str());
 		}
 	}
@@ -1713,13 +1792,14 @@ bool JobQueueJob::IsNoopJob()
 	return has_noop_attr && noop;
 }
 
-
-void JobQueueBase::SetJidAndType(const JOB_ID_KEY &key)
+void JobQueueBase::CheckJidAndType(const JOB_ID_KEY &key)
 {
-	jid = key;
-	if (jid.cluster == 0 && jid.proc == 0) entry_type = entry_type_header;
-	else if (jid.cluster == 0) entry_type = entry_type_jobset;
-	else if (jid.cluster > 0) entry_type = (jid.proc < 0) ? entry_type_cluster : entry_type_job;
+	if (key.cluster != jid.cluster || key.proc != jid.proc) {
+		dprintf(D_ERROR, "ERROR! - JobQueueBase jid is not initialized for %d.%d", key.cluster, key.proc);
+	}
+	if (TypeOfJid(key) != entry_type) {
+		dprintf(D_ERROR, "ERROR! - JobQueueBase entry_type (%d) is wrong type for %d.%d", entry_type, key.cluster, key.proc);
+	}
 }
 
 // After the job queue is loaded from disk, or a new job is submitted
@@ -1727,12 +1807,14 @@ void JobQueueBase::SetJidAndType(const JOB_ID_KEY &key)
 //
 void JobQueueBase::PopulateFromAd()
 {
+	// TODO: TJ remove this? it should be dead as of 9.10.0
 	if (!entry_type) {
 		if (!jid.cluster) {
 			this->LookupInteger(ATTR_CLUSTER_ID, jid.cluster);
 			this->LookupInteger(ATTR_PROC_ID, jid.proc);
 		}
-		SetJidAndType(jid);
+		entry_type = TypeOfJid(jid);
+		dprintf(D_ERROR, "WARNING - JobQueueBase has no entry_type set %d.%d", jid.cluster, jid.proc);
 	}
 }
 
@@ -1760,6 +1842,211 @@ void JobQueueJob::PopulateFromAd()
 #endif
 }
 
+// stuff we will need if we have to update the UID domain of the USER attribute as we load
+struct ownerinfo_init_state {
+	const char * prior_uid_domain;
+	const char * uid_domain;
+	bool update_uid_domain;
+};
+
+// helper function for InitJobQueue
+// sets the ownerinfo field in the JobQueueJob header
+// valid for use on JobQueueJob, JobQueueCluster and JobQueueJobSet ads
+static bool
+InitOwnerinfo(
+	JobQueueBase * bad,
+	std::string & owner,
+	const struct ownerinfo_init_state & is)
+{
+	// owner_history tracks the OS usernames that have
+	// been used to run jobs on this schedd; it's part of a
+	// security mechanism to prevent the schedd from executing
+	// as an OS user who has never submitted jobs.  Hence, we
+	// actually want to use ATTR_OWNER here and not ATTR_USER.
+	if (bad->LookupString(ATTR_OWNER, owner)) {
+		AddOwnerHistory(owner);
+	} else {
+		owner.clear();
+	}
+
+	// set the ownerinfo field 
+	if (user_is_the_new_owner) {
+		if (bad->LookupString(attr_JobUser, owner)) {
+			// if a PRIOR_UID_DOMAIN was configured, and ownerinfo is keyed by User
+			// we need to update the domain part of the User attribute before we use it as a key
+			if (is.update_uid_domain && user_is_the_new_owner) {
+				auto at_sign = owner.find_last_of('@');
+				if (at_sign != std::string::npos) {
+					const char * old_job_domain = owner.c_str() + at_sign + 1;
+					if (MATCH == strcasecmp(old_job_domain, is.prior_uid_domain)) {
+						owner.erase(at_sign + 1);
+						owner += is.uid_domain;
+						bad->Assign(ATTR_USER, owner);
+						JobQueueDirty = true;
+					}
+				}
+			}
+		} else {
+			owner.clear();
+		}
+	}
+
+	if (owner.empty())
+		return false;
+
+	OwnerInfo* ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(owner.c_str()));
+	if (bad->IsCluster() || bad->IsJob()) {
+		static_cast<JobQueueJob*>(bad)->ownerinfo = ownerinfo;
+	} else if (bad->IsJobSet()) {
+		static_cast<JobQueueJobSet*>(bad)->ownerinfo = ownerinfo;
+	}
+	return true;
+}
+
+// helper function for InitJobQueue
+// called during the first loop iteration, posibly ahead of iteration order
+// do NOT call if jobset->ownerinfo has already been set
+static bool
+InitJobsetAd(
+	JobQueueJobSet * jobset,
+	std::string & owner,
+	const struct ownerinfo_init_state & is)
+{
+	if ( ! InitOwnerinfo(jobset, owner, is))
+		return false;
+
+	if (scheduler.jobSets) {
+		scheduler.jobSets->restoreJobSet(jobset);
+	}
+	return true;
+}
+
+
+// helper function for InitJobQueue
+// called during the first loop iteration, posibly ahead of iteration order
+// do NOT call if cad->ownerinfo has already been set
+static bool
+InitClusterAd (
+	JobQueueCluster * cad,
+	std::string & owner,
+	const struct ownerinfo_init_state & is,
+	std::vector<unsigned int> & jobset_ids,
+	std::unordered_map<std::string, unsigned int> & needed_sets)
+{
+	std::string name1, name2;
+
+	if ( ! InitOwnerinfo(cad, owner, is))
+		return false;
+
+	cad->PopulateFromAd();
+
+	if ( ! scheduler.jobSets) {
+		cad->set_id = 0;
+		return true;
+	}
+
+	// do jobset sanity checking and build a map of jobsets that we need to create
+	//
+	if ( ! cad->LookupString(ATTR_JOB_SET_NAME, name1)) {
+		if (cad->set_id > 0) cad->Delete(ATTR_JOB_SET_ID);
+		cad->set_id = -1; // not in a jobset. remember that.
+	} else {
+		// verify the setid, and determine if we need to create a new jobset object
+		JobQueueJobSet * jobset = GetJobSetAd(cad->set_id);
+		if (jobset) {
+			// we might end up looking at the jobset ad before we iterate it, so make sure the ownerinfo is set
+			if ( ! jobset->ownerinfo) {
+				std::string owner2;
+				InitJobsetAd(jobset, owner2, is);
+				jobset_ids.push_back(jobset->Jobset());
+			}
+
+			// verify that the name of the jobset matches the name in the ad
+			jobset->LookupString(ATTR_JOB_SET_NAME, name2);
+			if (MATCH != strcasecmp(name1.c_str(), name2.c_str()) || jobset->ownerinfo != cad->ownerinfo) {
+				jobset = nullptr;
+			}
+		}
+
+		// we want a jobset, but don't know the id, so we add it to the map
+		// while also keeping track of the lowest cluster id that wants that setname/owner combo
+		if ( ! jobset) {
+			name2 = JobSets::makeAlias(name1, cad->ownerinfo->name);
+			unsigned int & setId = needed_sets[name2];
+			if (!setId || (setId > (unsigned) cad->jid.cluster)) { setId = cad->jid.cluster; }
+
+			// set set_id header field to 0 to mean 'figure out the id later'
+			// and if it was already set to non-zero,  that means the ad has a bogus attribute value
+			if (cad->set_id > 0) cad->Delete(ATTR_JOB_SET_ID);
+			cad->set_id = 0;
+		}
+	}
+	return true;
+}
+
+bool
+CreateNeededJobsets(
+	std::unordered_map<std::string, unsigned int> & needed_sets,  // map of jobset alias to lowest clusterid that needs that jobset
+	std::vector<unsigned int> & jobset_ids)
+{
+	int  fail_count = 0;
+	bool already_in_transaction = InTransaction();
+	if (!already_in_transaction) {
+		BeginTransaction();
+	}
+
+	// create the needed sets
+	for (auto it : needed_sets) {
+		const std::string & alias = it.first;
+		int cluster_id = it.second;
+		JobQueueCluster * cad = GetClusterAd(cluster_id);
+		if (! cad) {
+			// TODO: this is unexpected
+			dprintf(D_ERROR, "UNEXPECTED - no cluster ad for needed jobset id %d\n", cluster_id);
+			continue;
+		}
+		int jobset_id = cluster_id; // assume we will use the cluster id as the jobset id
+
+		// we don't expect there to be a jobset ad (yet), but if there is, we should check to see that the name is what we want.
+		JobQueueJobSet * sad = GetJobSetAd(jobset_id);
+		if (sad) {
+			std::string name2;
+			sad->LookupString(ATTR_JOB_SET_NAME, name2);
+			if (alias == JobSets::makeAlias(name2, sad->ownerinfo->name)) {
+				dprintf(D_FULLDEBUG, "need jobset id %d already has a jobset ad\n", jobset_id);
+				continue;
+			} else {
+				// allocate a new jobset id here
+				jobset_id = NewCluster();
+				dprintf(D_STATUS, "new jobset id %d allocated for %s\n", jobset_id, alias.c_str());
+				sad = nullptr;
+			}
+		}
+
+		std::string setname;
+		cad->LookupString(ATTR_JOB_SET_NAME, setname);
+		if ( ! JobSetCreate(jobset_id, setname.c_str(), cad->ownerinfo->Name())) {
+			++fail_count;
+			continue;
+		} else {
+			dprintf(D_STATUS, "Created new jobset %s for user %s.  jobset id = %d\n", setname.c_str(), cad->ownerinfo->Name(), jobset_id);
+			jobset_ids.push_back(jobset_id);
+			cad->set_id = jobset_id;
+			JobQueueDirty = true;
+		}
+	}
+
+	if ( ! already_in_transaction) {
+		if (fail_count) {
+			AbortTransaction();
+		} else {
+			CommitNonDurableTransactionOrDieTrying();
+		}
+	}
+
+	return fail_count == 0;
+}
+
 void
 InitJobQueue(const char *job_queue_name,int max_historical_logs)
 {
@@ -1775,7 +2062,11 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 	int spool_cur_version = 0;
 	CheckSpoolVersion(spool.c_str(),SPOOL_MIN_VERSION_SCHEDD_SUPPORTS,SPOOL_CUR_VERSION_SCHEDD_SUPPORTS,spool_min_version,spool_cur_version);
 
+#ifdef JOB_QUEUE_PAYLOAD_IS_BASE
+	JobQueue = new JobQueueType();
+#else
 	JobQueue = new JobQueueType(new ConstructClassAdLogTableEntry<JobQueuePayload>());
+#endif
 	if( !JobQueue->InitLogFile(job_queue_name,max_historical_logs) ) {
 		EXCEPT("Failed to initialize job queue log!");
 	}
@@ -1786,10 +2077,11 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 
 	/* We read/initialize the header ad in the job queue here.  Currently,
 	   this header ad just stores the next available cluster number. */
-	JobQueueJob *ad = NULL;
+	JobQueueBase *bad = nullptr;
 	JobQueueCluster *clusterad = NULL;
 	JobQueueKey key;
 	std::vector<unsigned int> jobset_ids;
+	std::unordered_map<std::string, unsigned int> needed_sets;
 	int 	cluster_num, cluster, proc, universe;
 	int		stored_cluster_num;
 	bool	CreatedAd = false;
@@ -1800,32 +2092,30 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 	std::string	attr_scheduler;
 	std::string correct_scheduler;
 	std::string buffer;
-	auto_free_ptr prior_uid_domain(param("PRIOR_UID_DOMAIN"));
-	const char * uid_domain = scheduler.uidDomain();
-	bool update_uid_domain = (prior_uid_domain && uid_domain && MATCH != strcasecmp(uid_domain, prior_uid_domain));
+	std::string name1;
 
-	if (!JobQueue->Lookup(HeaderKey, ad)) {
+	// setup stuff we will need if we have to update the UID domain of the USER attribute as we load
+	auto_free_ptr prior_uid_domain(param("PRIOR_UID_DOMAIN"));
+	struct ownerinfo_init_state ownerinfo_is;
+	ownerinfo_is.prior_uid_domain = prior_uid_domain;
+	ownerinfo_is.uid_domain = scheduler.uidDomain();
+	ownerinfo_is.update_uid_domain = false;
+	if (prior_uid_domain && ownerinfo_is.uid_domain && MATCH != strcasecmp(ownerinfo_is.uid_domain, prior_uid_domain)) {
+		ownerinfo_is.update_uid_domain = true;
+	}
+
+	if (!JobQueue->Lookup(HeaderKey, bad)) {
 		// we failed to find header ad, so create one
 		JobQueue->NewClassAd(HeaderKey, JOB_ADTYPE, STARTD_ADTYPE);
 		CreatedAd = true;
 	}
 
 	if (CreatedAd ||
-		ad->LookupInteger(ATTR_NEXT_CLUSTER_NUM, stored_cluster_num) != 1) {
+		bad->LookupInteger(ATTR_NEXT_CLUSTER_NUM, stored_cluster_num) != 1) {
 		// cluster_num is not already set, so we set a flag to set it from a
 		// computed value 
 		stored_cluster_num = 0;
 	}
-
-	if (ad && scheduler.jobSets) {
-		int stored_jobset_num = 1;
-		ad->LookupInteger(ATTR_NEXT_JOBSET_NUM, stored_jobset_num);
-		if (stored_jobset_num < 1) {
-			stored_jobset_num = 1;
-		}
-		scheduler.jobSets->setNextSetId(stored_jobset_num);
-	}
-
 
     // If a stored cluster id exceeds a configured maximum, tag it for re-computation
     if ((cluster_maximum_val > 0) && (stored_cluster_num > cluster_maximum_val)) {
@@ -1842,136 +2132,35 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 
 	next_cluster_num = cluster_initial_val;
 	JobQueue->StartIterateAllClassAds();
-	// TODO: re-work this code so that JobQueue->Iterate(key,ad) returns a JobQueueBase
-	while (JobQueue->Iterate(key,ad)) {
-		ad->SetJidAndType(key); // make sure that QueueBase object has correct jid and type fields
-#if 1
-		if (ad->IsHeader()) { continue; }
-		if (ad->IsCluster()) {
-			// owner_history tracks the OS usernames that have
-			// been used to run jobs on this schedd; it's part of a
-			// security mechanism to prevent the schedd from executing
-			// as an OS user who has never submitted jobs.  Hence, we
-			// actually want to use ATTR_OWNER here and not ATTR_USER.
-			if (ad->LookupString(ATTR_OWNER, owner)) {
-				AddOwnerHistory(owner);
-			}
-		}
+	while (JobQueue->Iterate(key,bad)) {
+		bad->CheckJidAndType(key); // make sure that QueueBase object has correct jid and type fields
+		if (bad->IsHeader()) { continue; }
+
 		// populate the ownerinfo for cluster ads and jobset ads,
 		// we can't do proc ads yet because we have not yet chained them to the clusters
-		if (ad->IsCluster() || ad->IsJobSet()) {
-			// HACK! for now, because this might be a JobQueueJobSet ad, we have to downcast to  JobQueueBase
-			JobQueueBase * bad = static_cast<JobQueueBase*>(ad);
-			// set the ownerinfo field 
-			if (bad->LookupString(attr_JobUser, owner)) {
-				// if a PRIOR_UID_DOMAIN was configured, and ownerinfo is keyed by User
-				// we need to update the domain part of the User attribute before we use it as a key
-				if (update_uid_domain && user_is_the_new_owner) {
-					auto at_sign = owner.find_last_of('@');
-					if (at_sign != std::string::npos) {
-						const char * old_job_domain = owner.c_str() + at_sign + 1;
-						if (MATCH == strcasecmp(old_job_domain, prior_uid_domain)) {
-							owner.erase(at_sign + 1);
-							owner += uid_domain;
-							bad->Assign(ATTR_USER, owner);
-							JobQueueDirty = true;
-						}
-					}
-				}
-				OwnerInfo* ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(owner.c_str()));
-				if (ad->IsCluster()) {
-					static_cast<JobQueueCluster*>(bad)->ownerinfo = ownerinfo;
-				} else if (ad->IsJobSet()) {
-					static_cast<JobQueueJobSet*>(bad)->ownerinfo = ownerinfo;
-				}
+		if (bad->IsJobSet()) {
+			JobQueueJobSet * sad = static_cast<JobQueueJobSet*>(bad);
+			// we init jobset ads the first time we need them, which might be *before* we iterate them
+			// so we use a null ownerinfo pointer as a signal that we havent handled this ad yet
+			if ( ! sad->ownerinfo) {
+				InitJobsetAd(sad, owner, ownerinfo_is);
+				jobset_ids.push_back(sad->Jobset());
 			}
-
-#if 0
-			// hack to fixup set ads that are missing quotes for name and owner values
-			if (ad->IsJobSet()) {
-				classad::ExprTree * tree = bad->Lookup(ATTR_JOB_SET_NAME);
-				if (ExprTreeIsAttrRef(SkipExprEnvelope(tree), owner)) {
-					bad->Assign(ATTR_JOB_SET_NAME, owner);
-					JobQueueDirty = true;
-				}
-				tree = bad->Lookup(ATTR_OWNER);
-				if (ExprTreeIsAttrRef(SkipExprEnvelope(tree), owner)) {
-					bad->Assign(ATTR_OWNER, owner);
-					JobQueueDirty = true;
-					OwnerInfo* ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(owner.c_str()));
-					static_cast<JobQueueJobSet*>(bad)->ownerinfo = ownerinfo;
-				}
-			}
-#endif
-
-			if (ad->IsCluster()) {
-				JobQueueCluster * cad = static_cast<JobQueueCluster*>(bad);
-				cad->PopulateFromAd();
-				if (cad->set_id > 0 && ! scheduler.jobSets) {
-					cad->Delete(ATTR_JOB_SET_ID);
-					cad->set_id = 0;
-				}
-			} else if (ad->IsJobSet()) {
-				jobset_ids.push_back(qkey2_to_JOBSETID(key.proc));
-				if (scheduler.jobSets) {
-					scheduler.jobSets->restoreJobSet(static_cast<JobQueueJobSet*>(bad));
-				}
-			}
-
-			continue;  // done with cluster & jobset ads
+			continue; // done with this jobset ad for the first pass
 		}
-#else
-		if (key.cluster <= 0 || key.proc < 0 ) {
 
-			// make ownerinfo structs by looking at all cluster ads
-			if (key.cluster > 0) {
-				if ( ! ad->ownerinfo) {
-					if (ad->LookupString(attr_JobUser, owner)) {
-						// if a PRIOR_UID_DOMAIN was configured, and ownerinfo is keyed by User
-						// we need to update the domain part of the User attribute before we use it as a key
-						if (update_uid_domain && user_is_the_new_owner) {
-							auto at_sign = owner.find_last_of('@');
-							if (at_sign != std::string::npos) {
-								const char * old_job_domain = owner.c_str() + at_sign + 1;
-								if (MATCH == strcasecmp(old_job_domain, prior_uid_domain)) {
-									owner.erase(at_sign + 1);
-									owner += uid_domain;
-									ad->Assign(ATTR_USER, owner);
-									JobQueueDirty = true;
-								}
-							}
-						}
-						ad->ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(owner.c_str()));
-						// owner_history tracks the OS usernames that have
-						// been used to run jobs on this schedd; it's part of a
-						// security mechanism to prevent the schedd from executing
-						// as an OS user who has never submitted jobs.  Hence, we
-						// actually want to use ATTR_OWNER here and not ATTR_USER.
-						if (user_is_the_new_owner) { ad->LookupString(ATTR_OWNER, owner);}
-						AddOwnerHistory( owner );
-					}
-				}
+		if (bad->IsCluster()) {
+			JobQueueCluster * cad = static_cast<JobQueueCluster*>(bad);
+			if ( ! cad->ownerinfo) {
+				InitClusterAd(cad, owner, ownerinfo_is, jobset_ids, needed_sets);
 			}
-
-			// set entry_type and some other JobQueueBase and JobQueueJob data members
-			ad->PopulateFromAd();
-
-			// if this ad represents a job set, create that job set
-			if (ad->IsJobSet()) {
-				if (scheduler.jobSets) {
-					scheduler.jobSets->restoreJobSet(ad);
-				} else {
-					JOB_ID_KEY_BUF job_id(key);
-					dprintf(D_FULLDEBUG, "JobSets disabled, removing JobSet state for id %s\n",
-						job_id.c_str());
-					JobQueue->DestroyClassAd(job_id);
-				}
-			}
-
-			continue;  // done with cluster & header ads
+			continue;  // done with this cluster ad for the first pass
 		}
-#endif
+		if ( ! bad->IsJob()) continue;
+
 		cluster_num = key.cluster;
+
+		JobQueueJob *ad = static_cast<JobQueueJob*>(bad);
 
 		// this brace isn't needed anymore, it's here to avoid re-indenting all of the code below.
 		{
@@ -1982,16 +2171,48 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 				next_cluster_num = cluster_num + cluster_increment_val;
 			}
 
+				// make sure that the cluster ad's jobset id and name are visible in the job ad
+			ad->set_id = 0;
+			ad->Delete(ATTR_JOB_SET_ID);
+			ad->Delete(ATTR_JOB_SET_NAME);
+
+				// Update fields in the newly created JobObject
+			ad->autocluster_id = -1;
+			ad->Delete(ATTR_AUTO_CLUSTER_ID);
+
 			// link all proc ads to their cluster ad, if there is one
-#if 1
 			clusterad = GetClusterAd(cluster_num);
-			ad->ChainToAd(clusterad);
-#else
-			IdToKey(cluster_num,-1,cluster_key);
-			if ( JobQueue->Lookup(cluster_key,clusterad) ) {
+			if (clusterad) {
+				if ( ! clusterad->ownerinfo) {
+					InitClusterAd(clusterad, owner, ownerinfo_is, jobset_ids, needed_sets);
+				}
+				clusterad->AttachJob(ad);
+				clusterad->autocluster_id = -1;
 				ad->ChainToAd(clusterad);
+				ad->ownerinfo = clusterad->ownerinfo;
+				ad->SetUniverse(clusterad->Universe());
+				ad->set_id = clusterad->set_id; // cluster ad may not have the right id yet, but it's still ok to copy it
 			}
-#endif
+			ad->PopulateFromAd();
+
+			// sanity check some immutable attributes
+			if (!ad->LookupInteger(ATTR_CLUSTER_ID, cluster)) {
+				dprintf(D_ALWAYS,
+						"Job %s has no %s attribute.  Removing....\n",
+						job_id.c_str(), ATTR_CLUSTER_ID);
+				JobQueue->DestroyClassAd(job_id);
+				continue;
+			}
+
+			if ((cluster != cluster_num) || ! clusterad) {
+				dprintf(D_ALWAYS,
+						"Job %s has invalid cluster number %d.  Removing...\n",
+						job_id.c_str(), cluster);
+				JobQueue->DestroyClassAd(job_id);
+				continue;
+			}
+
+
 			user.clear();
 			if (!ad->LookupString(ATTR_OWNER, owner) || ( !ad->LookupString(ATTR_USER, user) && user_is_the_new_owner)) {
 				dprintf(D_ALWAYS,
@@ -2000,25 +2221,9 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 				JobQueue->DestroyClassAd(job_id);
 				continue;
 			}
-			// if a PRIOR_UID_DOMAIN was configured, change the domain part of any User attributes
-			if (update_uid_domain && !user.empty()) {
-				auto at_sign = user.find_last_of('@');
-				if (at_sign != std::string::npos) {
-					const char * old_job_domain = user.c_str() + at_sign + 1;
-					if (MATCH == strcasecmp(old_job_domain, prior_uid_domain)) {
-						user.erase(at_sign + 1);
-						user += uid_domain;
-						ad->Assign(ATTR_USER, user);
-						JobQueueDirty = true;
-					}
-				}
-			}
-			if (user_is_the_new_owner) {
-				// user attribute is correct or we don't get here
-				// PRAGMA_REMIND("Owner/User remove nice-user prefix in case we are converting an old queue?")
-				ad->ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(user.c_str()));
-			} else {
-				ad->ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(owner.c_str()));
+
+			// TODO: shouldn't this be happening to the cluster ad?
+			if ( ! user_is_the_new_owner) {
 
 				// Figure out what ATTR_USER *should* be for this job
 				#ifdef NO_DEPRECATE_NICE_USER
@@ -2052,28 +2257,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 				}
 			}
 
-				// initialize our list of job owners
-				// PRAGMA_REMIND("TODO: kill OwnerHistory, and use ownerinfo collection instead")
-			AddOwnerHistory(owner);
-			if (clusterad)
-				clusterad->ownerinfo = ad->ownerinfo;
-
-			if (!ad->LookupInteger(ATTR_CLUSTER_ID, cluster)) {
-				dprintf(D_ALWAYS,
-						"Job %s has no %s attribute.  Removing....\n",
-						job_id.c_str(), ATTR_CLUSTER_ID);
-				JobQueue->DestroyClassAd(job_id);
-				continue;
-			}
-
-			if (cluster != cluster_num) {
-				dprintf(D_ALWAYS,
-						"Job %s has invalid cluster number %d.  Removing...\n",
-						job_id.c_str(), cluster);
-				JobQueue->DestroyClassAd(job_id);
-				continue;
-			}
-
 			if (!ad->LookupInteger(ATTR_PROC_ID, proc)) {
 				dprintf(D_ALWAYS,
 						"Job %s has no %s attribute.  Removing....\n",
@@ -2098,20 +2281,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 				JobQueue->DestroyClassAd( job_id );
 				continue;
 			}
-
-			// If jobsets are disabled, delete the set id attributes before we populate
-			if ( ! scheduler.jobSets) { ad->Delete(ATTR_JOB_SET_ID); ad->set_id = 0; }
-
-				// Update fields in the newly created JobObject
-			ad->autocluster_id = -1;
-			ad->Delete(ATTR_AUTO_CLUSTER_ID);
-			ad->SetUniverse(universe);
-			if (clusterad) {
-				clusterad->AttachJob(ad);
-				clusterad->SetUniverse(universe);
-				clusterad->autocluster_id = -1;
-			}
-			ad->PopulateFromAd();
 
 			int job_status = 0;
 			if (ad->LookupInteger(ATTR_JOB_STATUS, job_status)) {
@@ -2227,15 +2396,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 					JobQueueDirty = true;
 				}
 			}
-			// AsyncXfer: Delete in-job output transfer attributes
-			if( ad->LookupInteger(ATTR_JOB_TRANSFERRING_OUTPUT,transferring_output) ) {
-				ad->Delete(ATTR_JOB_TRANSFERRING_OUTPUT);
-				JobQueueDirty = true;
-			}
-			if( ad->LookupInteger(ATTR_JOB_TRANSFERRING_OUTPUT_TIME,transferring_output) ) {
-				ad->Delete(ATTR_JOB_TRANSFERRING_OUTPUT_TIME);
-				JobQueueDirty = true;
-			}
 			if( ad->LookupString(ATTR_CLAIM_ID, buffer) ) {
 				ad->Delete(ATTR_CLAIM_ID);
 				PrivateAttrs[key][ATTR_CLAIM_ID] = buffer;
@@ -2243,10 +2403,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 			if( ad->LookupString(ATTR_CLAIM_IDS, buffer) ) {
 				ad->Delete(ATTR_CLAIM_IDS);
 				PrivateAttrs[key][ATTR_CLAIM_IDS] = buffer;
-			}
-			if( ad->LookupString(ATTR_PAIRED_CLAIM_ID, buffer) ) {
-				ad->Delete(ATTR_PAIRED_CLAIM_ID);
-				PrivateAttrs[key][ATTR_PAIRED_CLAIM_ID] = buffer;
 			}
 
 			// count up number of procs in cluster, update ClusterSizeHashTable
@@ -2256,35 +2412,51 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 		}
 	} // WHILE
 
-	// If JobSets enabled, scan again to add jobs into jobSets runtime structures
+	// If JobSets enabled, scan again to create needed jobsets and add jobs into jobSets runtime structures
 	if (scheduler.jobSets) {
 		dprintf(D_FULLDEBUG, "Restoring JobSet state\n");
-		unsigned int updates = 0;
-		std::vector<unsigned int> new_ids;
-		JobQueue->StartIterateAllClassAds();
-		while (JobQueue->Iterate(ad)) {
-			// if job or cluster has an existing setid, validate it
-			// and if it is not valid, clear it and let the jobsets code make a new set
-			if (ad->set_id > 0) {
-				JobQueueJobSet * jobset = GetJobSetAd(ad->set_id);
-				if ( ! jobset || (ad->ownerinfo != jobset->ownerinfo)) {
-					ad->set_id = 0;
+
+		if ( ! needed_sets.empty()) {
+			// make sure that sets we "need" to create weren't just sets we had not initialized yet
+			auto it = needed_sets.begin();
+			for ( ; it != needed_sets.end(); ) {
+				if (scheduler.jobSets->find(it->first)) {
+					it = needed_sets.erase(it);
 				} else {
-					std::string name1, name2;
-					ad->LookupString(ATTR_JOB_SET_NAME, name1);
-					jobset->LookupString(ATTR_JOB_SET_NAME, name2);
-					if (MATCH != strcasecmp(name1.c_str(), name2.c_str())) {
-						ad->set_id = 0;
-					}
+					++it;
 				}
 			}
-			// add job into jobset aggregates and membership
-			bool was_in_set = ad->set_id > 0;
-			if (scheduler.jobSets->addJobToSet(*ad, new_ids)) {
-				updates++;
-				if ( ! was_in_set && ad->set_id > 0) {
-					// job set membership was just updated as a result of queue initialize
-					ad->Assign(ATTR_JOB_SET_ID, ad->set_id);
+			if ( ! needed_sets.empty()) {
+				// create jobsets we detected were needed during the first pass 
+				dprintf(D_STATUS, "Creating %d JobSets that are needed but did not already exist\n", (int)needed_sets.size());
+				CreateNeededJobsets(needed_sets, jobset_ids);
+			}
+		}
+
+		unsigned int updates = 0;
+
+		// walk the job queue again, initializing the jobset counters
+		// the set_id field of the job may or may not have been set correctly
+		// and the jobset objects have not yet counted anything, we do that now.
+		JobQueue->StartIterateAllClassAds();
+		while (JobQueue->Iterate(bad)) {
+			if (!bad->IsJob() && !bad->IsCluster()) continue;
+
+			JobQueueJob * job = static_cast<JobQueueJob*>(bad);
+			if (job->IsJob()) {
+				// in most cases, we can init the set_id for the job from the cluster header
+				// because we iterate in hashtable order, this is not 100% but it's faster when it works
+				job->set_id = job->Cluster()->set_id;
+			}
+			if (job->set_id < 0) continue;
+
+			if (scheduler.jobSets->addToSet(*job)) {
+				if (job->IsCluster()) {
+					// for cluster ads, write the set_id into the ad
+					job->Assign(ATTR_JOB_SET_ID, job->set_id);
+				} else {
+					// we only count job updates to avoid confusing things below
+					++updates;
 				}
 			}
 		}
@@ -2298,18 +2470,21 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 			}
 		}
 
-		dprintf(D_ALWAYS, "Finished restoring JobSet state, %d new sets, %d removed sets, mapped %u jobs into %zu sets\n",
-			(int)new_ids.size(), num_removed, updates, scheduler.jobSets->count());
+		dprintf(D_STATUS, "Finished restoring JobSet state, %d new sets, %d removed sets, mapped %u jobs into %zu sets\n",
+			(int)needed_sets.size(), num_removed, updates, scheduler.jobSets->count());
 
 	} else {
 		// jobsets disabled 
 		if ( ! jobset_ids.empty()) {
-			// TODO: maybe remove this code when we are sure the sets code is stable?
-			for (auto set_id : jobset_ids) {
-				JobQueueJobSet * jobset = GetJobSetAd(set_id);
-				if (jobset) { JobQueue->DestroyClassAd(jobset->jid); }
+			if (param_boolean("PURGE_JOBSETS", false)) {
+				for (auto set_id : jobset_ids) {
+					JobQueueJobSet * jobset = GetJobSetAd(set_id);
+					if (jobset) { JobQueue->DestroyClassAd(jobset->jid); }
+				}
+				dprintf(D_STATUS, "JobSets disabled, removed JobSet state for %d jobsets\n", (int)jobset_ids.size());
+			} else {
+				dprintf(D_STATUS, "JobSets disabled, but %d exist. They will be ignored.\n", (int)jobset_ids.size());
 			}
-			dprintf(D_ALWAYS, "JobSets disabled, removed JobSet state for %d jobsets\n", (int)jobset_ids.size());
 		}
 	}
 
@@ -2405,6 +2580,8 @@ CleanJobQueue()
 void
 DestroyJobQueue( void )
 {
+	in_DestroyJobQueue = true;
+
 	// Clean up any children that have exited but haven't been reaped
 	// yet.  This can occur if the schedd receives a query followed
 	// immediately by a shutdown command.  The child will exit but
@@ -2432,6 +2609,7 @@ DestroyJobQueue( void )
 
 	delete queue_super_user_may_impersonate_regex;
 	queue_super_user_may_impersonate_regex = NULL;
+	in_DestroyJobQueue = false;
 }
 
 
@@ -3245,63 +3423,6 @@ handle_q(int cmd, Stream *sock)
 	return 0;
 }
 
-int GetMyProxyPassword (int, int, char **);
-
-int get_myproxy_password_handler(int /*i*/, Stream *socket) {
-
-	//	For debugging
-//	DebugFP = stderr;
-
-	int cluster_id = -1;
-	int proc_id = -1;
-	int result;
-
-	socket->decode();
-
-	result = socket->code(cluster_id);
-	if( !result ) {
-		dprintf(D_ALWAYS, "get_myproxy_password_handler: Failed to recv cluster_id.\n");
-		return -1;
-	}
-
-	result = socket->code(proc_id);
-	if( !result ) {
-		dprintf(D_ALWAYS, "get_myproxy_password_handler: Failed to recv proc_id.\n");
-		return -1;
-	}
-
-	char pwd[] = "";
-	char * password = pwd;
-
-	if (GetMyProxyPassword (cluster_id, proc_id, &password) != 0) {
-		// Try not specifying a proc
-		if (GetMyProxyPassword (cluster_id, 0, &password) != 0) {
-			//return -1;
-			// Just return empty string if can't find password
-		}
-	}
-
-
-	socket->end_of_message();
-	socket->encode();
-	if( ! socket->code(password) ) {
-		dprintf( D_ALWAYS,
-			"get_myproxy_password_handler: Failed to send result.\n" );
-		return -1;
-	}
-
-	if( ! socket->end_of_message() ) {
-		dprintf( D_ALWAYS,
-			"get_myproxy_password_handler: Failed to send end of message.\n");
-		return -1;
-	}
-
-
-	return 0;
-
-}
-
-
 int
 InitializeConnection( const char *  /*owner*/, const char *  /*domain*/ )
 {
@@ -3519,6 +3640,8 @@ typedef struct attr_force_pair {
 #define FILL(attr,force) { attr, force }
 static const ATTR_FORCE_PAIR aForcedSetAttrs[] = {
 	FILL(ATTR_CLUSTER_ID,         -1), // forced into cluster ad
+	FILL(ATTR_JOB_SET_ID,         -1), // forced into cluster ad
+	FILL(ATTR_JOB_SET_NAME,       -1), // forced into cluster ad
 	FILL(ATTR_JOB_STATUS,         1),  // forced into proc ad
 	FILL(ATTR_JOB_UNIVERSE,       -1), // forced into cluster ad
 	FILL(ATTR_OWNER,              -1), // forced into cluster ad
@@ -3678,8 +3801,6 @@ int NewProcFromAd (ClassAd * job, int ProcId, JobQueueJob * ClusterAd, SetAttrib
 
 #endif // 0
 
-int 	DestroyMyProxyPassword (int cluster_id, int proc_id);
-
 int DestroyProc(int cluster_id, int proc_id)
 {
 	JobQueueKeyBuf		key;
@@ -3778,9 +3899,6 @@ int DestroyProc(int cluster_id, int proc_id)
 	if ( ! clusterad) {
 		clusterad = GetClusterAd(ad->jid);
 	}
-
-	// ckireyev: Destroy MyProxyPassword
-	(void)DestroyMyProxyPassword (cluster_id, proc_id);
 
 	JobQueue->DestroyClassAd(key);
 
@@ -3970,9 +4088,6 @@ int DestroyCluster(int /*cluster_id*/, const char* /*reason*/)
 	}
 
 	ClusterCleanup(cluster_id);
-	
-	// Destroy myproxy password
-	DestroyMyProxyPassword (cluster_id, -1);
 
 	JobQueueDirty = true;
 
@@ -4050,15 +4165,8 @@ SetAttributeByConstraint(const char *constraint_str, const char *attr_name,
 	// loop through the job queue, setting attribute on jobs that match
 	JobQueue->StartIterateAllClassAds();
 	while(JobQueue->IterateAllClassAds(ad,key)) {
+		if (IsSpecialJobId(key.cluster,key.proc)) continue; // skip non-editable ads
 		JobQueueJob * job = static_cast<JobQueueJob*>(ad);
-
-		// ignore header and ads.
-		if (job->IsHeader())
-			continue;
-
-		// ignore jobset ads
-		if (job->IsJobSet())
-			continue;
 
 		// ignore cluster ads unless the PostSubmitClusterChange flag is set.
 		if (job->IsCluster() && ! (flags & SetAttribute_PostSubmitClusterChange))
@@ -5434,192 +5542,6 @@ SetTimerAttribute( int cluster, int proc, const char *attr_name, int dur )
 	return rc;
 }
 
-char * simple_encode (int key, const char * src);
-char * simple_decode (int key, const char * src);
-
-// Store a simply-encoded attribute
-int
-SetMyProxyPassword (int cluster_id, int proc_id, const char *pwd) {
-
-	// This is sortof a hack
-	if (proc_id == -1)	{
-		proc_id = 0;
-	}
-
-	// Create filename
-	std::string filename;
-	formatstr( filename, "%s/mpp.%d.%d", Spool, cluster_id, proc_id);
-
-	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-	// Delete the file
-	struct stat stat_buff;
-	if (stat (filename.c_str(), &stat_buff) == 0) {
-		// If the file exists, delete it
-		if (unlink (filename.c_str()) && errno != ENOENT) {
-			set_priv(old_priv);
-			return -1;
-		}
-	}
-
-	// Create the file
-	int fd = safe_open_wrapper_follow(filename.c_str(), O_CREAT | O_WRONLY, S_IREAD | S_IWRITE);
-	if (fd < 0) {
-		set_priv(old_priv);
-		return -1;
-	}
-
-	char * encoded_value = simple_encode (cluster_id+proc_id, pwd);
-	int len = (int)strlen(encoded_value);
-	if (write (fd, encoded_value, len) != len) {
-		set_priv(old_priv);
-		free(encoded_value);
-		close(fd);
-		return -1;
-	}
-	close (fd);
-
-	// Switch back to non-priviledged user
-	set_priv(old_priv);
-
-	free (encoded_value);
-
-	if (SetAttribute(cluster_id, proc_id,
-					 ATTR_MYPROXY_PASSWORD_EXISTS, "TRUE") < 0) {
-		EXCEPT("Failed to record fact that MyProxyPassword file exists on %d.%d",
-			   cluster_id, proc_id);
-	}
-
-	return 0;
-
-}
-
-
-int
-DestroyMyProxyPassword( int cluster_id, int proc_id )
-{
-	bool val = false;
-	if (GetAttributeBool(cluster_id, proc_id,
-						 ATTR_MYPROXY_PASSWORD_EXISTS, &val) < 0 ||
-		!val) {
-			// It doesn't exist, nothing to destroy.
-		return 0;
-	}
-
-	std::string filename;
-	formatstr( filename, "%s%cmpp.%d.%d", Spool, DIR_DELIM_CHAR,
-					  cluster_id, proc_id );
-
-  	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-
-	// Delete the file
-	struct stat stat_buff;
-	if( stat(filename.c_str(), &stat_buff) == 0 ) {
-			// If the file exists, delete it
-		if( unlink( filename.c_str()) < 0 && errno != ENOENT ) {
-			dprintf( D_ALWAYS, "unlink(%s) failed: errno %d (%s)\n",
-					 filename.c_str(), errno, strerror(errno) );
-		 	set_priv(old_priv);
-			return -1;
-
-		}
-		dprintf( D_FULLDEBUG, "Destroyed MPP %d.%d: %s\n", cluster_id, 
-				 proc_id, filename.c_str() );
-	}
-
-	// Switch back to non-root
-	set_priv(old_priv);
-
-	if (SetAttribute(cluster_id, proc_id,
-					 ATTR_MYPROXY_PASSWORD_EXISTS, "FALSE") < 0) {
-		EXCEPT("Failed to record fact that MyProxyPassword file does no exists on %d.%d",
-			   cluster_id, proc_id);
-	}
-
-	return 0;
-}
-
-
-int GetMyProxyPassword (int cluster_id, int proc_id, char ** value) {
-	// Create filename
-
-	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-	
-	std::string filename;
-	formatstr( filename, "%s/mpp.%d.%d", Spool, cluster_id, proc_id);
-	int fd = safe_open_wrapper_follow(filename.c_str(), O_RDONLY);
-	if (fd < 0) {
-		set_priv(old_priv);
-		return -1;
-	}
-
-	char buff[MYPROXY_MAX_PASSWORD_BUFLEN];
-	int bytes = read (fd, buff, sizeof(buff) - 1);
-	if( bytes < 0 ) {
-		close(fd);
-		return -1;
-	}
-	buff [bytes] = '\0';
-
-	close (fd);
-
-	// Switch back to non-priviledged user
-	set_priv(old_priv);
-
-	*value = simple_decode (cluster_id + proc_id, buff);
-	return 0;
-}
-
-
-
-
-static const char * mesh = "Rr1aLvzki/#6`QeNoWl^\"(!x\'=OE3HBn [A)GtKu?TJ.mdS9%Fh;<\\+w~4yPDIq>2Ufs$Xc_@g0Y5Mb|{&*}]7,CpV-j:8Z";
-
-char * simple_encode (int key, const char * src) {
-
-  char * result = (char*)strdup (src);
-
-  unsigned int i= 0;
-  for (; i<strlen (src); i++) {
-    int c = (int)src[i]-(int)' ';
-    c=(c+key)%strlen(mesh);
-    result[i]=mesh[c];
-  }
-
-  return result;
-}
-
-char * simple_decode (int key, const char * src) {
-  char * result = (char*)strdup (src);
-
-  char buff[2];
-  buff[1]='\0';
-
-  unsigned int i= 0;
-  unsigned int j =0;
-  unsigned int c =0;
-  unsigned int cm = (unsigned int)strlen(mesh);
-
-  for (; j<strlen(src); j++) {
-
-	//
-    for (i=0; i<cm; i++) {
-      if (mesh[i] == src[j]) {
-		c = i;
-		break;
-		}
-    }
-
-    c = (c+cm-(key%cm))%cm;
-    
-    snprintf(buff, 2, "%c", c+' ');
-    result[j]=buff[0];
-    
-  }
-  return result;
-}
 
 // start a transaction, or continue one if we already started it
 int TransactionWatcher::BeginOrContinue(int id) {
@@ -5703,12 +5625,28 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 		return 0;
 	}
 
+	// in 9.4.0 we started applying transforms to the cluster ad of late materiaization factories
+	// We did this because transforms must be applied before submit requirements are evaluated (HTCONDOR-756)
+	// This resulted in a problem (HTCONDOR-1369) where a transform of TransferInput would prevent
+	// materialization of per-job values for TransferInput. Beginning with 10.0 we will transform proc ads
+	// in addition to cluster ads for factory jobs. (i.e. The transforms will be applied twice for each late-mat job.)
+	// The knob below is so admins can revert to the behavior of applying transforms to the factory cluster only
+	// even though this has the side effect of overriding materialization of those attributes in the job ads.
+	// An admin might do this if they want to insure that late materialization will not fail submit requirments
+	// In effect, they are making attributes that are set by a submit transform pseudo-immutable. (the root cause of HTCONDOR-1369)
+	// TODO: make it possible to declare only some transforms as cluster-only
+	bool transform_factory_and_job = param_boolean("TRANSFORM_FACTORY_AND_JOB_ADS", true);
+
 	for( std::list<std::string>::const_iterator it = newAdKeys.begin(); it != newAdKeys.end(); ++it ) {
 		bool do_transforms = true;
 		ClassAd tmpAd, tmpAd2;
 		ClassAd * procAd = &tmpAd;
 		classad::References tmpAttrs, *xform_attrs = nullptr;
 		JobQueueKey jid( it->c_str() );
+		if (jid.proc < -1 || jid.cluster <= 0) {
+			// ignore jobset ads for now
+			continue;
+		}
 		if (jid.proc == -1) { // is this is a cluster ad?
 			// we don't transform non-factory cluster ads (for now)
 			if (! has_job_factory)
@@ -5723,7 +5661,12 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 				tmpAd.Assign(ATTR_JOB_STATUS, IDLE);
 				tmpAd.ChainToAd(&tmpAd2);
 			}
-			xform_attrs = &tmpAttrs; // we want to get back the set of transformed attributes
+			// if we are going to transform the factory only, then we want to know
+			// what attrbutes are transformed in the cluster/factory so we can disable
+			// materialization of those attributes in the proc ads
+			if ( ! transform_factory_and_job) {
+				xform_attrs = &tmpAttrs;
+			}
 		} else {
 			JobQueueKeyBuf clusterJid( jid.cluster, -1 );
 			JobQueue->AddAttrsFromTransaction( clusterJid, tmpAd );
@@ -5735,8 +5678,9 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 				// we don't need to unchain - it's a stack object and won't live longer than this function.
 				tmpAd.ChainToAd(clusterAd);
 				if (static_cast<JobQueueCluster*>(clusterAd)->factory) {
-					// late materialize jobs have already been transformed
-					do_transforms = false;
+					// we already transformed the factory cluster ad, disable transforms
+					// for proc ads if ...and_jobs is false
+					do_transforms = transform_factory_and_job;
 				}
 			}
 		}
@@ -5745,7 +5689,7 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 		// apply job transforms to the procAd.
 		// If the transforms fail, bail on the transaction.
 		if (do_transforms) {
-			rval = scheduler.jobTransforms.transformJob(procAd, jid, xform_attrs, errorStack);
+			rval = scheduler.jobTransforms.transformJob(procAd, jid, xform_attrs, errorStack, has_job_factory);
 			if  (rval < 0) {
 				if ( errorStack ) {
 					errorStack->push( "QMGMT", 30, "Failed to apply a required job transform.\n");
@@ -5806,7 +5750,7 @@ void SetSubmitTotalProcs(std::list<std::string> & new_ad_keys)
 	JobQueueKeyBuf job_id;
 	for(std::list<std::string>::iterator it = new_ad_keys.begin(); it != new_ad_keys.end(); it++ ) {
 		job_id.set(it->c_str());
-		if (job_id.proc < 0) continue; // ignore the cluster ad.
+		if (job_id.proc < 0 || job_id.cluster <= 0) continue; // ignore the cluster ad and set ads
 
 		// ignore jobs produced by an existing factory.
 		// ATTR_TOTAL_SUBMIT_PROCS is determined by the factory for them.
@@ -5827,7 +5771,7 @@ void SetSubmitTotalProcs(std::list<std::string> & new_ad_keys)
 	char number[10];
 	for (std::map<int, int>::iterator mit = num_procs.begin(); mit != num_procs.end(); ++mit) {
 		job_id.set(mit->first, -1);
-		sprintf(number, "%d", mit->second);
+		snprintf(number, sizeof(number), "%d", mit->second);
 		JobQueue->SetAttribute(job_id, ATTR_TOTAL_SUBMIT_PROCS, number, false);
 	}
 }
@@ -5957,34 +5901,65 @@ ReadProxyFileIntoAd( const char *file, const char *owner, ClassAd &x509_attrs )
 #endif
 }
 
-// called during commitTransaction to add jobset classads into the transaction as needed
-// TODO: future, handle the case where new_ads_keys has jobset keys?
+// called during commitTransaction before the actual commit
+// to populate a vector of new jobset ids, and also
+// to look for jobsets that should be created as a side effect of creating new cluster ads
+// 
+// this secondary processing of clusters is to handle old versions of submit that don't know how to create jobsets explicitly
 //
-static void AddJobsets(const std::list<std::string> &new_ad_keys, const char * user, std::vector<unsigned int> & new_ids)
+static void AddImplicitJobsets(const std::list<std::string> &new_ad_keys, std::vector<unsigned int> & new_jobset_ids)
 {
 	if (new_ad_keys.empty() || ! scheduler.jobSets)
 		return;
 
 	// temporary local map of set name to set id
-	// so we don't try and make the same set twice.
+	// so we know what set_ids to assign to which clusters
+	std::string setName, userName;
 	std::map<std::string, int> set_names;
 
-	for (auto it : new_ad_keys)
-	{
-		std::string setName;
+	// build a map of new jobsets, and also a list of new cluster ids
+	std::vector<int> new_cluster_ids;
+	for (auto it : new_ad_keys) {
 		JobQueueKey jid(it.c_str());
-		if (jid.cluster <= 0 || jid.proc < -1) continue; // just to be safe look only at new job and cluster ads
-		// TODO: look at cluster ads only?
+		if (jid.cluster <= 0) continue;
 
-		// Add JobSetId attributes to the jobs, adding new JobQueueJobSet to the transaction as necessary
-		if (1 == GetAttributeString(jid.cluster, jid.proc, ATTR_JOB_SET_NAME, setName)) {
-			int & setId = set_names[setName];
+		if (jid.proc == CLUSTERID_qkey2) {
+			new_cluster_ids.push_back(jid.cluster);
+		} else if (jid.proc == JOBSETID_qkey2) {
+			// here is a new jobset being created.
+			if (GetAttributeString(jid.cluster, jid.proc, ATTR_JOB_SET_NAME, setName) == 1 &&
+				GetAttributeString(jid.cluster, jid.proc, attr_JobUser.c_str(), userName) >= 0) {
+				set_names[JobSets::makeAlias(setName, userName)] = jid.cluster;
+			}
+			new_jobset_ids.push_back(jid.cluster);
+		}
+	}
+
+	// now look for cluster ads that want jobsets that are not yet in this transaction
+	// Implicit jobset creation is for use with older versions of submit
+	// as of 9.10.0 submit will create jobsets explicitly
+	for (auto cluster : new_cluster_ids) {
+		if (GetAttributeString(cluster, -1, ATTR_JOB_SET_NAME, setName) == 1 &&
+			GetAttributeString(cluster, -1, attr_JobUser.c_str(), userName) >= 0) {
+			std::string alias = JobSets::makeAlias(setName, userName);
+			int & setId = set_names[alias];
 			if (0 == setId) {
-				setId = scheduler.jobSets->getOrCreateSet(setName, user, new_ids);
+				// if we don't have a pending set with this name, look for a pre-existing set
+				// and if we don't find one, create one for this cluster.
+				setId = scheduler.jobSets->find(alias);
+				if (0 == setId) {
+					// if we are already creating a new jobset with this id, then we should just ignore this cluster ad's 
+					// TODO: force the cluster ad to use the jobset name from the matching jobset ad, or reject the submission
+					if (std::find(new_jobset_ids.begin(), new_jobset_ids.end(), cluster) == new_jobset_ids.end()) {
+						if (JobSetCreate(cluster, setName.c_str(), userName.c_str())) {
+							setId = cluster;
+							new_jobset_ids.push_back(setId);
+						}
+					}
+				}
 			}
-			if (setId > 0) {
-				SetSecureAttributeInt(jid.cluster, jid.proc, ATTR_JOB_SET_ID, setId);
-			}
+			// add this into the transaction so that the JobQueueCluster ad object will know the set id at init time ?
+			// if (setId > 0) { SetSecureAttributeInt(cluster, -1, ATTR_JOB_SET_ID, setId); }
 		}
 	}
 }
@@ -6018,6 +5993,8 @@ AddSessionAttributes(const std::list<std::string> &new_ad_keys)
 		std::string x509up;
 		std::string iwd;
 		JobQueueKey job( it->c_str() );
+		if (job.proc < -1 || job.cluster <= 0) continue; // ignore jobsets for now
+
 		GetAttributeString(job.cluster, job.proc, ATTR_X509_USER_PROXY, x509up);
 		GetAttributeString(job.cluster, job.proc, ATTR_JOB_IWD, iwd);
 
@@ -6168,17 +6145,21 @@ CommitTransactionAndLive( SetAttributeFlags_t flags,
 int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 
 	std::list<std::string> new_ad_keys;
+	struct ownerinfo_init_state ownerinfo_is = { nullptr, nullptr, false };
+	std::string owner;
 	
 		// get a list of all new ads being created in this transaction
 	JobQueue->ListNewAdsInTransaction( new_ad_keys );
 
+#if 0
 		// filter out all the keys that do not belong to jobs, ie jobsets
 	new_ad_keys.remove_if([](const std::string & val) {
 		JobQueueKey job_id(val.c_str());
-		if (job_id.cluster < 1)
+		if (job_id.proc < -1)
 			return true;
 		return false;
 	});
+#endif
 
 	if ( ! new_ad_keys.empty()) { SetSubmitTotalProcs(new_ad_keys); }
 
@@ -6195,6 +6176,7 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 			// that is never aborted in the event our caller never checks...
 			// Current thinking is do not call AbortTransaction here, let the caller do it so 
 			// that the logic in AbortTranscationAndRecomputeClusters() works correctly...
+			dprintf(D_FULLDEBUG, "CheckTransaction error %d : %s\n", rval, errorStack ? errorStack->message() : "");
 			return rval;
 		}
 	}
@@ -6215,9 +6197,10 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 	std::vector<unsigned int> new_jobset_ids;
 	bool has_jobsets = (triggers & catJobset) != 0;
 	if ( ! new_ad_keys.empty() && has_jobsets && scheduler.jobSets) {
-		// if this is a submit transaction, and also has jobs wanting to be in sets
-		// we want to insert the jobset objects that don't already exist here
-		AddJobsets(new_ad_keys, EffectiveUser(Q_SOCK), new_jobset_ids);
+		// build up a collection of new jobset ids, and also potentially
+		// create new jobsets on the fly because there is a new cluster ad
+		// that requests to be in a jobset.
+		AddImplicitJobsets(new_ad_keys, new_jobset_ids);
 	}
 
 	if (triggers) {
@@ -6262,16 +6245,12 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 
 	// If the commit failed, we should never get here.
 
-	// set a few things in the newly created jobset ads
+	// setup the JobQueueJobSet header for jobset ads, and insert them
+	// into the jobsets collection before we process the other ads
 	for (auto id : new_jobset_ids) {
 		JobQueueJobSet * jobset = GetJobSetAd(id);
 		if (jobset) {
-			const char * euser = EffectiveUser(Q_SOCK);
-			if (euser && euser[0]) {
-				jobset->ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(euser));
-			}
-			// future?
-			// jobset->PopulateFromAd();
+			InitJobsetAd(jobset, owner, ownerinfo_is);
 		}
 	}
 
@@ -6300,17 +6279,20 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 			if( job_id.proc == -1 ) {
 				clusterad = GetClusterAd(job_id);
 				if (clusterad) {
-					clusterad->jid = job_id;
 					clusterad->PopulateFromAd();
+					// TODO: this is wrong if the cluster is not created by external connection
 					const char * euser = EffectiveUser(Q_SOCK);
 					if (euser && euser[0]) {
 						clusterad->ownerinfo = const_cast<OwnerInfo*>(scheduler.insert_owner_const(euser));
 					}
 
-					// if this cluster ad is in a jobset count it in the set
-					if (clusterad->set_id > 0) {
-						JobQueueJobSet * jobset = GetJobSetAd(clusterad->set_id);
-						if (jobset) { jobset->Assign(ATTR_REF_COUNT, ++(jobset->member_count)); }
+					// add the cluster ad to any jobsets it may be in
+					if (scheduler.jobSets) {
+						clusterad->set_id = 0; // force a setid lookup by name to make sure we get the correct id
+						scheduler.jobSets->addToSet(*clusterad);
+						if (clusterad->set_id > 0) {
+							clusterad->Assign(ATTR_JOB_SET_ID, clusterad->set_id);
+						}
 					}
 
 					// make the cluster job factory if one is desired and does not already exist.
@@ -6362,6 +6344,8 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 
 				}
 				continue; // skip remaining processing for cluster ads
+			} else if (job_id.proc < 0 || job_id.cluster <= 0) {
+				continue; // no further processing of jobset ads needed
 			}
 			// we want to fsync per cluster and on the last ad
 			if ( old_cluster_id == -10 ) {
@@ -6407,11 +6391,9 @@ int CommitTransactionInternal( bool durable, CondorError * errorStack ) {
 				procad->PopulateFromAd();
 				procad->ownerinfo = ownerinfo;
 
-				// if this new job ad is in a jobset, count it in the set
-				if (procad->set_id > 0) {
-					JobQueueJobSet * jobset = GetJobSetAd(procad->set_id);
-					if (jobset) { jobset->Assign(ATTR_REF_COUNT, ++(jobset->member_count)); }
-				}
+				// if the cluster is in a jobset, the job is also
+				procad->set_id = clusterad->set_id;
+				if (scheduler.jobSets) { scheduler.jobSets->addToSet(*procad); }
 
 					// Add the job to various runtime indexes for quick lookups
 				scheduler.indexAJob(procad, false);
@@ -6519,7 +6501,7 @@ AbortTransactionAndRecomputeClusters()
 		*/
 		//TODO: move cluster count from hashtable into the cluster's JobQueueJob object.
 		ClusterSizeHashTable->clear();
-		JobQueueJob *job;
+		JobQueueBase *job;
 		JobQueueKey key;
 		JobQueue->StartIterateAllClassAds();
 		while (JobQueue->Iterate(key, job)) {
@@ -6556,7 +6538,7 @@ AbortTransactionAndRecomputeClusters()
 
 
 int
-GetAttributeFloat(int cluster_id, int proc_id, const char *attr_name, float *val)
+GetAttributeFloat(int cluster_id, int proc_id, const char *attr_name, double *val)
 {
 	ClassAd	*ad;
 	JobQueueKeyBuf	key;
@@ -6791,7 +6773,7 @@ GetDirtyAttributes(int cluster_id, int proc_id, ClassAd *updated_attrs)
 	{
 		name = itr->c_str();
 		expr = ad->LookupExpr(name);
-		if(expr && !ClassAdAttributeIsPrivate(name))
+		if(expr && !ClassAdAttributeIsPrivateAny(name))
 		{
 			if(!JobQueue->LookupInTransaction(key, name, val) )
 			{
@@ -6827,6 +6809,114 @@ DeleteAttribute(int cluster_id, int proc_id, const char *attr_name)
 
 	return 1;
 }
+
+// 
+int QmgmtHandleSendJobsetAd(int cluster_id, ClassAd & ad, int /*flags*/, int & terrno)
+{
+	// check to see if the schedd is permitting jobsets
+	if ( ! scheduler.jobSets) {
+		dprintf(D_FULLDEBUG, "Failing remote SendJobsetAd %d because USE_JOBSETS is false\n", cluster_id);
+		terrno = EINVAL;
+		return -1;
+	}
+
+	JOB_ID_KEY_BUF key;
+	IdToKey(cluster_id,JOBSETID_qkey2,key);
+	const char * username = EffectiveUser(Q_SOCK);
+
+	// extract jobset name and id from incoming ad
+	// and delete the attributes so that we won't try and merge them later
+	std::string name;
+	ad.LookupString(ATTR_JOB_SET_NAME, name);
+	ad.Delete(ATTR_JOB_SET_NAME); // let JobSetCreate control this
+	long long input_setid_val = -1;
+	ad.LookupInteger(ATTR_JOB_SET_ID, input_setid_val); // we don't expect this, and can't honor it
+	ad.Delete(ATTR_JOB_SET_ID);
+
+	// These are reserved for use by the schedd, just ignore incoming values
+	// TODO: honor incoming Owner values for queue superusers?
+	ad.Delete(ATTR_OWNER);
+	ad.Delete(ATTR_USER);
+
+	// is there an existing jobset ad with this id?
+	JobQueueBase* bad;
+	if (JobQueue->Lookup(key, bad)) {
+		dprintf(D_ERROR, "There is already a jobset %d. Failing\n", key.cluster);
+		// TODO: validate or merge ?
+		terrno = ENOENT;
+		return -1;
+	}
+
+	if (name.empty()) {
+		dprintf(D_ERROR, "Jobset ad for cluster %d submitted without a name.  Failing\n", key.cluster);
+		terrno = EINVAL;
+		return -1;
+	}
+
+	// is there an existing jobset ad with this name?
+	// if not, create a new jobset ad using the passed-in cluster_id as the jobset_id
+	int jobset_id = scheduler.jobSets->find(JobSets::makeAlias(name, username));
+	if ( ! jobset_id) {
+		// no existing jobset, so make a new one
+		if (cluster_id != active_cluster_num) {
+			dprintf(D_ERROR, "Rejecting new jobset ad because jobset_id %d does not match active cluster %d\n", cluster_id, active_cluster_num);
+			terrno = EINVAL;
+			return -1;
+		}
+		if ( ! JobSetCreate(cluster_id, name.c_str(), username)) {
+			dprintf(D_ERROR, "Could not create jobset %s jobset_id %d for user %s\n", name.c_str(), cluster_id, username);
+			terrno = EINVAL;
+			return -1;
+		}
+		jobset_id = cluster_id;
+	}
+
+
+	// TODO: what should we do if we find an existing jobset ad?
+	// for now, we will overwrite custom jobset attributes in the existing ad
+
+	key.set(jobset_id, JOBSETID_qkey2);
+
+	// add the custom jobset attributes to the jobset ad
+	int rval = 0;
+	if (ad.size() > 0) {
+		classad::ClassAdUnParser unparse;
+		unparse.SetOldClassAd(true, true);
+		std::string rhs; rhs.reserve(120);
+
+		for (auto it : ad) {
+			if (! it.second) continue; // skip if the ExprTree is nullptr
+
+			if (!IsValidAttrName(it.first.c_str())) {
+				dprintf(D_ERROR, "got invalid attribute named %s for jobset %d\n",
+					it.first.c_str(), key.cluster);
+				terrno = EINVAL;
+				return -1;
+			}
+
+			if (secure_attrs.count(it.first)) {
+				dprintf(D_ERROR,
+					"attempt to set secure attribute %s in jobset %d. Failing!\n",
+					it.first.c_str(), key.cluster);
+				terrno = EACCES;
+				rval = -1;
+				break;
+			}
+
+			// TODO: more validation ?
+
+			rhs.clear();
+			unparse.Unparse(rhs, it.second);
+			if ( ! JobQueue->SetAttribute(key, it.first.c_str(), rhs.c_str())) {
+				terrno = EINVAL;
+				rval = -1;
+			}
+		}
+	}
+
+	return rval;
+}
+
 
 void
 MarkJobClean(PROC_ID proc_id)
@@ -6899,11 +6989,52 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 		// ad, things will still be ok.
 		ChainCollapse(*expanded_ad);
 
-			// Make a stringlist of all attribute names in job ad.
-			// Note: ATTR_JOB_CMD must be first in AttrsToExpand...
+		// before $$ expansion, we may need to convert the Environment from v1 to v2
+		// or switch the v1 delimiter to match the target OS. We do this so that if the 
+		// environment has $$ expansions we are using the target OS's expected delim
+		// or a format that doesn't have a delim conflict issue.
+		if ( startd_ad && job_universe != CONDOR_UNIVERSE_GRID ) {
+			// Produce an environment description that is compatible with
+			// whatever the starter expects.
+			// Note: this code path is skipped when we flock and reconnect
+			//  after a disconnection (job lease).  In this case we don't
+			//  have a startd_ad!
+
+			// check for a job that has a V1 environment only, and the target OS uses a different separator
+			// HTCondor 9.x and earlier does not honor EnvDelim in MergeFrom(Ad) so we have to re-write Env
+			// for the Opsys of the STARTD.
+			// TODO: add a version check for STARTD's that honor the ATTR_JOB_ENV_V1_DELIM on ingestion
+			if (expanded_ad->Lookup(ATTR_JOB_ENV_V1) && ! expanded_ad->LookupExpr(ATTR_JOB_ENVIRONMENT))
+			{
+				Env env_obj;
+
+				// compare the delim that is natural to the startd to the delim that the job is currently using
+				// if they differ, and the job is using V1 environment (and STARTD is earlier than X.Y) we
+				// have to re-write the Env attribute and the EnvDelim attributes for target OS
+				std::string opsys;
+				startd_ad->LookupString(ATTR_OPSYS, opsys);
+				char target_delim = env_obj.GetEnvV1Delimiter(opsys.c_str());
+				char my_delim = env_obj.GetEnvV1Delimiter(*expanded_ad);
+				if (my_delim != target_delim) {
+					std::string env_error_msg;
+					// ingest using the current delim as specified in the job
+					if (env_obj.MergeFrom(expanded_ad, env_error_msg)) {
+						// write the environment back into the job with the OPSYS correct delimiter
+						if ( ! env_obj.InsertEnvV1IntoClassAd(*expanded_ad, env_error_msg, target_delim)) {
+							dprintf( D_FULLDEBUG, "Job expansion using attr Environment because attr Env cannot be converted to opsys=%s : %s\n",
+								opsys.c_str(), env_error_msg.c_str());
+							// write a V2 Environment attribute into the job,
+							// this will take precedence over Env for STARTD's later than 6.7
+							env_obj.InsertEnvIntoClassAd(*expanded_ad);
+						}
+					}
+				}
+			}
+		}
+
+			// Make a stringlist of all attribute names in job ad that are not MATCH_ attributes
 		StringList AttrsToExpand;
 		const char * curr_attr_to_expand;
-		AttrsToExpand.append(ATTR_JOB_CMD);
 		for ( auto itr = expanded_ad->begin(); itr != expanded_ad->end(); itr++ ) {
 			if ( strncasecmp(itr->first.c_str(),"MATCH_",6) == 0 ) {
 					// We do not want to expand MATCH_XXX attributes,
@@ -6911,11 +7042,12 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 					// previous expansions, which could potentially
 					// contain literal $$(...) in the replacement text.
 				continue;
-			}
-			if ( strcasecmp(itr->first.c_str(),ATTR_JOB_CMD) ) {
+			} else {
 				AttrsToExpand.append(itr->first.c_str());
 			}
 		}
+
+		std::string cachedAttrName, unparseBuf;
 
 		index = -1;	
 		AttrsToExpand.rewind();
@@ -6930,7 +7062,7 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 				break;
 			}
 
-			std::string cachedAttrName = MATCH_EXP;
+			cachedAttrName = MATCH_EXP;
 			cachedAttrName += curr_attr_to_expand;
 
 			if( !startd_ad ) {
@@ -6956,52 +7088,21 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 				attribute_value = NULL;
 			}
 
-			// Get the current value of the attribute.  We want
-			// to use PrintToNewStr() here because we want to work
-			// with anything (strings, ints, etc) and because want
-			// strings unparsed (for instance, quotation marks should
-			// be escaped with backslashes) so that we can re-insert
-			// them later into the expanded ClassAd.
-			// Note: deallocate attribute_value with free(), despite
-			// the mis-leading name PrintTo**NEW**Str.  
-			ExprTree *tree = ad->LookupExpr(curr_attr_to_expand);
-			if ( tree ) {
-				const char *new_value = ExprTreeToString( tree );
-				if ( new_value ) {
-					attribute_value = strdup( new_value );
+			// Get the current value of the attribute in unparsed form if the value is subject to $$ expansion.
+			// Numbers can't be $$ expanded, expressions and strings can.
+			unparseBuf.clear();
+			ExprTree * tree = expanded_ad->LookupExpr(curr_attr_to_expand);
+			if (ExprTreeMayDollarDollarExpand(tree, unparseBuf)) {
+				const char *new_value = unparseBuf.c_str();
+				if (strchr(new_value, '$')) {
+					// make a copy because $$ expansion code need a malloc'ed string
+					attribute_value = strdup(unparseBuf.c_str());
 				}
 			}
-
 			if ( attribute_value == NULL ) {
 				continue;
 			}
-
-				// Some backwards compatibility: if the
-				// user just has $$opsys.$$arch in the
-				// ATTR_JOB_CMD attribute, convert it to the
-				// new format w/ parenthesis: $$(opsys).$$(arch)
-			if ( (index == 0) && (attribute_value != NULL)
-				 && ((tvalue=strstr(attribute_value,"$$")) != NULL) ) 
-			{
-				if ( strcasecmp("$$OPSYS.$$ARCH",tvalue) == MATCH ) 
-				{
-						// convert to the new format
-						// First, we need to re-allocate attribute_value to a bigger
-						// buffer.
-					int old_size = (int)strlen(attribute_value);
-					void * pv = realloc(attribute_value, old_size 
-										+ 10);  // for the extra parenthesis
-					ASSERT(pv);
-					attribute_value = (char *)pv; 
-						// since attribute_value may have moved, we need
-						// to reset the value of tvalue.
-					tvalue = strstr(attribute_value,"$$");	
-					ASSERT(tvalue);
-					strcpy(tvalue,"$$(OPSYS).$$(ARCH)");
-					ad->Assign(curr_attr_to_expand, attribute_value);
-				}
-			}
-
+		
 			bool expanded_something = false;
 			int search_pos = 0;
 			while( !attribute_not_found &&
@@ -7114,14 +7215,15 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 
 					if (!value) {
 						if(fallback) {
-							char *rebuild = (char *) malloc(  strlen(name)
+							size_t sz = strlen(name)
 								+ 3  // " = "
 								+ 1  // optional '"'
 								+ strlen(fallback)
 								+ 1  // optional '"'
-								+ 1); // null terminator
+								+ 1; // null terminator
+							char *rebuild = (char *) malloc(sz);
                             // fallback is defined as being a string value, encode it thusly:
-                            sprintf(rebuild,"%s = \"%s\"", name, fallback);
+                            snprintf(rebuild, sz, "%s = \"%s\"", name, fallback);
 							value = rebuild;
 						}
 						if(!fallback || !value) {
@@ -7176,10 +7278,10 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 								tvalue[endquoteindex] = '\0';
 						}
 					}
-					size_t lenBigbuf = strlen(left) + strlen(tvalue)  + strlen(right);
-					bigbuf2 = (char *) malloc( lenBigbuf +1 );
+					size_t lenBigbuf = strlen(left) + strlen(tvalue)  + strlen(right) + 1;
+					bigbuf2 = (char *) malloc( lenBigbuf );
 					ASSERT(bigbuf2);
-					sprintf(bigbuf2,"%s%s%n%s",left,tvalue,&search_pos,right);
+					snprintf(bigbuf2,lenBigbuf,"%s%s%n%s",left,tvalue,&search_pos,right);
 					expanded_ad->AssignExpr(curr_attr_to_expand, bigbuf2);
 					dprintf(D_FULLDEBUG,"$$ substitution: %s=%s\n",curr_attr_to_expand,bigbuf2);
 					free(value);	// must use free here, not delete[]
@@ -7339,90 +7441,6 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 					cluster_id,proc_id);
 				mailer.send();
 			}
-		}
-
-
-		if ( startd_ad && job_universe != CONDOR_UNIVERSE_GRID ) {
-			// Produce an environment description that is compatible with
-			// whatever the starter expects.
-			// Note: this code path is skipped when we flock and reconnect
-			//  after a disconnection (job lease).  In this case we don't
-			//  have a startd_ad!
-
-			Env env_obj;
-
-			char *opsys = NULL;
-			startd_ad->LookupString( ATTR_OPSYS, &opsys);
-			char *startd_version = NULL;
-			startd_ad->LookupString( ATTR_VERSION, &startd_version);
-			CondorVersionInfo ver_info(startd_version);
-
-			MyString env_error_msg;
-			if(!env_obj.MergeFrom(expanded_ad,&env_error_msg) ||
-			   !env_obj.InsertEnvIntoClassAd(expanded_ad,&env_error_msg,opsys,&ver_info))
-			{
-				attribute_not_found = true;
-				std::string hold_reason;
-				formatstr(hold_reason,
-					"Failed to convert environment to target syntax"
-					" for starter (opsys=%s): %s",
-					opsys ? opsys : "NULL",env_error_msg.c_str());
-
-
-				dprintf( D_ALWAYS, 
-					"Putting job %d.%d on hold - cannot convert environment"
-					" to target syntax for starter (opsys=%s): %s\n",
-					cluster_id, proc_id, opsys ? opsys : "NULL",
-						 env_error_msg.c_str() );
-
-				// SetAttribute does security checks if Q_SOCK is
-				// not NULL.  So, set Q_SOCK to be NULL before
-				// placing the job on hold so that SetAttribute
-				// knows this request is not coming from a client.
-				// Then restore Q_SOCK back to the original value.
-
-				QmgmtPeer* saved_sock = Q_SOCK;
-				Q_SOCK = NULL;
-				holdJob(cluster_id, proc_id, hold_reason.c_str());
-				Q_SOCK = saved_sock;
-			}
-
-
-			// Now convert the arguments to a form understood by the starter.
-			ArgList arglist;
-			std::string arg_error_msg;
-			if(!arglist.AppendArgsFromClassAd(expanded_ad,arg_error_msg) ||
-			   !arglist.InsertArgsIntoClassAd(expanded_ad,&ver_info,arg_error_msg))
-			{
-				attribute_not_found = true;
-				std::string hold_reason;
-				formatstr(hold_reason,
-					"Failed to convert arguments to target syntax"
-					" for starter: %s",
-					arg_error_msg.c_str());
-
-
-				dprintf( D_ALWAYS, 
-					"Putting job %d.%d on hold - cannot convert arguments"
-					" to target syntax for starter: %s\n",
-					cluster_id, proc_id,
-					arg_error_msg.c_str() );
-
-				// SetAttribute does security checks if Q_SOCK is
-				// not NULL.  So, set Q_SOCK to be NULL before
-				// placing the job on hold so that SetAttribute
-				// knows this request is not coming from a client.
-				// Then restore Q_SOCK back to the original value.
-
-				QmgmtPeer* saved_sock = Q_SOCK;
-				Q_SOCK = NULL;
-				holdJob(cluster_id, proc_id, hold_reason.c_str());
-				Q_SOCK = saved_sock;
-			}
-
-
-			if(opsys) free(opsys);
-			if(startd_version) free(startd_version);
 		}
 
 		if ( attribute_value ) free(attribute_value);
@@ -7716,10 +7734,10 @@ JobQueueJobSet*
 GetJobSetAd(unsigned int jobset_id)
 {
 	if (jobset_id > 0) {
-		JobQueueKey jid(0, JOBSETID_to_qkey2(jobset_id));
-		JobQueueJob *job = nullptr;
-		if (JobQueue && JobQueue->Lookup(jid, job)) {
-			return static_cast<JobQueueJobSet*>(static_cast<JobQueueBase*>(job));
+		JobQueueKey jid(JOBSETID_to_qkey1(jobset_id), JOBSETID_qkey2);
+		JobQueueBase *bad = nullptr;
+		if (JobQueue && JobQueue->Lookup(jid, bad)) {
+			return dynamic_cast<JobQueueJobSet*>(bad);
 		}
 	}
 	return nullptr;
@@ -7782,18 +7800,52 @@ ClassAd * GetJobAd_as_ClassAd(int cluster_id, int proc_id, bool expStartdAd, boo
 	return ad;
 }
 
+// DO NOT MOVE to condor_utils!! 
+// this function has a static expression cache
+// because we can't easily change the iterating queue
+// code that uses string form constraints..
+static bool EvalConstraint(ClassAd *ad, const char *constraint)
+{
+	// NOTE: static constraint holder so we cache the last-used constraint and save parsing...
+	static ConstraintHolder constr;
+
+	if ( ! constraint || ! constraint[0]) return true;
+
+	if (constr.empty() || MATCH != strcmp(constr.c_str(),constraint)) {
+		constr.set(strdup(constraint));
+		int err = 0;
+		if ( ! constr.Expr(&err) && err) {
+			dprintf( D_ALWAYS, "can't parse constraint: %s\n", constraint );
+			return false;
+		}
+	}
+
+	classad::Value result;
+	if ( !EvalExprToBool( constr.Expr(), ad, NULL, result ) ) {
+		dprintf( D_ALWAYS, "can't evaluate constraint: %s\n", constraint );
+		return false;
+	}
+
+	bool boolVal;
+	if( result.IsBooleanValueEquiv( boolVal ) ) {
+		return boolVal;
+	}
+
+	dprintf( D_FULLDEBUG, "constraint (%s) does not evaluate to bool\n", constraint );
+	return false;
+}
+
 
 JobQueueJob *
 GetJobByConstraint(const char *constraint)
 {
-	JobQueueJob	*ad;
+	JobQueuePayload ad;
 	JobQueueKey key;
 
 	JobQueue->StartIterateAllClassAds();
 	while(JobQueue->Iterate(key,ad)) {
-		if ( key.cluster > 0 && key.proc >= 0 && // avoid cluster and header ads
-			EvalExprBool(ad, constraint)) {
-				return ad;
+		if (ad->IsJob() && EvalConstraint(ad, constraint)) {
+			return static_cast<JobQueueJob*>(ad);
 		}
 	}
 	return NULL;
@@ -7814,7 +7866,7 @@ GetNextJob(int initScan)
 JobQueueJob *
 GetNextJobByConstraint(const char *constraint, int initScan)
 {
-	JobQueueJob *ad;
+	JobQueuePayload ad;
 	JobQueueKey key;
 
 	if (initScan) {
@@ -7822,9 +7874,8 @@ GetNextJobByConstraint(const char *constraint, int initScan)
 	}
 
 	while(JobQueue->Iterate(key,ad)) {
-		if ( key.cluster > 0 && key.proc >= 0 && // avoid cluster and header ads
-			(!constraint || !constraint[0] || EvalExprBool(ad, constraint))) {
-			return ad;
+		if ( ad->IsJob() &&	EvalConstraint(ad, constraint)) {
+			return static_cast<JobQueueJob*>(ad);
 		}
 	}
 	return NULL;
@@ -7833,7 +7884,7 @@ GetNextJobByConstraint(const char *constraint, int initScan)
 JobQueueJob *
 GetNextJobOrClusterByConstraint(const char *constraint, int initScan)
 {
-	JobQueueJob *ad;
+	JobQueuePayload ad;
 	JobQueueKey key;
 
 	if (initScan) {
@@ -7841,9 +7892,8 @@ GetNextJobOrClusterByConstraint(const char *constraint, int initScan)
 	}
 
 	while(JobQueue->Iterate(key,ad)) {
-		if ( key.cluster > 0 && // skip the header ad
-			(!constraint || !constraint[0] || EvalExprBool(ad, constraint))) {
-			return ad;
+		if ((ad->IsCluster() || ad->IsJob()) && EvalConstraint(ad, constraint)) {
+			return static_cast<JobQueueJob*>(ad);
 		}
 	}
 	return NULL;
@@ -7871,36 +7921,13 @@ GetNextDirtyJobByConstraint(const char *constraint, int initScan)
 			continue;
 		}
 
-		if ( !constraint || !constraint[0] || EvalExprBool(ad, constraint)) {
+		if (EvalConstraint(ad, constraint)) {
 			return ad;
 		}
 	}
 	return NULL;
 }
 
-JobQueueJob *
-GetNextJobByCluster(int c, int initScan)
-{
-	JobQueueKey key;
-
-	if ( c < 1 ) {
-		return NULL;
-	}
-
-	JobQueueJob	*ad;
-
-	if (initScan) {
-		JobQueue->StartIterateAllClassAds();
-	}
-
-	while(JobQueue->Iterate(key,ad)) {
-		if ( c == key.cluster ) {
-			return ad;
-		}
-	}
-
-	return NULL;
-}
 
 /*
 void
@@ -8115,7 +8142,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
             post_job_prio1, 
             post_job_prio2;
     int     job_status;
-    int     q_date;
     char    owner[100];
     int     cur_hosts;
     int     max_hosts;
@@ -8194,7 +8220,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
     }
 
     job->LookupInteger(ATTR_JOB_PRIO, job_prio);
-    job->LookupInteger(ATTR_Q_DATE, q_date);
 
 	char * powner = owner;
 	int cremain = sizeof(owner);
@@ -8240,7 +8265,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
     PrioRec[N_PrioRecs].post_job_prio1 = post_job_prio1;
     PrioRec[N_PrioRecs].post_job_prio2 = post_job_prio2;
     PrioRec[N_PrioRecs].status         = job_status;
-    PrioRec[N_PrioRecs].qdate          = q_date;
     PrioRec[N_PrioRecs].not_runnable   = false;
     PrioRec[N_PrioRecs].matched        = false;
 	if ( auto_id == -1 ) {
@@ -8360,7 +8384,7 @@ int mark_idle(JobQueueJob *job, const JobQueueKey& /*key*/, void* /*pvArg*/)
 			// Schedd must have died before committing this job's wall
 			// clock time.  So, commit the wall clock saved in the
 			// wall clock checkpoint.
-		float wall_clock = 0.0;
+		double wall_clock = 0.0;
 		GetAttributeFloat(cluster,proc,ATTR_JOB_REMOTE_WALL_CLOCK,&wall_clock);
 		wall_clock += wall_clock_ckpt;
 		BeginTransaction();
@@ -8371,10 +8395,10 @@ int mark_idle(JobQueueJob *job, const JobQueueKey& /*key*/, void* /*pvArg*/)
 			// potentially double-count
 		DeleteAttribute(cluster,proc,ATTR_SHADOW_BIRTHDATE);
 
-		float slot_weight = 1;
+		double slot_weight = 1;
 		GetAttributeFloat(cluster, proc,
 						  ATTR_JOB_MACHINE_ATTR_SLOT_WEIGHT0,&slot_weight);
-		float slot_time = 0;
+		double slot_time = 0;
 		GetAttributeFloat(cluster, proc,
 						  ATTR_CUMULATIVE_SLOT_TIME,&slot_time);
 		slot_time += wall_clock_ckpt*slot_weight;
@@ -8398,7 +8422,7 @@ bool InWalkJobQueue() {
 
 // this function for use only inside the schedd
 void
-WalkJobQueueEntries(int with, queue_job_scan_func func, void* pv, schedd_runtime_probe & ftm)
+WalkJobQueueEntries(int with, queue_scan_func func, void* pv, schedd_runtime_probe & ftm)
 {
 	double begin = _condor_debug_get_time_double();
 	const bool with_jobsets = (with & WJQ_WITH_JOBSETS) != 0;
@@ -8415,18 +8439,20 @@ WalkJobQueueEntries(int with, queue_job_scan_func func, void* pv, schedd_runtime
 	JobQueue->StartIterateAllClassAds();
 
 	JobQueueKey key;
-	JobQueueJob * job;
-	while(JobQueue->Iterate(key, job)) {
-		if (key.cluster < 0) // skip header ad
+	JobQueuePayload ad;
+	while(JobQueue->Iterate(key, ad)) {
+		if (ad->IsHeader()) // skip header ad
 			continue;
-		if (key.cluster == 0) { // jobset ads have cluster == 0
+		if (ad->IsJobSet()) {
 			if (! with_jobsets) { continue; }
-		} else if (key.proc < 0) { // cluster ads have cluster > 0 && proc < 0
+		} else if (ad->IsCluster()) { // cluster ads have cluster > 0 && proc < 0
 			if (! with_clusters) { continue; }
+		} else if ( ! ad->IsJob()) {
+			continue;
 		} else { // jobads have cluster > 0 && proc >= 0
 			if (with_no_jobs) { continue; }
 		}
-		int rval = func(job, key, pv);
+		int rval = func(ad, key, pv);
 		if (rval < 0)
 			break;
 	}
@@ -8438,11 +8464,43 @@ WalkJobQueueEntries(int with, queue_job_scan_func func, void* pv, schedd_runtime
 	in_walk_job_queue--;
 }
 
+// this function for use only inside the schedd
+void
+WalkJobQueue3(queue_job_scan_func func, void* pv, schedd_runtime_probe & ftm)
+{
+	double begin = _condor_debug_get_time_double();
+
+	if( in_walk_job_queue ) {
+		dprintf(D_ALWAYS,"ERROR: WalkJobQueue called recursively!  Generating stack trace:\n");
+		dprintf_dump_stack();
+	}
+
+	in_walk_job_queue++;
+
+	JobQueue->StartIterateAllClassAds();
+
+	JobQueueKey key;
+	JobQueuePayload ad;
+	while(JobQueue->Iterate(key, ad)) {
+		if (ad->IsJob()) {
+			JobQueueJob * job = static_cast<JobQueueJob*>(ad);
+			int rval = func(job, key, pv);
+			if (rval < 0)
+				break;
+		}
+	}
+
+	double runtime = _condor_debug_get_time_double() - begin;
+	ftm += runtime;
+	WalkJobQ_runtime += runtime;
+
+	in_walk_job_queue--;
+}
 
 
 int dump_job_q_stats(int cat)
 {
-	HashTable<JobQueueKey,JobQueueJob*>* table = JobQueue->Table();
+	HashTable<JobQueueKey,JobQueuePayload>* table = JobQueue->Table();
 	table->startIterations();
 	int bucket=0, old_bucket=-1, item=0;
 
@@ -8525,12 +8583,11 @@ void load_job_factories()
 	int num_failed = 0;
 	int num_paused = 0;
 
-	JobQueueJob *ad = NULL;
+	JobQueuePayload ad = NULL;
 	JobQueueKey key;
 	while(JobQueue->Iterate(key,ad)) {
-		if ( key.cluster <= 0 || key.proc >= 0 ) { continue; } // ingnore header and job ads
+		if ( ! ad->IsCluster()) { continue; } // ingnore header and job ads
 
-		ASSERT(ad->IsCluster());
 		JobQueueCluster * clusterad = static_cast<JobQueueCluster*>(ad);
 		if (clusterad->factory) { continue; } // ignore if factory already loaded
 
@@ -8564,7 +8621,7 @@ void load_job_factories()
 				if (paused == mmInvalid && JobFactoryIsRunning(clusterad)) {
 					// if the former pause mode was mmInvalid, but the factory loaded OK on this time
 					// remove the pause since mmInvalid basically means 'factory failed to load'
-					setJobFactoryPauseAndLog(clusterad, mmRunning, 0, NULL);
+					setJobFactoryPauseAndLog(clusterad, mmRunning, 0, "");
 				} else {
 					PauseJobFactory(clusterad->factory, (MaterializeMode)paused);
 					++num_paused;
@@ -8734,15 +8791,17 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 
 	ASSERT(my_match_ad);
 
-	bool scheddsAreSubmitters = false;
-	my_match_ad->LookupBool(ATTR_NEGOTIATOR_SCHEDDS_ARE_SUBMITTERS, scheddsAreSubmitters);
-	if (scheddsAreSubmitters) match_any_user = true;
+	bool restrict_to_user = false;
+	std::string match_user;
+	my_match_ad->LookupBool(ATTR_RESTRICT_TO_AUTHENTICATED_IDENTITY, restrict_to_user);
+	if (restrict_to_user) {
+		my_match_ad->LookupString(ATTR_AUTHENTICATED_IDENTITY, match_user);
+	}
 
 		// indicate failure by setting proc to -1.  do this now
 		// so if we bail out early anywhere, we say we failed.
 	jobid.proc = -1;	
 
-	int i;
 	std::string owner;
 	if (user_is_the_new_owner) {
 	} else {
@@ -8782,26 +8841,28 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 
 
 		// Iterate through the most recently constructed list of
-		// jobs, nicely pre-sorted in priority order.
+		// jobs, nicely pre-sorted first by submitter, then by job priority
 
 	// Stringify the user to make comparison faster
 	std::string user_str = user ? user : "";
 
 	do {
-		for (i=0; i < N_PrioRecs; i++) {
+		prio_rec *first = &PrioRec[0];
+		prio_rec *end = &PrioRec[N_PrioRecs];
 
-			if ( PrioRec[i].not_runnable || PrioRec[i].matched ) {
+		if (!match_any_user) {
+			first = std::lower_bound(first, end, user_str, prio_rec_submitter_lb{});
+			end = std::upper_bound(first, end, user_str, prio_rec_submitter_ub{});
+		}
+
+		for (prio_rec *p = first; p != end; p++) {
+			if ( p->not_runnable || p->matched ) {
 					// This record has been disabled, because it is no longer
 					// runnable or already matched.
 				continue;
 			}
 
-			if ( !match_any_user && (PrioRec[i].submitter != user_str) != 0) {
-					// Owner doesn't match.
-				continue;
-			}
-
-			ad = GetJobAd( PrioRec[i].id.cluster, PrioRec[i].id.proc );
+			ad = GetJobAd( p->id.cluster, p->id.proc );
 			if (!ad) {
 					// This ad must have been deleted since we last built
 					// runnable job list.
@@ -8809,19 +8870,19 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 			}	
 
 			int junk; // don't care about the value
-			if ( PrioRecAutoClusterRejected->lookup( PrioRec[i].auto_cluster_id, junk ) == 0 ) {
+			if ( PrioRecAutoClusterRejected->lookup( p->auto_cluster_id, junk ) == 0 ) {
 					// We have already failed to match a job from this same
 					// autocluster with this machine.  Skip it.
 				continue;
 			}
 
-			if (scheduler.AlreadyMatched(&PrioRec[i].id)) {
-				PrioRec[i].matched = true;
+			if (scheduler.AlreadyMatched(&p->id)) {
+				p->matched = true;
 			}
-			if (!Runnable(&PrioRec[i].id)) {
-				PrioRec[i].not_runnable = true;
+			if (!Runnable(&p->id)) {
+				p->not_runnable = true;
 			}
-			if (PrioRec[i].matched || PrioRec[i].not_runnable) {
+			if (p->matched || p->not_runnable) {
 					// This job's status must have changed since the
 					// time it was added to the runnable job list.
 					// The not_runnable and matched flags will prevent
@@ -8829,10 +8890,20 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 					// future iterations through the list.
 				dprintf(D_FULLDEBUG,
 						"record for job %d.%d skipped until PrioRec rebuild (%s)\n",
-						PrioRec[i].id.cluster, PrioRec[i].id.proc, PrioRec[i].matched ? "already matched" : "no longer runnable");
+						p->id.cluster, p->id.proc, p->matched ? "already matched" : "no longer runnable");
 
 					// Move along to the next job in the prio rec array
 				continue;
+			}
+
+			if (!match_user.empty()) {
+				// TODO Get the owner from the JobQueueJob object.
+				//   Need to be careful about whether UID_DOMAIN is included.
+				std::string job_user;
+				ad->LookupString(ATTR_USER, job_user);
+				if (match_user != job_user) {
+					continue;
+				}
 			}
 
 				// Now check if the job and the claimed resource match.
@@ -8844,7 +8915,7 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 					// THIS IS A DANGEROUS ASSUMPTION - what if this job is no longer
 					// part of this autocluster?  TODO perhaps we should verify this
 					// job is still part of this autocluster here.
-				PrioRecAutoClusterRejected->insert( PrioRec[i].auto_cluster_id, 1 );
+				PrioRecAutoClusterRejected->insert( p->auto_cluster_id, 1 );
 					// Move along to the next job in the prio rec array
 				continue;
 			}
@@ -8873,11 +8944,11 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 				// of the claim with lower RANK, but future versions
 				// very well may.)
 
-			float current_startd_rank;
+			double current_startd_rank;
 			if( my_match_ad &&
 				my_match_ad->LookupFloat(ATTR_CURRENT_RANK, current_startd_rank) )
 			{
-				float new_startd_rank = 0;
+				double new_startd_rank = 0;
 				if( EvalFloat(ATTR_RANK, my_match_ad, ad, new_startd_rank) )
 				{
 					if( new_startd_rank < current_startd_rank ) {
@@ -8913,12 +8984,12 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 							"ConcurrencyLimits do not match, cannot "
 							"reuse claim\n");
 					PrioRecAutoClusterRejected->
-						insert(PrioRec[i].auto_cluster_id, 1);
+						insert(p->auto_cluster_id, 1);
 					continue;
 				}
 			}
 
-			jobid = PrioRec[i].id; // success!
+			jobid = p->id; // success!
 			return;
 
 		}	// end of for loop through PrioRec array
@@ -9036,7 +9107,7 @@ JobSetDestroy(int setid)
 	if (setid <= 0) { return false; }
 
 	JobQueueKeyBuf key;
-	IdToKey(0, JOBSETID_to_qkey2(setid), key);
+	IdToKey(JOBSETID_to_qkey1(setid), JOBSETID_qkey2, key);
 
 	return JobQueue->DestroyClassAd(key);
 }
@@ -9045,7 +9116,7 @@ bool JobSetCreate(int setId, const char * setName, const char * ownerinfoName)
 {
 	if (setId <= 0 || setId >= INT_MAX) { return false; }
 	JobQueueKeyBuf key;
-	IdToKey(0, JOBSETID_to_qkey2(setId), key);
+	IdToKey(JOBSETID_to_qkey1(setId), JOBSETID_qkey2, key);
 
 	bool already_in_transaction = InTransaction();
 	if (!already_in_transaction) {
@@ -9057,6 +9128,9 @@ bool JobSetCreate(int setId, const char * setName, const char * ownerinfoName)
 		0 == SetSecureAttributeString(key.cluster, key.proc, ATTR_JOB_SET_NAME, setName) &&
 		0 == SetSecureAttributeString(key.cluster, key.proc, attr_JobUser.c_str(), ownerinfoName)
 		;
+
+	// make sure that the post transaction jobset handling code runs
+	JobQueue->SetTransactionTriggers(catJobset);
 
 	if ( ! already_in_transaction) {
 		if ( ! rval) {

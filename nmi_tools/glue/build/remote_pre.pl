@@ -48,8 +48,7 @@ my $platform = "$ENV{NMI_PLATFORM}";
 my %defines = (
     listvars => "-LA",
     #noregen => "-DCMAKE_SUPPRESS_REGENERATION:BOOL=TRUE",
-    prefix => "-DCMAKE_INSTALL_PREFIX:PATH=$BaseDir/release_dir",
-    mirror => "-DEXTERNALS_SOURCE_URL:URL=http://parrot.cs.wisc.edu/externals",
+    mirror => "-DEXTERNALS_SOURCE_URL:URL=https://parrot.cs.wisc.edu/externals",
     #mirror => "-DEXTERNALS_SOURCE_URL:URL=http://mirror.batlab.org/pub/export/externals",
     );
 
@@ -57,7 +56,7 @@ my %defines = (
 $| = 1;
 
 # Streamlined Linux builds do not need remote_pre
-if ($platform =~ m/AmazonLinux|CentOS|Debian|Fedora|Rocky|Ubuntu/) {
+if ($platform =~ m/AlmaLinux|AmazonLinux|CentOS|Debian|Fedora|Rocky|Ubuntu/) {
     print "remote_pre not needed for $platform, create_native does this.\n";
     exit 0; # cmake configuration is run as part of create_native
 }
@@ -67,6 +66,9 @@ if ($boos) { $CloneDir =~ s/userdir/sources/; }
 
 if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 	my $enable_vs9 = 0;
+	my $enable_vs15 = 0;
+	my $enable_vs16 = 0;
+	my $enable_vs17 = 1;
 	my $enable_x64 = 1;
 	my $use_latest_vs = 1;
 	my $use_cmake3 = 1;
@@ -74,6 +76,7 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 	#uncomment to use vs9 on Win7 platform
 	#if ($ENV{NMI_PLATFORM} =~ /Windows7/i) { $enable_vs9 = 1; }
 	#if ($ENV{NMI_PLATFORM} =~ /Windows7/i) { $use_latest_vs = 1; $use_cmake3 = 1; }
+	#if ($ENV{NMI_PLATFORM} =~ /Windows7/i) { $enable_vs17 = 1; $enable_vs16 = 0; $enable_vs15 = 0; }
 
 	#uncomment to build x86 on Win8 platform (the rest of the build will follow this)
 	#if ($ENV{NMI_PLATFORM} =~ /Windows8/i) { $enable_x64 = 0; }
@@ -82,12 +85,21 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 		$defines{visualstudio} = '-G "Visual Studio 9 2008"';
 		$ENV{PATH} = "$ENV{VS90COMNTOOLS}..\\IDE;$ENV{VS90COMNTOOLS}..\\..\\VC\\BIN;$ENV{PATH}";
 	} elsif ($use_latest_vs) {
-		# todo, detect other VS versions here.
-		$defines{visualstudio} = '-G "Visual Studio 14 2015"';
-		$ENV{PATH} = "$ENV{VS140COMNTOOLS}..\\IDE;$ENV{VS140COMNTOOLS}..\\..\\VC\\BIN;$ENV{PATH}";
-		if ($enable_x64) {
-			$defines{visualstudio} = '-G "Visual Studio 14 2015 Win64"';
+		if ($enable_vs17 && exists $ENV{VS170COMNTOOLS}) {
+			$defines{visualstudio} = '-G "Visual Studio 17 2022"';
+			#$ENV{PATH} = "$ENV{VS170COMNTOOLS}..\\..\\VC\\TOOLS\\MSVC\\14.31.31103\bin\hostx64\x64;$ENV{PATH}";
+		} elsif ($enable_vs16 && exists $ENV{VS170COMNTOOLS}) {
+			$defines{visualstudio} = '-G "Visual Studio 17 2022" -T v142';
+			#$ENV{PATH} = "$ENV{VS170COMNTOOLS}..\\..\\VC\\TOOLS\\MSVC\\14.29.30133\bin\hostx64\x64;$ENV{PATH}";
+		} elsif ($enable_vs15 && exists $ENV{VS170COMNTOOLS}) {
+			$defines{visualstudio} = '-G "Visual Studio 17 2022" -T v141';
+			#$ENV{PATH} = "$ENV{VS170COMNTOOLS}..\\..\\VC\\TOOLS\\MSVC\\14.16.27023\bin\hostx64\x64;$ENV{PATH}";
+		} else {
+			$defines{visualstudio} = '-G "Visual Studio 14 2015"';
+			$ENV{PATH} = "$ENV{VS140COMNTOOLS}..\\IDE;$ENV{VS140COMNTOOLS}..\\..\\VC\\BIN;$ENV{PATH}";
+			if ($enable_x64) { $defines{visualstudio} = '-G "Visual Studio 14 2015 Win64"'; }
 		}
+		$defines{python36} = "-DWANT_PYTHON36:BOOL=FALSE";
 	} else {
 		$defines{visualstudio} = '-G "Visual Studio 11"';
 		$ENV{PATH} = "$ENV{VS110COMNTOOLS}..\\IDE;$ENV{VS110COMNTOOLS}..\\..\\VC\\BIN;$ENV{PATH}";
@@ -111,10 +123,12 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 	if ( ! $enable_x64) {
 		print "Win64 not enabled and platform=$platform, fixing platform string...\n";
 		$platform =~ s/_64_/_/;
-		print "platform = $platform\n";
 	}
-} else {
-	$ENV{PATH} ="$ENV{PATH}:/sw/bin:/sw/sbin:/usr/kerberos/bin:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin/X11:/usr/X11R6/bin:/usr/local/condor/bin:/usr/local/condor/sbin:/usr/local/bin:/bin:/usr/bin:/usr/X11R6/bin:/usr/ccs/bin:/usr/lib/java/bin";
+} elsif ($ENV{NMI_PLATFORM} =~ /macos/i) {
+	# CRUFT Once 9.0 is EOL, remove the python.org version of python3
+	#   from the mac build machines and remove this setting of PATH.
+	# Ensure we're using the system python3
+	$ENV{PATH} ="/usr/bin:$ENV{PATH}";
 }
 print "------------------------- ENV DUMP ------------------------\n";
 foreach my $key ( sort {uc($a) cmp uc($b)} (keys %ENV) ) {
@@ -187,7 +201,7 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 print "Finding build id of Condor\n";
 open( BUILDID, "$buildid_file" ) || die "Can't open $buildid_file: $!\n";
 my @stat = stat(BUILDID);
-$date = strftime( "%b %d %Y", localtime($stat[9]) );
+$date = strftime( "%Y-%b-%d", localtime($stat[9]) );
 while( <BUILDID> ) {
     chomp;
     $buildid = $_;
@@ -202,6 +216,8 @@ $defines{date} = "-DBUILD_DATE:STRING=\"$date\"";
 
 print "platform is: $platform\n";
 $defines{platform} = "-DPLATFORM:STRING=$platform";
+# all of the binaries we build on Windows should have Windows10 as the CondorPlatform
+$platform =~ s/Windows[789]$/Windows10/;
 $defines{condor_platform} = "-DCONDOR_PLATFORM:STRING=$platform";
 
 ######################################################################

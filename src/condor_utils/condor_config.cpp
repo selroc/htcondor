@@ -71,7 +71,6 @@
 #include "directory.h"			// for StatInfo
 #include "condor_distribution.h"
 #include "condor_environ.h"
-#include "condor_auth_x509.h"
 #include "setenv.h"
 #include "HashTable.h"
 #include "condor_uid.h"
@@ -82,7 +81,7 @@
 #include "subsystem_info.h"
 #include "param_info.h"
 #include "param_info_tables.h"
-#include "Regex.h"
+#include "condor_regex.h"
 #include "filename_tools.h"
 #include "which.h"
 #include "classad_helpers.h"
@@ -98,7 +97,7 @@
 bool real_config(const char* host, int wantsQuiet, int config_options, const char * root_config);
 //int Read_config(const char*, int depth, MACRO_SET& macro_set, int, bool, const char * subsys, std::string & errmsg);
 bool Test_config_if_expression(const char * expr, bool & result, std::string & err_reason, MACRO_SET& macro_set, MACRO_EVAL_CONTEXT & ctx);
-bool is_piped_command(const char* filename);
+//bool is_piped_command(const char* filename);
 bool is_valid_command(const char* cmdToExecute);
 void init_tilde();
 void fill_attributes();
@@ -629,9 +628,9 @@ bool validate_config(bool abort_if_invalid, int opt)
 	MyString deprecated_out;
 	Regex re;
 	if (deprecation_check) {
-		int err = 0; const char * pszMsg = 0;
+		int errcode, erroffset;
 		// check for knobs of the form SUBSYS.LOCALNAME.*
-		if (!re.compile("^[A-Za-z_]*\\.[A-Za-z_0-9]*\\.", &pszMsg, &err, PCRE_CASELESS)) {
+		if (!re.compile("^[A-Za-z_]*\\.[A-Za-z_0-9]*\\.", &errcode, &erroffset, PCRE2_CASELESS)) {
 			EXCEPT("Programmer error in condor_config: invalid regexp\n");
 		}
 	}
@@ -709,22 +708,6 @@ void foreach_param_matching(Regex & re, int options, bool (*fn)(void* user, HASH
 }
 
 // return a list of param names that match the given regex, this list is in hashtable order (i.e. no order)	
-int param_names_matching(Regex & re, ExtArray<const char *>& names)
-{	
-	int cAdded = 0;
-	HASHITER it = hash_iter_begin(ConfigMacroSet);
-	while( ! hash_iter_done(it)) {
-		const char *name = hash_iter_key(it);
-		if (re.match(name)) {
-			names.add(name);
-			++cAdded;
-		}
-		hash_iter_next(it);
-	}
-	hash_iter_delete(&it);
-
-	return cAdded;
-}
 
 int param_names_matching(Regex& re, std::vector<std::string>& names) {
     const int s0 = (int)names.size();
@@ -763,127 +746,6 @@ config_host(const char* host, int config_options, const char * root_config)
 {
 	bool wantsQuiet = config_options & CONFIG_OPT_WANT_QUIET;
 	return real_config(host, wantsQuiet, config_options, root_config);
-}
-
-/* This function initialize GSI (maybe other) authentication related
-   stuff Daemons that should use the condor daemon credentials should
-   set the argument is_daemon=true.  This function is automatically
-   called at config init time with is_daemon=false, so that all
-   processes get the basic auth config.  The order of calls to this
-   function do not matter, as the results are only additive.
-   Therefore, calling with is_daemon=false and then with
-   is_daemon=true or vice versa are equivalent.
-*/
-void
-condor_auth_config(int is_daemon)
-{
-#if defined(HAVE_EXT_GLOBUS)
-
-		// First, if there is X509_USER_PROXY, we clear it
-		// (if we're a daemon).
-	if ( is_daemon ) {
-		UnsetEnv( "X509_USER_PROXY" );
-	}
-
-		// Next, we param the configuration file for GSI related stuff and
-		// set the corresponding environment variables for it
-
-	char *pbuf = 0;
-	char *proxy_buf = 0;
-	char *cert_buf = 0;
-	char *key_buf = 0;
-	char *trustedca_buf = 0;
-	char *mapfile_buf = 0;
-
-	MyString buffer;
-
-
-		// Here's how it works. If you define any of
-		// GSI_DAEMON_CERT, GSI_DAEMON_KEY, GSI_DAEMON_PROXY, or
-		// GSI_DAEMON_TRUSTED_CA_DIR, those will get stuffed into the
-		// environment.
-		//
-		// Everything else depends on GSI_DAEMON_DIRECTORY. If
-		// GSI_DAEMON_DIRECTORY is not defined, then only settings that are
-		// defined above will be placed in the environment, so if you
-		// want the cert and host in a non-standard location, but want to use
-		// /etc/grid-security/certifcates as the trusted ca dir, only
-		// define GSI_DAEMON_CERT and GSI_DAEMON_KEY, and not
-		// GSI_DAEMON_DIRECTORY and GSI_DAEMON_TRUSTED_CA_DIR
-		//
-		// If GSI_DAEMON_DIRECTORY is defined, condor builds a "reasonable"
-		// default out of what's already been defined and what it can
-		// construct from GSI_DAEMON_DIRECTORY  - ie  the trusted CA dir ends
-		// up as in $(GSI_DAEMON_DIRECTORY)/certificates, and so on
-		// The proxy is not included in the "reasonable defaults" section
-
-		// First, let's get everything we might want
-	pbuf = param( STR_GSI_DAEMON_DIRECTORY );
-	trustedca_buf = param( STR_GSI_DAEMON_TRUSTED_CA_DIR );
-	mapfile_buf = param( STR_GSI_MAPFILE );
-	if( is_daemon ) {
-		proxy_buf = param( STR_GSI_DAEMON_PROXY );
-		cert_buf = param( STR_GSI_DAEMON_CERT );
-		key_buf = param( STR_GSI_DAEMON_KEY );
-	}
-
-	if (pbuf) {
-
-		if( !trustedca_buf) {
-			buffer.formatstr( "%s%ccertificates", pbuf, DIR_DELIM_CHAR);
-			SetEnv( STR_GSI_CERT_DIR, buffer.Value() );
-		}
-
-		if (!mapfile_buf ) {
-			buffer.formatstr( "%s%cgrid-mapfile", pbuf, DIR_DELIM_CHAR);
-			SetEnv( STR_GSI_MAPFILE, buffer.Value() );
-		}
-
-		if( is_daemon ) {
-			if( !cert_buf ) {
-				buffer.formatstr( "%s%chostcert.pem", pbuf, DIR_DELIM_CHAR);
-				SetEnv( STR_GSI_USER_CERT, buffer.Value() );
-			}
-	
-			if (!key_buf ) {
-				buffer.formatstr( "%s%chostkey.pem", pbuf, DIR_DELIM_CHAR);
-				SetEnv( STR_GSI_USER_KEY, buffer.Value() );
-			}
-		}
-
-		free( pbuf );
-	}
-
-	if(trustedca_buf) {
-		SetEnv( STR_GSI_CERT_DIR, trustedca_buf );
-		free(trustedca_buf);
-	}
-
-	if (mapfile_buf) {
-		SetEnv( STR_GSI_MAPFILE, mapfile_buf );
-		free(mapfile_buf);
-	}
-
-	if( is_daemon ) {
-		if(proxy_buf) {
-			SetEnv( STR_GSI_USER_PROXY, proxy_buf );
-			free(proxy_buf);
-		}
-
-		if(cert_buf) {
-			SetEnv( STR_GSI_USER_CERT, cert_buf );
-			free(cert_buf);
-		}
-
-		if(key_buf) {
-			SetEnv( STR_GSI_USER_KEY, key_buf );
-			free(key_buf);
-		}
-	}
-
-#else
-	(void) is_daemon;	// Quiet 'unused parameter' warnings
-#endif
 }
 
 bool
@@ -945,7 +807,7 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 			have_config_source = false;
 		}
 	} else {
-		char* env = getenv( EnvGetName(ENV_CONFIG) );
+		char* env = getenv(ENV_CONDOR_CONFIG);
 		if( env && strcasecmp(env, "ONLY_ENV") == MATCH ) {
 				// special case, no config source desired
 			have_config_source = false;
@@ -959,30 +821,25 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 		! continue_if_no_config)
 	{
 		if( wantsQuiet ) {
-			fprintf( stderr, "%s error: can't find config source.\n",
-					 myDistro->GetCap() );
+			fprintf( stderr, "Condor error: can't find config source.\n");
 			if (config_options & CONFIG_OPT_NO_EXIT) { return false; }
 			else { exit(1); }
 		}
-		fprintf(stderr,"\nNeither the environment variable %s_CONFIG,\n",
-				myDistro->GetUc() );
+		fprintf(stderr,"\nNeither the environment variable CONDOR_CONFIG,\n");
 #	  if defined UNIX
-		fprintf(stderr,"/etc/%s/, /usr/local/etc/, nor ~%s/ contain a %s_config source.\n",
-				myDistro->Get(), myDistro->Get(), myDistro->Get() );
+		fprintf(stderr,"/etc/condor/, /usr/local/etc/, nor ~condor/ contain a condor_config source.\n");
 #	  elif defined WIN32
-		fprintf(stderr,"nor the registry contains a %s_config source.\n", myDistro->Get() );
+		fprintf(stderr,"nor the registry contains a condor_config source.\n" );
 #	  else
 #		error "Unknown O/S"
 #	  endif
-		fprintf( stderr,"Either set %s_CONFIG to point to a valid config "
-				"source,\n", myDistro->GetUc() );
+		fprintf( stderr,"Either set CONDOR_CONFIG to point to a valid config "
+				"source,\n");
 #	  if defined UNIX
-		fprintf( stderr,"or put a \"%s_config\" file in /etc/%s/ /usr/local/etc/ or ~%s/\n",
-				 myDistro->Get(), myDistro->Get(), myDistro->Get() );
+		fprintf( stderr,"or put a \"condor_config\" file in /etc/condor/ /usr/local/etc/ or ~condor/\n");
 #	  elif defined WIN32
-		fprintf( stderr,"or put a \"%s_config\" source in the registry at:\n"
-				 " HKEY_LOCAL_MACHINE\\Software\\%s\\%s_CONFIG",
-				 myDistro->Get(), myDistro->Get(), myDistro->GetUc() );
+		fprintf( stderr,"or put a \"condor_config\" source in the registry at:\n"
+				 " HKEY_LOCAL_MACHINE\\Software\\Condor\\CONDOR_CONFIG");
 #	  else
 #		error "Unknown O/S"
 #	  endif
@@ -1060,15 +917,11 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 
 		// Build "magic_prefix" with _condor_, or w/e distro we are
 
-	std::string magic_prefix;
-	magic_prefix += "_";
-	magic_prefix += myDistro->Get();
-	magic_prefix += "_";
-	int prefix_len = (int)magic_prefix.size();
+	const size_t prefix_len = sizeof("_condor_")-1;
 
 	for( int i = 0; my_environ[i]; i++ ) {
 		// proceed only if we see the magic prefix
-		if( strncasecmp( my_environ[i], magic_prefix.c_str(), prefix_len ) != 0 ) {
+		if( strncasecmp( my_environ[i], "_condor_",  prefix_len ) != 0 ) {
 			continue;
 		}
 
@@ -1088,6 +941,7 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 		// isolate Condor macro_name by skipping magic prefix
 		char *macro_name = varname + prefix_len;
 
+	#if 0 // TJ disabled on 8/18/2022 in preparation for the 10.0 series
 		// special macro START_owner needs to be expanded (for the
 		// glide-in code) [which should probably be fixed to use
 		// the general mechanism and set START itself --pfc]
@@ -1097,7 +951,9 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 			insert_macro("START", ownerstr.c_str(), ConfigMacroSet, EnvMacro, ctx);
 		}
 		// ignore "_CONDOR_" without any macro name attached
-		else if( macro_name[0] != '\0' ) {
+		else
+	#endif
+		if( macro_name[0] != '\0' ) {
 			insert_macro(macro_name, varvalue, ConfigMacroSet, EnvMacro, ctx);
 		}
 
@@ -1159,12 +1015,6 @@ real_config(const char* host, int wantsQuiet, int config_options, const char * r
 	}
 
 	condor_except_should_dump_core( param_boolean("ABORT_ON_EXCEPTION", false) );
-
-		// Daemons should additionally call condor_auth_config()
-		// explicitly with the argument is_daemon=true.  Here, we just
-		// call with is_daemon=false, since that is fine for both daemons
-		// and non-daemons to do.
-	condor_auth_config( false );
 
 	//Configure condor_fsync
 	condor_fsync_on = param_boolean("CONDOR_FSYNC", true);
@@ -1272,28 +1122,34 @@ process_locals( const char* param_name, const char* host )
 }
 
 
-template <class T> bool re_match(const char * str, pcre * re, int options, T& tags)
+template <class T> bool re_match(const char * str, pcre2_code * re, PCRE2_SIZE options, T& tags)
 {
 	if ( ! re) return false;
 
-	const size_t ctags = sizeof(tags) / sizeof(tags[0]);
-	const int cvec = (int)(3 * (1 + ctags));
-	int ovec[cvec];
+	PCRE2_SPTR str_pcre2 = reinterpret_cast<const unsigned char *>(str);
+	pcre2_match_data * matchdata = pcre2_match_data_create_from_pattern(re, NULL);
 
-	int rc = pcre_exec(re, NULL, str, (int)strlen(str), 0, options, ovec, cvec);
+	int rc = pcre2_match(re, str_pcre2, strlen(str), 0, options, matchdata, NULL);
+	PCRE2_SIZE * ovec = pcre2_get_ovector_pointer(matchdata);
 
 	for (int ii = 1; ii < rc; ++ii) {
-		tags[ii-1].set(str + ovec[ii * 2], ovec[ii * 2 + 1] - ovec[ii * 2]);
+		tags[ii-1].set(str + ovec[ii * 2], 
+			static_cast<int>(ovec[ii * 2 + 1] - ovec[ii * 2]));
 	}
+
+	pcre2_match_data_free(matchdata);
+
 	return rc > 0;
 }
 
 void do_smart_auto_use(int /*options*/)
 {
-	int erroffset = 0; const char * errmsg = 0;
-	pcre * re = pcre_compile("AUTO_USE_([A-Za-z]+)_(.+)",
-		PCRE_CASELESS | PCRE_ANCHORED,
-		&errmsg, &erroffset, NULL);
+	PCRE2_SIZE erroffset = 0;
+	int errcode;
+	pcre2_code * re = pcre2_compile(reinterpret_cast<const unsigned char *>("AUTO_USE_([A-Za-z]+)_(.+)"),
+		PCRE2_ZERO_TERMINATED,
+		PCRE2_CASELESS | PCRE2_ANCHORED,
+		&errcode, &erroffset, NULL);
 	ASSERT(re);
 
 	MyString tags[2];
@@ -1305,7 +1161,7 @@ void do_smart_auto_use(int /*options*/)
 	HASHITER it = hash_iter_begin(ConfigMacroSet);
 	for (; !hash_iter_done(it); hash_iter_next(it)) {
 		const char *name = hash_iter_key(it);
-		if (re_match(name, re, PCRE_NOTEMPTY, tags)) {
+		if (re_match(name, re, PCRE2_NOTEMPTY, tags)) {
 			// check trigger
 			auto_free_ptr trigger(param(name));
 			bool trigger_value = false;
@@ -1318,8 +1174,9 @@ void do_smart_auto_use(int /*options*/)
 			if ( ! trigger_value)
 				continue;
 
-			int meta_id = param_default_get_source_meta_id(tags[0].c_str(), tags[1].c_str());
-			if (meta_id < 0) {
+			int meta_id = 0;
+			const char * raw_template = param_meta_value(tags[0].c_str(), tags[1].c_str(), &meta_id);
+			if ( ! raw_template) {
 				fprintf(stderr, "Configuration error while interpreting %s : no template named %s:%s\n",
 					name, tags[0].c_str(), tags[1].c_str());
 				continue;
@@ -1328,15 +1185,12 @@ void do_smart_auto_use(int /*options*/)
 			insert_source(name, ConfigMacroSet, src);
 			src.meta_id = (short int)meta_id;
 
-			MACRO_DEF_ITEM * mdi = param_meta_source_by_id(src.meta_id);
-			ASSERT(mdi && mdi->def && mdi->def->psz);
-
-			auto_free_ptr expanded(expand_meta_args(mdi->def->psz, args));
+			auto_free_ptr expanded(expand_meta_args(raw_template, args));
 			Parse_config_string(src, 1, expanded, ConfigMacroSet, ctx);
 		}
 	}
 	hash_iter_delete(&it);
-	pcre_free(re);
+	pcre2_code_free(re);
 }
 
 
@@ -1347,16 +1201,16 @@ int compareFiles(const void *a, const void *b) {
 static void
 get_exclude_regex(Regex &excludeFilesRegex)
 {
-	const char* _errstr;
+	int _errcode;
 	int _erroffset;
 	char* excludeRegex = param("LOCAL_CONFIG_DIR_EXCLUDE_REGEXP");
 	if(excludeRegex) {
 		if (!excludeFilesRegex.compile(excludeRegex,
-									&_errstr, &_erroffset)) {
+									&_errcode, &_erroffset)) {
 			EXCEPT("LOCAL_CONFIG_DIR_EXCLUDE_REGEXP "
 				   "config parameter is not a valid "
-				   "regular expression.  Value: %s,  Error: %s",
-				   excludeRegex, _errstr ? _errstr : "");
+				   "regular expression.  Value: %s,  Error Code: %d",
+				   excludeRegex, _errcode);
 		}
 		if(!excludeFilesRegex.isInitialized() ) {
 			EXCEPT("Could not init regex "
@@ -1382,7 +1236,7 @@ bool check_config_file_access(
 	if (MATCH == strcasecmp(username, "root") || MATCH == strcasecmp(username, "SYSTEM")) {
 		// no need to check access again for root. 
 		return true;
-	} else if (MATCH == strcasecmp(username, "condor")) {
+	} else if (MATCH == strcasecmp(username, MY_condor_NAME)) {
 		priv_to_check = PRIV_CONDOR;
 	} else {
 		priv_to_check = PRIV_USER;
@@ -1489,15 +1343,13 @@ init_tilde()
 	}
 # if defined UNIX
 	struct passwd *pw;
-	if( (pw=getpwnam( myDistro->Get() )) ) {
+	if( (pw=getpwnam( MY_condor_NAME )) ) {
 		tilde = strdup( pw->pw_dir );
 	}
 # else
 	// On Windows, we'll just look in the registry for TILDE.
 	HKEY	handle;
-	std::string regKey("Software\\"); regKey += myDistro->GetCap();
-
-	if ( RegOpenKeyEx(HKEY_LOCAL_MACHINE, regKey.c_str(),
+	if ( RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Condor",
 		0, KEY_READ, &handle) == ERROR_SUCCESS ) {
 
 		// got the reg key open; now we just need to see if
@@ -1535,9 +1387,7 @@ get_tilde()
 const char*
 find_global(int config_options, MyString & config_file)
 {
-	MyString	file;
-	file.formatstr( "%s_config", myDistro->Get() );
-	return find_file( EnvGetName(ENV_CONFIG), file.c_str(), config_options, config_file);
+	return find_file( ENV_CONDOR_CONFIG, "condor_config", config_options, config_file);
 }
 
 // Find user-specific location of a file
@@ -1563,18 +1413,18 @@ find_user_file(std::string &file_location, const char * basename, bool check_acc
 		if ( !pw || !pw->pw_dir) {
 			return false;
 		}
-		formatstr(file_location, "%s/.%s/%s", pw->pw_dir, myDistro->Get(), basename);
+		formatstr(file_location, "%s/.condor/%s", pw->pw_dir, basename);
 #elif defined WIN32
 		// %USERPROFILE%\.condor\user_config
 		const char * pw_dir = getenv("USERPROFILE");
 		if ( !pw_dir)
 			return false;
-		formatstr(file_location, "%s\\.%s\\%s", pw_dir, myDistro->Get(), basename);
+		formatstr(file_location, "%s\\.condor\\%s", pw_dir, basename);
 #else
 		const char * pw_dir = getenv("HOME");
 		if ( !pw_dir)
 			return false;
-		formatstr(file_location, "%s/.%s/%s", pw_dir, myDistro->Get(), basename);
+		formatstr(file_location, "%s/.condor/%s", pw_dir, basename);
 #endif
 	}
 	if (check_access) {
@@ -1655,7 +1505,7 @@ find_file(const char *env_name, const char *file_name, int config_options, MyStr
 		// $HOME/.condor/condor_config was added for BOSCO and never used, We are removing it in 8.3.1, but may put it back if users complain.
 		//find_user_file(locations[0], file_name, false);
 			// 2) /etc/condor/condor_config
-		locations[1].formatstr( "/etc/%s/%s", myDistro->Get(), file_name );
+		locations[1].formatstr( "/etc/condor/%s", file_name );
 			// 3) /usr/local/etc/condor_config (FreeBSD)
 		locations[2].formatstr( "/usr/local/etc/%s", file_name );
 		if (tilde) {
@@ -1685,9 +1535,7 @@ find_file(const char *env_name, const char *file_name, int config_options, MyStr
 # elif defined WIN32	// ifdef UNIX
 	// Only look in the registry on WinNT.
 	HKEY	handle;
-	std::string regKey("Software\\"); regKey += myDistro->GetCap();
-
-	if ( !config_source && RegOpenKeyEx(HKEY_LOCAL_MACHINE, regKey.c_str(),
+	if ( !config_source && RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\Condor",
 		0, KEY_READ, &handle) == ERROR_SUCCESS ) {
 		// We have found a registry key for Condor, which
 		// means this user has a pulse and has actually run the
@@ -1773,6 +1621,59 @@ find_file(const char *env_name, const char *file_name, int config_options, MyStr
 	return config_source;
 }
 
+#ifdef WIN32
+char * get_winreg_string_value(const char * key, const char * valuename)
+{
+	char * pval = nullptr;
+	DWORD valType;
+	DWORD valSize = 0;
+	if (RegGetValue(HKEY_LOCAL_MACHINE, key, valuename, RRF_RT_REG_SZ, &valType, NULL, &valSize) == ERROR_SUCCESS)
+	{
+		valSize += 2;
+		pval = (char*)malloc(valSize);
+		if (RegGetValue(HKEY_LOCAL_MACHINE, key, valuename, RRF_RT_REG_SZ, &valType, pval, &valSize) != ERROR_SUCCESS)
+		{
+			free(pval); pval = nullptr;
+		}
+	}
+	return pval;
+}
+#endif
+
+char * find_python3_dot(int minor_ver) {
+#ifdef WIN32
+	std::string regKey;
+	formatstr(regKey, "Software\\Python\\PythonCore\\3.%d\\InstallPath", minor_ver);
+	return get_winreg_string_value(regKey.c_str(), "ExecutablePath");
+#else
+	// TODO: add non-windows implementation
+	(void)minor_ver; // Shut the compiler up
+	return nullptr;
+#endif
+}
+
+void apply_thread_limit(int detected_cpus, MACRO_EVAL_CONTEXT & ctx)
+{
+	char val[32];
+	int thread_limit = detected_cpus;
+	const char * effective_env = nullptr;
+	static const char * const envlimits[] = { "OMP_THREAD_LIMIT", "SLURM_CPUS_ON_NODE" };
+	for (size_t ii = 0; ii < COUNTOF(envlimits); ++ii) {
+		const char* env = getenv(envlimits[ii]);
+		if (!env) continue;
+
+		int lim = atoi(env);
+		if (lim > 0 && lim < thread_limit) {
+			thread_limit = lim;
+			effective_env = envlimits[ii];
+		}
+	}
+	if (thread_limit < detected_cpus) {
+		snprintf(val,32, "%d", thread_limit);
+		insert_macro("DETECTED_CPUS_LIMIT", val, ConfigMacroSet, DetectedMacro, ctx);
+		dprintf(D_CONFIG, "setting DETECTED_CPUS_LIMIT=%s due to environment %s\n", val, effective_env);
+	}
+}
 
 void
 fill_attributes()
@@ -1789,7 +1690,7 @@ fill_attributes()
 		   Amended -Pete Keller 06/01/99 */
 
 	const char *tmp;
-	MyString val;
+	std::string val;
 	MACRO_EVAL_CONTEXT ctx;
 	init_macro_eval_context(ctx);
 
@@ -1806,7 +1707,7 @@ fill_attributes()
 
 		int ver = sysapi_opsys_version();
 		if (ver > 0) {
-			val.formatstr("%d", ver);
+			formatstr(val,"%d", ver);
 			insert_macro("OPSYSVER", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
 		}
 	}
@@ -1821,7 +1722,7 @@ fill_attributes()
 
 	int major_ver = sysapi_opsys_major_version();
 	if (major_ver > 0) {
-		val.formatstr("%d", major_ver);
+		formatstr(val,"%d", major_ver);
 		insert_macro("OPSYSMAJORVER", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
 	}
 
@@ -1864,6 +1765,25 @@ fill_attributes()
 	}
 #endif
 
+	// if the defaults table has a non-zero default python3 minor version
+	// locate the appropriate python3 executable for that minor version
+	// This is presumed to be the required python minor version needed by the bindings
+	int py3minor = param_default_integer("PYTHON3_VERSION_MINOR",nullptr,nullptr,nullptr,nullptr);
+	if (py3minor > 0) {
+		auto_free_ptr py3val(find_python3_dot(py3minor));
+		if (py3val) {
+			insert_macro("PYTHON3", py3val, ConfigMacroSet, DetectedMacro, ctx);
+		}
+	}
+
+#ifdef WIN32
+	// on windows it is also useful to know the location of the perl binary
+	auto_free_ptr perlval(get_winreg_string_value("Software\\Perl", "BinDir"));
+	if (perlval) {
+		insert_macro("PERL", perlval, ConfigMacroSet, DetectedMacro, ctx);
+	}
+#endif
+
 	insert_macro("CondorIsAdmin", can_switch_ids() ? "true" : "false", ConfigMacroSet, DetectedMacro, ctx);
 
 	insert_macro("SUBSYSTEM", get_mySubSystem()->getName(), ConfigMacroSet, DetectedMacro, ctx);
@@ -1872,7 +1792,7 @@ fill_attributes()
 	if ( ! localname || !localname[0]) { localname = get_mySubSystem()->getName(); }
 	insert_macro("LOCALNAME", localname, ConfigMacroSet, DetectedMacro, ctx);
 
-	val.formatstr("%d",sysapi_phys_memory_raw_no_param());
+	formatstr(val, "%d",sysapi_phys_memory_raw_no_param());
 	insert_macro("DETECTED_MEMORY", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
 
 		// Currently, num_hyperthread_cores is defined as everything
@@ -1883,24 +1803,32 @@ fill_attributes()
 		// we may want to break things out into NUM_HYPERTHREAD_CORES,
 		// NUM_PHYSICAL_CORES, and what-have-you.
 	int num_cpus=0;
+	int detected_cpus=0;
 	int num_hyperthread_cpus=0;
 	sysapi_ncpus_raw(&num_cpus,&num_hyperthread_cpus);
 
 	// DETECTED_PHYSICAL_CPUS will always be the number of real CPUs not counting hyperthreads.
-	val.formatstr("%d",num_cpus);
+	formatstr(val,"%d",num_cpus);
 	insert_macro("DETECTED_PHYSICAL_CPUS", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
 
 	int def_valid = 0;
 	bool count_hyper = param_default_boolean("COUNT_HYPERTHREAD_CPUS", get_mySubSystem()->getName(), &def_valid);
 	if ( ! def_valid) count_hyper = true;
 	// DETECTED_CPUS will be the value that NUM_CPUS will be set to by default.
-	val.formatstr("%d", count_hyper ? num_hyperthread_cpus : num_cpus);
+	detected_cpus = count_hyper ? num_hyperthread_cpus : num_cpus;
+	formatstr(val,"%d", detected_cpus);
 	insert_macro("DETECTED_CPUS", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
 
 	// DETECTED_CORES is not a good name, but we're stuck with it now...
 	// it will ALWAYS be the number of hyperthreaded cores.
-	val.formatstr("%d",num_hyperthread_cpus);
+	formatstr(val,"%d",num_hyperthread_cpus);
 	insert_macro("DETECTED_CORES", val.c_str(), ConfigMacroSet, DetectedMacro, ctx);
+
+	// new for version 10.0. DETECTED_CPUS_LIMIT is the minimum of DETECTED_CPUS and several environment variables
+	// This is meant to limit the default slot count of personal condors and glide-ins
+	// for this pass (early detection) we set a DETECTED_CPUS_LIMIT only if the environment is less than non-hyper CPUs
+	// in reinsert_specials when we apply the final value of COUNT_HYPERTHREAD_CPUS we will limit again if necessary
+	apply_thread_limit(num_cpus, ctx);
 }
 
 
@@ -2073,6 +2001,14 @@ bool param_defined(const char* name) {
 	}
 	return false;
 }
+
+unsigned int expand_defined_config_macros (std::string &value)
+{
+	MACRO_EVAL_CONTEXT ctx;
+	init_macro_eval_context(ctx);
+	return expand_defined_macros(value, ConfigMacroSet, ctx);
+}
+
 
 char *param(const char * name) {
 	MACRO_EVAL_CONTEXT ctx;
@@ -2704,9 +2640,10 @@ const char * param_append_location(const MACRO_META * pmet, MyString & value)
 	value += config_source_by_id(pmet->source_id);
 	if (pmet->source_line >= 0) {
 		value.formatstr_cat(", line %d", pmet->source_line);
-		MACRO_DEF_ITEM * pmsi = param_meta_source_by_id(pmet->source_meta_id);
+		MACRO_TABLE_PAIR * ptable = nullptr;
+		MACRO_DEF_ITEM * pmsi = param_meta_source_by_id(pmet->source_meta_id, &ptable);
 		if (pmsi) {
-			value.formatstr_cat(", use %s+%d", pmsi->key, pmet->source_meta_off);
+			value.formatstr_cat(", use %s:%s+%d", ptable->key, pmsi->key, pmet->source_meta_off);
 		}
 	}
 	return value.c_str();
@@ -3013,6 +2950,10 @@ reinsert_specials( const char* host )
 		// DETECTED_CPUS will be the value that NUM_CPUS will be set to by default.
 		snprintf(buf,40,"%d", count_hyper ? num_hyperthread_cpus : num_cpus);
 		insert_macro("DETECTED_CPUS", buf, ConfigMacroSet, DetectedMacro, ctx);
+		if (count_hyper) {
+			// if hyperthreads are enabled, we have to check again to see if environmental limits apply
+			apply_thread_limit(num_hyperthread_cpus, ctx);
+		}
 	}
 }
 
@@ -3072,16 +3013,19 @@ static StringList PersistAdminList;
 
 class RuntimeConfigItem {
 public:
-	RuntimeConfigItem() : admin(NULL), config(NULL) { }
+	RuntimeConfigItem() : admin(nullptr), config(nullptr) { }
+	RuntimeConfigItem(char *admin, char *config): admin(admin), config(config) {}
+	RuntimeConfigItem(const RuntimeConfigItem &rhs): admin(strdup(rhs.admin)), config(strdup(rhs.config))  {}
+
 	~RuntimeConfigItem() { if (admin) free(admin); if (config) free(config); }
-	void initialize() { admin = config = NULL; }
+	void initialize() { admin = config = nullptr; }
 	char *admin;
 	char *config;
 };
 
 #include "extArray.h"
 
-static ExtArray<RuntimeConfigItem> rArray;
+static std::vector<RuntimeConfigItem> rArray;
 
 static MyString toplevel_persistent_config;
 
@@ -3146,10 +3090,10 @@ init_dynamic_config()
 			return;
 		} else {
 				// we are a daemon.  if we fail, we must exit.
-			fprintf( stderr, "%s error: ENABLE_PERSISTENT_CONFIG is TRUE, "
+			fprintf( stderr, "Condor error: ENABLE_PERSISTENT_CONFIG is TRUE, "
 					 "but neither %s nor PERSISTENT_CONFIG_DIR is "
 					 "specified in the configuration file\n",
-					 myDistro->GetCap(), filename_parameter.c_str() );
+					 filename_parameter.c_str() );
 			exit( 1 );
 		}
 	}
@@ -3341,7 +3285,7 @@ set_persistent_config(char *admin, char *config)
 int
 set_runtime_config(char *admin, char *config)
 {
-	int i;
+	size_t i;
 
 	if (!admin || !admin[0] || !enable_runtime) {
 		if (admin)  { free(admin);  }
@@ -3350,7 +3294,7 @@ set_runtime_config(char *admin, char *config)
 	}
 
 	if (config && config[0]) {
-		for (i=0; i <= rArray.getlast(); i++) {
+		for (i=0; i < rArray.size(); i++) {
 			if (strcmp(rArray[i].admin, admin) == MATCH) {
 				free(admin);
 				free(rArray[i].config);
@@ -3358,23 +3302,20 @@ set_runtime_config(char *admin, char *config)
 				return 0;
 			}
 		}
-		rArray[i].admin = admin;
-		rArray[i].config = config;
-	} else {
-		for (i=0; i <= rArray.getlast(); i++) {
-			if (strcmp(rArray[i].admin, admin) == MATCH) {
-				free(admin);
-				if (config) free(config);
-				free(rArray[i].admin);
-				free(rArray[i].config);
-				rArray[i] = rArray[rArray.getlast()];
-				rArray[rArray.getlast()].initialize();
-				rArray.truncate(rArray.getlast()-1);
-				return 0;
-			}
-		}
-	}
 
+		rArray.emplace_back(admin,config );
+	} else {
+		// config is nullptr or zero-length, meaning "remove"
+		auto it = std::remove_if(rArray.begin(), rArray.end(),
+				[&admin](const RuntimeConfigItem &rci) { 
+					return strcmp(rci.admin,admin) == MATCH;
+				}
+		);
+		rArray.erase(it, rArray.end());
+		free(admin);
+		if (config) free(config);
+		return 0;
+	}
 	return 0;
 }
 
@@ -3485,7 +3426,7 @@ process_persistent_configs()
 static int
 process_runtime_configs()
 {
-	int i, rval;
+	int rval;
 	bool processed = false;
 
 	MACRO_SOURCE source;
@@ -3494,12 +3435,12 @@ process_runtime_configs()
 	MACRO_EVAL_CONTEXT ctx;
 	init_macro_eval_context(ctx);
 
-	for (i=0; i <= rArray.getlast(); i++) {
+	for (size_t i=0; i < rArray.size(); i++) {
 		processed = true;
-		source.line = i;
+		source.line = (int)i;
 		rval = Parse_config_string(source, 0, rArray[i].config, ConfigMacroSet, ctx);
 		if (rval < 0) {
-			dprintf( D_ALWAYS | D_ERROR, "Configuration Error parsing runtime[%d] name '%s', at line %d in config: %s\n",
+			dprintf( D_ALWAYS | D_ERROR, "Configuration Error parsing runtime[%zu] name '%s', at line %d in config: %s\n",
 					 i, rArray[i].admin, source.meta_off+1, rArray[i].config);
 			exit(1);
 		}

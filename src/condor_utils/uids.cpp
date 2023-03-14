@@ -552,14 +552,14 @@ init_user_ids(const char username[], const char domain[])
 
 		// these should probably be snprintfs
 		swprintf_s(w_fullname, COUNTOF(w_fullname), L"%S@%S", username, domain);
-		sprintf(user, "%s", username);
-		sprintf(dom, "%s", domain);
+		snprintf(user, sizeof(user), "%s", username);
+		snprintf(dom, sizeof(dom), "%s", domain);
 		
 		// make sure we're SYSTEM when we do this
 		w_pw = lsaMan.query(w_fullname);
 		if ( w_pw ) {
 			// copy password into a char buffer
-			sprintf(pw, "%S", w_pw);			
+			snprintf(pw, sizeof(pw), "%S", w_pw);
 			// we don't need the wide char pw anymore, so clean it up
 			SecureZeroMemory(w_pw, wcslen(w_pw)*sizeof(wchar_t));
 			delete[](w_pw);
@@ -889,7 +889,7 @@ const char* get_condor_username()
 	if (CondorUserName == NULL) {
 		EXCEPT("Out of memory. Aborting.");
 	}
-	sprintf(CondorUserName, "%s/%s",szDomainName,szAccountName);
+	snprintf(CondorUserName, length, "%s/%s",szDomainName,szAccountName);
 
 	if ( hProcess )
 		CloseHandle(hProcess);
@@ -1057,7 +1057,7 @@ init_condor_ids()
 	RealCondorUid = INT_MAX;
 	RealCondorGid = INT_MAX;
 
-	const char	*envName = EnvGetName( ENV_UG_IDS ); 
+	const char	*envName = ENV_CONDOR_UG_IDS;
 	if( (env_val = getenv(envName)) ) {
 		val = env_val;
 	} else if( (config_val = param(envName)) ) {
@@ -1070,7 +1070,7 @@ init_condor_ids()
 					 env_val ? "environment" : "config file", val );
 			fprintf( stderr, "Please set %s to ", envName );
 			fprintf( stderr, "the '.' seperated uid, gid pair that\n" );
-			fprintf( stderr, "should be used by %s.\n", myDistro->Get() );
+			fprintf( stderr, "should be used by condor.\n" );
 			exit(1);
 		}
 		if( CondorUserName != NULL ) {
@@ -1089,7 +1089,7 @@ init_condor_ids()
 			fprintf(stderr, "does not exist in your password information.\n" );
 			fprintf(stderr, "Please set %s to ", envName);
 			fprintf(stderr, "the '.' seperated uid, gid pair that\n");
-			fprintf(stderr, "should be used by %s.\n", myDistro->Get() );
+			fprintf(stderr, "should be used by condor.\n" );
 			exit(1);
 		}
 
@@ -1099,12 +1099,12 @@ init_condor_ids()
 		RealCondorGid = envCondorGid;
 	} else {
 		// If CONDOR_IDS isn't set, then look for the "condor" account.
-		bool r = pcache()->get_user_uid( myDistro->Get(), RealCondorUid );
+		bool r = pcache()->get_user_uid( MY_condor_NAME, RealCondorUid );
 		if (!r) {
 			RealCondorUid = INT_MAX;
 		}
 
-		pcache()->get_user_gid( myDistro->Get(), RealCondorGid );
+		pcache()->get_user_gid( MY_condor_NAME, RealCondorGid );
 	}
 	if( config_val ) {
 		free( config_val );
@@ -1115,7 +1115,7 @@ init_condor_ids()
 	/* If we're root, set the Condor Uid and Gid to the value
 	   specified in the "CONDOR_IDS" environment variable */
 	if( can_switch_ids() ) {
-		const char	*enviName = EnvGetName( ENV_UG_IDS ); 
+		const char	*enviName = ENV_CONDOR_UG_IDS;
 		if( envCondorUid != INT_MAX ) {	
 			/* CONDOR_IDS are set, use what it said */
 				CondorUid = envCondorUid;
@@ -1129,16 +1129,16 @@ init_condor_ids()
 					free( CondorUserName );
 					CondorUserName = NULL;
 				}
-				CondorUserName = strdup( myDistro->Get() );
+				CondorUserName = strdup( MY_condor_NAME );
 				if (CondorUserName == NULL) {
 					EXCEPT("Out of memory. Aborting.");
 				}
 			} else {
 				fprintf( stderr,
 						 "Can't find \"%s\" in the password file and "
-						 "%s not defined in %s_config or as an "
-						 "environment variable.\n", myDistro->Get(),
-						 enviName, myDistro->Get() );
+						 "%s not defined in condor_config or as an "
+						 "environment variable.\n",
+						 MY_condor_NAME, enviName );
 				exit(1);
 			}
 		}
@@ -2173,7 +2173,7 @@ get_real_username( void )
 		uid_t my_uid = getuid();
 		if ( !(pcache()->get_user_name( my_uid, RealUserName)) ) {
 			char buf[64];
-			sprintf( buf, "uid %d", (int)my_uid );
+			snprintf( buf, sizeof(buf), "uid %d", (int)my_uid );
 			RealUserName = strdup( buf );
 		}
 	}

@@ -174,7 +174,6 @@ typedef struct macro_eval_context_ex : macro_eval_context {
 		char * p;
 	};
 
-	int param_names_matching(Regex & re, ExtArray<const char *>& names);
 	int param_names_matching(Regex& re, std::vector<std::string>& names);
 
 	bool param_defined(const char* name);
@@ -304,8 +303,17 @@ typedef struct macro_eval_context_ex : macro_eval_context {
 
 	// do macro expansion in-place in a std::string, expanding only macros not in the skip list
 	// returns the number of macros that were skipped.
+	// used by submit_utils to selectively expand submit hash keys when creating the submit digest
 	unsigned int selective_expand_macro (std::string &value, classad::References & skip_knobs, MACRO_SET& macro_set, MACRO_EVAL_CONTEXT & ctx);
 
+	// do macro expansion in-place in a std::string, expanding only macros that are defined in the given macro table
+	// returns the number of $() and $func() patterns that were skipped.
+	unsigned int expand_defined_macros (std::string &value, MACRO_SET& macro_set, MACRO_EVAL_CONTEXT & ctx);
+
+	// do macro expansion in-place in a std::string, expanding only macros that are defined in the config
+	// returns the number of $() and $func() patterns that were skipped
+	// used by submit_utils to selectively submit templates against the config at load time
+	unsigned int expand_defined_config_macros (std::string &value);
 
 	// this is the lowest level primative to doing a lookup in the macro set.
 	// it looks ONLY for an exact match of "name" in the given macro set and does
@@ -713,20 +721,9 @@ int write_config_file(const char* pathname, int options);
 	void set_debug_flags( const char * strFlags, int flags );
 	void config_insert( const char* attrName, const char* attrValue);
 	
+	bool is_piped_command(const char* filename);
 	// Process an additional chunk of file
 	void process_config_source(const char* filename, int depth, const char* sourcename, const char* host, int required);
-
-
-/* This function initialize GSI (maybe other) authentication related
-   stuff Daemons that should use the condor daemon credentials should
-   set the argument is_daemon=true.  This function is automatically
-   called at config init time with is_daemon=false, so that all
-   processes get the basic auth config.  The order of calls to this
-   function do not matter, as the results are only additive.
-   Therefore, calling with is_daemon=false and then with
-   is_daemon=true or vice versa are equivalent.
-*/
-void condor_auth_config(int is_daemon);
 
 #endif /* _CONDOR_CONFIG_H */
 

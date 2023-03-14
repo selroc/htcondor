@@ -511,13 +511,16 @@ static bool submit_job_with_current_priv( ClassAd & src, const char * schedd_nam
 	}
 
 	failobj.SetQmgr(0);
-	if( ! DisconnectQ(qmgr, true /* commit */)) {
-		failobj.fail("Failed to commit job submission\n");
+	CondorError errstack;
+	if( ! DisconnectQ(qmgr, true /* commit */, &errstack)) {
+		failobj.fail("Failed to commit job submission : %s\n", errstack.getFullText(true).c_str());
 		return false;
+	} else if ( ! errstack.empty()) {
+		dprintf(D_ALWAYS, "job submmission warning : %s\n", errstack.getFullText(true).c_str());
+		errstack.clear();
 	}
 
 	if( is_sandboxed ) {
-		CondorError errstack;
 		ClassAd * adlist[1];
 		adlist[0] = &src;
 		if( ! schedd.spoolJobFiles(1, adlist, &errstack) ) {
@@ -887,7 +890,6 @@ bool remove_job(classad::ClassAd const &ad, int cluster, int proc, char const *r
 bool InitializeAbortedEvent( JobAbortedEvent *event, classad::ClassAd const &job_ad )
 {
 	int cluster, proc;
-	char removeReason[256];
 
 		// This code is copied from gridmanager basejob.C with a small
 		// amount of refactoring.
@@ -900,11 +902,8 @@ bool InitializeAbortedEvent( JobAbortedEvent *event, classad::ClassAd const &job
 			 "(%d.%d) Writing abort record to user logfile\n",
 			 cluster, proc );
 
-	removeReason[0] = '\0';
-	job_ad.EvaluateAttrString( ATTR_REMOVE_REASON, removeReason,
-						   sizeof(removeReason) - 1 );
+	job_ad.EvaluateAttrString(ATTR_REMOVE_REASON, event->reason);
 
-	event->setReason( removeReason );
 	return true;
 }
 
@@ -987,7 +986,6 @@ bool InitializeTerminateEvent( TerminatedEvent *event, classad::ClassAd const &j
 bool InitializeHoldEvent( JobHeldEvent *event, classad::ClassAd const &job_ad )
 {
 	int cluster, proc;
-	char holdReason[256];
 
 		// This code is copied from gridmanager basejob.C with a small
 		// amount of refactoring.
@@ -1000,11 +998,8 @@ bool InitializeHoldEvent( JobHeldEvent *event, classad::ClassAd const &job_ad )
 			 "(%d.%d) Writing hold record to user logfile\n",
 			 cluster, proc );
 
-	holdReason[0] = '\0';
-	job_ad.EvaluateAttrString( ATTR_REMOVE_REASON, holdReason,
-						   sizeof(holdReason) - 1 );
+	job_ad.EvaluateAttrString(ATTR_REMOVE_REASON, event->reason);
 
-	event->setReason( holdReason );
 	return true;
 }
 

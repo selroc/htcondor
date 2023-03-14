@@ -27,6 +27,14 @@ if(BUILD_DATE)
 	set_source_files_properties(condor_version.cpp PROPERTIES COMPILE_DEFINITIONS BUILD_DATE="${BUILD_DATE}")
 endif()
 
+# publish python3 minor version and module extension in the param table
+if (PYTHON3_VERSION_MINOR)
+	set_source_files_properties(condor_config.cpp param_info.cpp PROPERTIES
+		 COMPILE_DEFINITIONS "PYTHON3_MODULE_SUFFIX=\"${PYTHON3_MODULE_SUFFIX}\";PYTHON3_VERSION_MINOR=${PYTHON3_VERSION_MINOR}"
+	)
+endif()
+
+
 # We need this .o statically linked into every exe for the version object
 # to parse.  Make this an object library to link everywhere.
 add_library(condor_version_obj STATIC condor_version.cpp)
@@ -44,62 +52,33 @@ compat_classad_util.cpp
 compat_classad_util.h
 condor_arglist.cpp
 condor_arglist.h
-condor_attributes.cpp
-condor_environ.cpp
-CondorError.cpp
-CondorError.h
 condor_event.cpp
 condor_event.h
-condor_open.h
 condor_snutils.cpp
 condor_ver_info.cpp
 condor_ver_info.h
 condor_version.h
 condor_version.cpp
-consumption_policy.cpp
-consumption_policy.h
-directory.cpp
-directory.h
 directory_util.cpp
 directory_util.h
-distribution.cpp
-dprintf_common.cpp
-dprintf_config.cpp
-dprintf.cpp
-dprintf_setup.cpp
 env.cpp
 env.h
 except.cpp
 file_lock.cpp
 filename_tools.cpp
-filename_tools_cpp.cpp
-format_time.cpp
-format_time.h
 get_random_num.cpp
 HashTable.cpp
 HashTable.h
 iso_dates.cpp
 iso_dates.h
-log_rotate.cpp
-log_rotate.h
-misc_utils.cpp
-misc_utils.h
-my_distribution.cpp
 MyString.cpp
 MyString.h
-my_username.cpp
-my_username.h
 read_user_log.cpp
 read_user_log.h
 read_user_log_state.cpp
 read_user_log_state.h
-rotate_file.cpp
 setenv.cpp
 setenv.h
-simple_arg.cpp
-simple_arg.h
-stat_info.cpp
-stat_info.h
 stat_wrapper.cpp
 stat_wrapper.h
 stl_string_utils.cpp
@@ -107,22 +86,14 @@ stl_string_utils.h
 strcasestr.cpp
 string_list.cpp
 string_list.h
-stringSpace.cpp
-stringSpace.h
-strnewp.cpp
 strupr.cpp
 subsystem_info.cpp
 subsystem_info.h
 ToE.cpp
-uids.cpp
 user_log_header.cpp
 user_log_header.h
 utc_time.cpp
 utc_time.h
-write_user_log.cpp
-write_user_log.h
-write_user_log_state.cpp
-write_user_log_state.h
 )
 
 if (NOT WINDOWS)
@@ -154,16 +125,12 @@ endif(WINDOWS)
 if(NOT WINDOWS)
 	list(APPEND CONDOR_API_AND_UTILS_SRC
 		lock_file.unix.cpp
-		passwd_cache.unix.cpp
-		passwd_cache.unix.h
-		sig_install.unix.cpp
 	)
 endif(NOT WINDOWS)
 
 # These sources compile to .o's which only go into libcondorapi
 set(CONDOR_API_SRC
 	libcondorapi_stubs.cpp
-	../condor_sysapi/kernel_version.cpp
 	../condor_sysapi/kernel_version.cpp
 	../condor_sysapi/reconfig.cpp
 	../condor_sysapi/sysapi.h
@@ -177,16 +144,20 @@ adcluster.cpp
 adcluster.h
 ad_printmask.cpp
 ad_printmask.h
+print_format_tables.cpp
 ad_transforms.cpp
 ad_transforms.h
 AWSv4-utils.cpp
 AWSv4-utils.h
+AWSv4-impl.h
 backward_file_reader.cpp
 binary_search.h
 build_job_env.cpp
 build_job_env.h
 check_events.cpp
 check_events.h
+checksum.cpp
+checksum.h
 classad_collection.cpp
 classad_collection.h
 classad_command_util.cpp
@@ -220,6 +191,7 @@ compat_classad_list.cpp
 compat_classad_list.h
 condor_adtypes.cpp
 condor_api.h
+condor_attributes.cpp
 condor_base64.cpp
 condor_base64.h
 condor_blkng_full_disk_io.cpp
@@ -228,9 +200,10 @@ condor_common.cpp
 condor_config.cpp
 condor_crontab.cpp
 condor_crontab.h
+CondorError.cpp
+CondorError.h
 condor_fsync.cpp
 condor_fsync.h
-condor_ftp.cpp
 condor_getcwd.cpp
 condor_getcwd.h
 condor_holdcodes.h
@@ -240,12 +213,15 @@ condor_md.cpp
 condor_mkstemp.cpp
 condor_netaddr.cpp
 condor_netdb.cpp
+condor_open.h
 condor_perms.cpp
 condor_pidenvid.cpp
 condor_q.cpp
 condor_q.h
 condor_query.cpp
 condor_query.h
+condor_regex.cpp
+condor_regex.h
 condor_scitokens.cpp
 condor_scitokens.h
 condor_sinful.cpp
@@ -266,6 +242,8 @@ condor_user_policy.h
 config.cpp
 console-utils.cpp
 console-utils.h
+consumption_policy.cpp
+consumption_policy.h
 copy_file.cpp
 credmon_interface.cpp
 credmon_interface.h
@@ -275,7 +253,6 @@ cron_job_list.cpp
 cron_job_mgr.cpp
 cron_job_mode.cpp
 cron_job_params.cpp
-cronos.cpp
 cron_param.cpp
 dagman_utils.cpp
 dagman_utils.h
@@ -288,10 +265,16 @@ dc_service.h
 DelegationInterface.cpp
 DelegationInterface.h
 d_format_time.cpp
+directory.cpp
+directory.h
 docker-api.cpp
 docker-api.h
 domain_tools.cpp
 domain_tools.h
+dprintf_common.cpp
+dprintf_config.cpp
+dprintf.cpp
+dprintf_setup.cpp
 dynuser.h
 email.cpp
 email_cpp.cpp
@@ -307,6 +290,7 @@ expr_analyze.h
 extArray.h
 file_modified_trigger.cpp
 file_modified_trigger.h
+filename_tools_cpp.cpp
 filesystem_remap.cpp
 filesystem_remap.h
 file_transfer.cpp
@@ -315,6 +299,8 @@ file_transfer_stats.cpp
 file_transfer_stats.h
 forkwork.cpp
 forkwork.h
+format_time.cpp
+format_time.h
 fs_util.cpp
 gahp_common.cpp
 gahp_common.h
@@ -334,8 +320,6 @@ hibernation_manager.cpp
 hibernation_manager.h
 hibernator.cpp
 hibernator.h
-hibernator.tools.cpp
-hibernator.tools.h
 historyFileFinder.cpp
 historyFileFinder.h
 history_queue.cpp
@@ -352,6 +336,8 @@ java_config.cpp
 java_config.h
 JobLogMirror.cpp
 JobLogMirror.h
+job_ad_instance_recording.cpp
+job_ad_instance_recording.h
 KeyCache.cpp
 killfamily.cpp
 killfamily.h
@@ -366,15 +352,21 @@ LoadPlugins.cpp
 LoadPlugins.h
 log.cpp
 log.h
+log_rotate.cpp
+log_rotate.h
 log_transaction.cpp
 log_transaction.h
 make_printmask.cpp
+manifest.cpp
+manifest.h
 MapFile.cpp
 MapFile.h
 mark_thread.cpp
 match_prefix.cpp
 metric_units.cpp
 metric_units.h
+misc_utils.cpp
+misc_utils.h
 mk_cache_links.cpp
 mk_cache_links.h
 my_async_fread.cpp
@@ -384,6 +376,8 @@ my_hostname.cpp
 my_hostname.h
 my_popen.cpp
 my_popen.h
+my_username.cpp
+my_username.h
 named_classad.cpp
 named_classad_list.cpp
 NegotiationUtils.cpp
@@ -422,15 +416,18 @@ ranger.cpp
 ranger.h
 read_multiple_logs.cpp
 read_multiple_logs.h
-Regex.cpp
-Regex.h
+rotate_file.cpp
 secure_file.cpp
 secure_file.h
 selector.cpp
 selector.h
 set_user_priv_from_ad.cpp
+shortfile.cpp
+shortfile.h
 sig_name.cpp
 sig_name.h
+simple_arg.cpp
+simple_arg.h
 simplelist.h
 socket_proxy.cpp
 socket_proxy.h
@@ -440,12 +437,17 @@ spooled_job_files.cpp
 spooled_job_files.h
 spool_version.cpp
 spool_version.h
+ssl_version_hack.h
+stat_info.cpp
+stat_info.h
 status_string.cpp
 status_string.h
 status_types.h
 stopwatch.h
 store_cred.cpp
 store_cred.h
+stringSpace.cpp
+stringSpace.h
 str_isxxx.cpp
 str_isxxx.h
 submit_glob.cpp
@@ -469,10 +471,10 @@ token_utils.cpp
 token_utils.h
 totals.cpp
 totals.h
-transfer_request.cpp
 translation_utils.cpp
 translation_utils.h
 tree.h
+uids.cpp
 udp_waker.cpp
 udp_waker.h
 usagemon.cpp
@@ -490,6 +492,10 @@ waker.cpp
 waker.h
 which.cpp
 which.h
+write_user_log.cpp
+write_user_log.h
+write_user_log_state.cpp
+write_user_log_state.h
 xform_utils.cpp
 xform_utils.h
 zkm_base64.cpp
@@ -507,6 +513,9 @@ if(NOT WINDOWS)
 		limit.unix.cpp
 		network_adapter.unix.cpp
 		network_adapter.unix.h
+		passwd_cache.unix.cpp
+		passwd_cache.unix.h
+		sig_install.unix.cpp
 		sleep.unix.cpp
 	)
 endif(NOT WINDOWS)
@@ -517,6 +526,7 @@ if(LINUX)
 		hibernator.linux.h
 		network_adapter.linux.cpp
 		network_adapter.linux.h
+		proc_family_direct_cgroup_v2.cpp
 	)
 endif(LINUX)
 
@@ -573,12 +583,8 @@ set_source_files_properties(../condor_sysapi/clinpack.cpp PROPERTIES COMPILE_FLA
 set_source_files_properties(../condor_daemon_core.V6/self_monitor.cpp ../classad_analysis/analysis.cpp ../classad_analysis/interval.cpp generic_stats.cpp generic_query.cpp PROPERTIES COMPILE_FLAGS -Wno-float-equal)
 endif(UNIX)
 
-if (SCITOKENS_FOUND)
-include_directories(${SCITOKENS_INCLUDE_DIRS})
-endif(SCITOKENS_FOUND)
-
 # Turn off the OpenSSL deprecation warnings until we decide on the long-term direction with OpenSSL on Mac.
-if (DARWIN)
+if (APPLE)
 	set_source_files_properties(condor_base64.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations)
 	set_source_files_properties(condor_dh.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations)
 	set_source_files_properties(condor_md.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations)
@@ -591,9 +597,41 @@ endif()
 
 # Build "Object" libraries, which are just a set of .o files which can later to into libraries
 add_library(condor_api_and_utils_objects OBJECT ${CONDOR_API_AND_UTILS_SRC})
+
+# The utils need pcre2
+# Older cmakes don't allow target_link_libraries to OBJECT libraries
+# remove this when we drop Ubuntu 18
+include_directories(${PCRE2_INCLUDE})
+include_directories(${OPENSSL_INCLUDE})
+if (${CMAKE_VERSION} VERSION_LESS 3.12.0) 
+	include_directories(${PCRE2_INCLUDE})
+else()
+	target_link_libraries(condor_api_and_utils_objects INTERFACE pcre2-8)
+endif()
+
 add_library(condor_utils_objects OBJECT ${CONDOR_UTILS_SRC})
+if (${CMAKE_VERSION} VERSION_LESS 3.12.0) 
+	include_directories(${PCRE2_INCLUDE})
+else()
+	target_link_libraries(condor_utils_objects INTERFACE pcre2-8)
+	if (WITH_SCITOKENS)
+		target_link_libraries(condor_utils_objects PRIVATE SciTokens-headers)
+	endif()
+endif()
+
 add_dependencies(condor_utils_objects utils_genparams)
 add_library(condor_extra_objects OBJECT ${EXTRA_SRCS})
+
+# The extra libraries also need pcre2
+if (${CMAKE_VERSION} VERSION_LESS 3.12.0) 
+	include_directories(${PCRE2_INCLUDE})
+else()
+	target_link_libraries(condor_extra_objects PUBLIC pcre2-8)
+	if (WITH_SCITOKENS)
+		target_link_libraries(condor_extra_objects PRIVATE SciTokens-headers)
+	endif()
+endif()
+
 add_library(condor_safe_objects OBJECT ${SAFE_OPEN_SRC})
 
 # linux condor_utils.so from the .o's built above
@@ -602,6 +640,13 @@ condor_shared_lib(condor_utils
 	$<TARGET_OBJECTS:condor_utils_objects>
 	$<TARGET_OBJECTS:condor_extra_objects>
 )
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 8.0)
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+			target_link_libraries(condor_utils PRIVATE stdc++fs)
+        endif()
+    endif()
+endif()
 
 if ( ${PACKAGE_VERSION} MATCHES "([0-9]+)[.]([0-9]+)[.]([0-9]+)" )
 	set( UTILS_LIB_NAME "condor_utils_${CMAKE_MATCH_1}_${CMAKE_MATCH_2}_${CMAKE_MATCH_3}" )
@@ -610,12 +655,12 @@ else()
 endif()
 set_target_properties( condor_utils PROPERTIES OUTPUT_NAME "${UTILS_LIB_NAME}" )
 if (HAVE_GNU_LD)
-	target_link_libraries( condor_utils -Wl,--wrap,exit )
+	target_link_libraries( condor_utils PRIVATE -Wl,--wrap,exit )
 endif()
 
 # for linux also make a static version of condor_utils
 #
-if (LINUX OR DARWIN)
+if (LINUX OR APPLE)
    condor_static_lib(condor_utils_s
 		$<TARGET_OBJECTS:condor_api_and_utils_objects>
 		$<TARGET_OBJECTS:condor_utils_objects>
@@ -625,7 +670,15 @@ if (LINUX OR DARWIN)
    if (HAVE_GNU_LD)
 	target_link_libraries( condor_utils_s -Wl,--wrap,exit )
    endif()
-endif(LINUX OR DARWIN)
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 8.0)
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+			target_link_libraries(condor_utils_s stdc++fs)
+        endif()
+    endif()
+endif()
+
+endif(LINUX OR APPLE)
 
 
 # Brain twister:
@@ -647,17 +700,21 @@ if ( LINUX )
   set_target_properties( condor_utils PROPERTIES LINK_FLAGS "-Wl,--wrap=dprintf" )
 endif()
 
-if (DLOPEN_GSI_LIBS OR DLOPEN_VOMS_LIBS)
-	target_link_libraries(condor_utils ${RT_FOUND} ${CLASSADS_FOUND} ${PCRE_FOUND} ${SCITOKENS_FOUND} ${OPENSSL_FOUND} ${KRB5_FOUND} ${MUNGE_FOUND} )
+if (DLOPEN_VOMS_LIBS)
+	target_link_libraries(condor_utils PUBLIC ${RT_FOUND} ${CLASSADS_FOUND} ${KRB5_FOUND} ${MUNGE_FOUND} crypto )
 else()
-	target_link_libraries(condor_utils ${RT_FOUND} ${CLASSADS_FOUND} ${PCRE_FOUND} ${VOMS_FOUND} ${GLOBUS_FOUND} ${SCITOKENS_FOUND} ${OPENSSL_FOUND} ${KRB5_FOUND} ${MUNGE_FOUND} )
+	target_link_libraries(condor_utils PUBLIC ${RT_FOUND} ${CLASSADS_FOUND} ${VOMS_FOUND} openssl crypto ${KRB5_FOUND} ${MUNGE_FOUND} )
+	if (WITH_SCITOKENS)
+		target_link_libraries(condor_utils PUBLIC SciTokens)
+	endif()
+
 endif()
 if (LINUX AND LIBUUID_FOUND)
-	target_link_libraries(condor_utils ${LIBUUID_FOUND})
+	target_link_libraries(condor_utils PUBLIC ${LIBUUID_FOUND})
 endif()
 
-if ( DARWIN )
-	target_link_libraries( condor_utils ${IOKIT_FOUND} ${COREFOUNDATION_FOUND} resolv )
+if ( APPLE )
+	target_link_libraries( condor_utils PUBLIC ${IOKIT_FOUND} ${COREFOUNDATION_FOUND} resolv )
 	set_target_properties( condor_utils PROPERTIES INSTALL_NAME_DIR ${CMAKE_CURRENT_BINARY_DIR} )
 	install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_LIB}/lib${UTILS_LIB_NAME}.dylib)" )
 endif()
@@ -670,11 +727,18 @@ if(WINDOWS)
 endif()
 
 add_library(condor_api_objects OBJECT ${CONDOR_API_SRC})
+if (${CMAKE_VERSION} VERSION_LESS 3.12.0) 
+	include_directories(${PCRE2_INCLUDE})
+else()
+	target_link_libraries(condor_api_objects pcre2-8)
+endif()
+
 condor_static_lib(condorapi 
 						$<TARGET_OBJECTS:condor_api_objects>
 						$<TARGET_OBJECTS:condor_api_and_utils_objects>
 						$<TARGET_OBJECTS:condor_safe_objects>
 )
+target_link_libraries(condorapi pcre2-8)
 
 #add_dependencies( condorapi condor_utils )
 
@@ -686,12 +750,12 @@ if (DOCKER_ALLOW_RUN_AS_ROOT)
 	set_source_files_properties(docker-api.cpp PROPERTIES COMPILE_DEFINITIONS DOCKER_ALLOW_RUN_AS_ROOT=1)
 endif()
 
-target_link_libraries(condorapi classads;${CMAKE_DL_LIBS};${RT_FOUND})
+target_link_libraries(condorapi classads)
 if (LINUX AND LIBUUID_FOUND)
 	target_link_libraries(condorapi ${LIBUUID_FOUND})
 endif()
 
-if (LINUX OR DARWIN)
+if (LINUX OR APPLE)
 	condor_shared_lib(condorapi_shared 
 						$<TARGET_OBJECTS:condor_api_objects>
 						$<TARGET_OBJECTS:condor_api_and_utils_objects>
@@ -702,22 +766,16 @@ if (LINUX OR DARWIN)
 	set_target_properties( condorapi_shared PROPERTIES OUTPUT_NAME condorapi )
 endif()
 
-install (FILES MyString.h
-		 condor_event.h
-		 condor_holdcodes.h
+install (FILES condor_event.h
 		 read_user_log.h
-		 user_log.c++.h
-		 user_log.README
-		 write_user_log.h
-		 compat_classad.h
-		 compat_classad_list.h
-		 compat_classad_util.h
-		 stl_string_utils.h
 		DESTINATION ${C_INCLUDE})
 
 install ( TARGETS condorapi DESTINATION ${C_LIB} )
-if (LINUX OR DARWIN)
+if (LINUX OR APPLE)
     install ( TARGETS condorapi_shared DESTINATION ${C_LIB} )
+endif()
+if (APPLE)
+    install( CODE "execute_process(COMMAND ${CMAKE_SOURCE_DIR}/src/condor_scripts/macosx_rewrite_libs \$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/${C_LIB}/libcondorapi.dylib)" )
 endif()
 
 set_source_files_properties(test_log_reader.cpp PROPERTIES DEFINITIONS ENABLE_STATE_DUMP)

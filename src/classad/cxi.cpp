@@ -21,7 +21,10 @@
 #include "classad/classad_distribution.h"
 #include <iostream>
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+
 using namespace classad;
 
 enum Commands {
@@ -351,7 +354,7 @@ help( void )
 int
 findCommand( string cmdStr )
 {
-	int cmd = 0, len = cmdStr.length();
+	int cmd = 0, len = (int)cmdStr.length();
 
 	for( int i = 0 ; i < len ; i++ ) {
 		cmdStr[i] = tolower( cmdStr[i] );

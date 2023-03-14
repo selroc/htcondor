@@ -47,7 +47,7 @@ displayJobShort(ClassAd* ad)
 	// Initialization here not strictly necessary, but some compilers (gcc)
 	// are unable to determine that the member will always be initialized in
 	// LookupFloat below.
-    float utime = 0;
+    double utime = 0;
     char *owner, *cmd, *args;
 
     owner = NULL;
@@ -179,7 +179,7 @@ static const char* format_date( time_t date )
 		if (date==0) return " ??? ";
 
         tm = localtime( &date );
-        sprintf( buf, "%2d/%-2d %02d:%02d",
+        snprintf( buf, sizeof(buf), "%2d/%-2d %02d:%02d",
                 (tm->tm_mon)+1, tm->tm_mday, tm->tm_hour, tm->tm_min
         );
         return buf;
@@ -204,7 +204,7 @@ format_time( int tot_secs )
         static char     answer[25];
 
 		if ( tot_secs < 0 ) {
-			sprintf(answer,"[?????]");
+			snprintf(answer,sizeof(answer),"[?????]");
 			return answer;
 		}
 
@@ -215,7 +215,7 @@ format_time( int tot_secs )
         min = tot_secs / MINUTE;
         secs = tot_secs % MINUTE;
 
-        (void)sprintf( answer, "%3d+%02d:%02d:%02d", days, hours, min, secs );
+        (void)snprintf( answer, sizeof(answer), "%3d+%02d:%02d:%02d", days, hours, min, secs );
         return answer;
 }
 

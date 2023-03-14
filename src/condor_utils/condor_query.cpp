@@ -382,6 +382,7 @@ CondorQuery::setLocationLookup(const std::string &location, bool want_one_result
 	attrs.push_back(ATTR_ADDRESS_V1);
 	attrs.push_back(ATTR_NAME);
 	attrs.push_back(ATTR_MACHINE);
+	attrs.push_back(ATTR_REMOTE_ADMIN_CAPABILITY);
 	if (queryType == SCHEDD_AD)
 	{
 		attrs.push_back(ATTR_SCHEDD_IP_ADDR);
@@ -606,11 +607,6 @@ filterAds (ClassAdList &in, ClassAdList &out)
 	return Q_OK;
 }
 
-int 
-CondorQuery::addExtraAttribute(const char *name, const char *value) {
-	return extraAttrs.AssignExpr(name, value);
-}
-
 
 const char *
 getStrQueryResult(QueryResult q)
@@ -632,8 +628,8 @@ getStrQueryResult(QueryResult q)
 void
 CondorQuery::setDesiredAttrs(char const * const *attrs)
 {
-	MyString val;
-	::join_args(attrs,&val);
+	std::string val;
+	::join_args(attrs,val);
 	setDesiredAttrs(val.c_str());
 }
 
@@ -652,9 +648,7 @@ CondorQuery::setDesiredAttrs(const classad::References &attrs)
 void
 CondorQuery::setDesiredAttrs(const std::vector<std::string> &attrs)
 {
-	std::string str;
-	str.reserve(attrs.size()*30); // make a guess at total string space needed.
-	::join(attrs, " ", str);
+	std::string str = join(attrs, " ");
 	setDesiredAttrs(str.c_str());
 }
 

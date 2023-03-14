@@ -23,9 +23,9 @@
 #include "condor_classad.h"
 #include "condor_debug.h"
 #include "MyString.h"
-#include "extArray.h"
-#include "regex.h"
 #include "date_util.h"
+#include "utc_time.h"
+#include <algorithm>
 
 //
 // The list of attributes that can be defined for a cron schedule
@@ -76,101 +76,21 @@ CronTab::CronTab( ClassAd *ad )
 		if ( ad->LookupString( this->attributes[ctr], buffer ) ) {
 			dprintf( D_FULLDEBUG, "CronTab: Pulled out '%s' for %s\n",
 						buffer.c_str(), this->attributes[ctr] );
-			this->parameters[ctr] = new MyString( buffer.c_str() );
+			this->parameters[ctr] = new std::string( buffer );
 			//
 			// The parameter is empty, we'll use the wildcard
 			//
 		} else {
 			dprintf( D_FULLDEBUG, "CronTab: No attribute for %s, using wildcard\n",
 							this->attributes[ctr] );
-			this->parameters[ctr] = new MyString( CRONTAB_WILDCARD );
+			this->parameters[ctr] = new std::string( CRONTAB_WILDCARD );
 		}
 	} // FOR
 	this->init();
 }
 
 /**
- * Constuctor
- * Provided to add backwards capabilities for cronos.c
- * Using integers really limits what can be done for scheduling
- * The STAR constant has been replaced with CRONTAB_CRONOS_STAR
- * Note that we are also not providing scheduling down to the second
- * These arguments can only be single values. If you want to use the more
- * complex syntax you'll have to use strings
- * 
- * @param minutes - the minutes attribute (0 - 59)
- * @param hours - the hours attribute (0 - 23)
- * @param days_of_month - a day in a month (1 - 31, depending on the month)
- * @param months - the months attribute (1 - 12)
- * @param days_of_week - a day in the week (0 - 7, Sunday is 0 or 7)
- **/
-CronTab::CronTab(	int minutes,
-					int hours,
-					int days_of_month,
-					int months,
-					int days_of_week ) {
-		//
-		// Simply convert everything to strings
-		// If the value is STAR, then use the wildcard
-		//
-	if ( minutes == CRONTAB_CRONOS_STAR ) {
-		this->parameters[CRONTAB_MINUTES_IDX] = new MyString( CRONTAB_WILDCARD );
-	} else {
-		this->parameters[CRONTAB_MINUTES_IDX] = new MyString( std::to_string( minutes ) );
-	}
-	if ( hours == CRONTAB_CRONOS_STAR ) {
-		this->parameters[CRONTAB_HOURS_IDX]	= new MyString( CRONTAB_WILDCARD );
-	} else {
-		this->parameters[CRONTAB_HOURS_IDX]	= new MyString( std::to_string( hours ) );
-	}
-	if ( days_of_month == CRONTAB_CRONOS_STAR ) {
-		this->parameters[CRONTAB_DOM_IDX] = new MyString( CRONTAB_WILDCARD );
-	} else {
-		this->parameters[CRONTAB_DOM_IDX] = new MyString( std::to_string( days_of_month ) );
-	}
-	if ( months == CRONTAB_CRONOS_STAR ) {
-		this->parameters[CRONTAB_MONTHS_IDX] = new MyString( CRONTAB_WILDCARD );
-	} else {
-		this->parameters[CRONTAB_MONTHS_IDX] = new MyString( std::to_string( months ) );
-	}
-	if ( days_of_week == CRONTAB_CRONOS_STAR ) {
-		this->parameters[CRONTAB_DOW_IDX] = new MyString( CRONTAB_WILDCARD );
-	} else {
-		this->parameters[CRONTAB_DOW_IDX] = new MyString( std::to_string( days_of_week ) );
-	}
-	this->init();
-}
-
-/**
- * Constructor
- * Instead of being given a ClassAd, we can be given string values
- * following the same format to create a cron schedule
- * 
- * @param minutes
- * @param hours
- * @param days_of_month
- * @param months
- * @param days_of_week
- **/
-CronTab::CronTab(	const char* minutes,
-					const char* hours,
-					const char* days_of_month,
-					const char* months,
-					const char* days_of_week ) {
-		//
-		// Just save into our object - how convienent!
-		//
-	this->parameters[CRONTAB_MINUTES_IDX]	= new MyString( minutes );
-	this->parameters[CRONTAB_HOURS_IDX]		= new MyString( hours );
-	this->parameters[CRONTAB_DOM_IDX]		= new MyString( days_of_month );
-	this->parameters[CRONTAB_MONTHS_IDX]	= new MyString( months );
-	this->parameters[CRONTAB_DOW_IDX]		= new MyString( days_of_week );
-
-	this->init();
-}
-
-/**
- * Deconstructor
+ * Destructor
  * Remove our array lists and parameters that we have
  * dynamically allocated
  **/
@@ -222,7 +142,7 @@ CronTab::needsCronTab( ClassAd *ad ) {
  * @return true if ad had valid CronTab paramter syntax
  **/
 bool
-CronTab::validate( ClassAd *ad, MyString &error ) {
+CronTab::validate( ClassAd *ad, std::string &error ) {
 	bool ret = true;
 		//
 		// Loop through all the fields in the ClassAd
@@ -238,7 +158,7 @@ CronTab::validate( ClassAd *ad, MyString &error ) {
 			// their parameters at once
 			//
 		if ( ad->LookupString( CronTab::attributes[ctr], buffer ) ) {
-			MyString curError;
+			std::string curError;
 			if ( !CronTab::validateParameter( buffer.c_str(), CronTab::attributes[ctr], curError ) ) {
 				ret = false;
 				error += curError;
@@ -246,18 +166,6 @@ CronTab::validate( ClassAd *ad, MyString &error ) {
 		}
 	} // FOR
 	return ( ret );
-}
-
-/**
- * Get back all the error messages that may have occured for
- * this instantiation of the object. This is different from
- * the error messages created by the static helper methods
- * 
- * @return the error message for this object
- **/
-MyString
-CronTab::getError() {
-	return ( this->errorLog );
 }
 
 /**
@@ -276,15 +184,15 @@ CronTab::getError() {
  * 		 just the characters
  **/
 bool
-CronTab::validateParameter(const char* parameter, const char * attr, MyString& error)
+CronTab::validateParameter(const char* parameter, const char * attr, std::string& error)
 {
 	bool ret = true;
 		//
 		// Make sure there are only valid characters 
 		// in the parameter string
 		//
-	MyString temp(parameter);
-	if ( CronTab::regex.match( temp ) ) {
+	std::string temp(parameter);
+	if ( CronTab::regex.match_str( temp ) ) {
 		error  = "Invalid parameter value '";
 		error += parameter;
 		error += "' for ";
@@ -332,7 +240,7 @@ CronTab::init() {
 	bool failed = false;
 	int ctr;
 	for ( ctr = 0; ctr < CRONTAB_FIELDS; ctr++ ) {
-		this->ranges[ctr] = new ExtArray<int>();			
+		this->ranges[ctr] = new std::vector<int>;			
 			//
 			// Call to expand the parameter
 			// The function will modify the queue for us
@@ -367,15 +275,14 @@ CronTab::initRegexObject() {
 		// So we only need to compile the pattern once
 		//
 	if ( ! CronTab::regex.isInitialized() ) {
-		const char *errptr;
-		int erroffset;
-		MyString pattern( CRONTAB_PARAMETER_PATTERN ) ;
+		int errcode, erroffset;
+		std::string pattern( CRONTAB_PARAMETER_PATTERN ) ;
 			//
 			// It's a big problem if we can't compile the pattern, so
 			// we'll want to dump out right now
 			//
-		if ( ! CronTab::regex.compile( pattern, &errptr, &erroffset )) {
-			MyString error = "CronTab: Failed to compile Regex - ";
+		if ( ! CronTab::regex.compile( pattern, &errcode, &erroffset )) {
+			std::string error = "CronTab: Failed to compile Regex - ";
 			error += pattern;
 			EXCEPT( "%s", error.c_str() );
 		}
@@ -417,7 +324,7 @@ CronTab::nextRunTime( ) {
  * @return the next run time for the object's schedule
  **/
 long
-CronTab::nextRunTime( long timestamp ) {
+CronTab::nextRunTime( long timestamp, bool use_localtime /* = true */) {
 	long runtime = CRONTAB_INVALID;
 	struct tm *tm;
 
@@ -450,7 +357,12 @@ CronTab::nextRunTime( long timestamp ) {
 		// match. This assumes that the ranges are sorted, which they 
 		// should be
 		//
-	tm = localtime( &_timestamp );
+	if (use_localtime) {
+		tm = localtime( &_timestamp );
+	} else {
+		tm = gmtime( &_timestamp );
+	} 
+
 	int fields[CRONTAB_FIELDS];
 	fields[CRONTAB_MINUTES_IDX]	= tm->tm_min;
 	fields[CRONTAB_HOURS_IDX]	= tm->tm_hour;
@@ -483,7 +395,12 @@ CronTab::nextRunTime( long timestamp ) {
 		matchTime.tm_mon	= match[CRONTAB_MONTHS_IDX] - 1;
 		matchTime.tm_year	= match[CRONTAB_YEARS_IDX] - 1900;
 		matchTime.tm_isdst  = -1; // auto-calculate whether daylight savings time applies
-		runtime = (long)mktime( &matchTime );
+
+		if (use_localtime) {
+			runtime = (long)mktime( &matchTime );
+		} else {
+			runtime = (long)timegm( &matchTime );
+		}
 		
 			//
 			// Make sure that our next runtime is in the future
@@ -552,7 +469,7 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 		// to insert all the days of the month for the matching days of the
 		// week in the range.
 		//
-	ExtArray<int> *curRange = NULL;
+	std::vector<int> *curRange = NULL;
 	if ( attribute_idx == CRONTAB_DOM_IDX ) {
 			//
 			// We have to take the current month & year
@@ -562,36 +479,36 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 			
 			//Issue here is that range for dom will be 1-31
 			//for * and if one doesn't specify day_of_month in a job file
-		if (this->ranges[attribute_idx]->length()==CRONTAB_DAY_OF_MONTH_MAX){	
-			if ((this->ranges[CRONTAB_DOW_IDX]->length()==CRONTAB_DAY_OF_WEEK_MAX)||
-			   (this->ranges[CRONTAB_DOW_IDX]->length()==0)){ 
+		if (this->ranges[attribute_idx]->size() == CRONTAB_DAY_OF_MONTH_MAX){	
+			if ((this->ranges[CRONTAB_DOW_IDX]->size() == CRONTAB_DAY_OF_WEEK_MAX)||
+			   (this->ranges[CRONTAB_DOW_IDX]->size() == 0)){ 
 				//if both wildcards, use month range
 				//if DOW range empty use DOM range
-				curRange = new ExtArray<int>( *this->ranges[attribute_idx] );
+				curRange = new std::vector<int>( *this->ranges[attribute_idx] );
 			} else {
 				//only wildcard in month, so use day of week range
 				//this isn't quite right
-				curRange = new ExtArray<int>( CRONTAB_DAY_OF_MONTH_MAX );
+				curRange = new std::vector<int>(CRONTAB_DAY_OF_MONTH_MAX);
 			}
 		}else{
 		      // get to here means DOM was specified
-		      curRange = new ExtArray<int>( *this->ranges[attribute_idx] );
+		      curRange = new std::vector<int>( *this->ranges[attribute_idx] );
 		}
 		
 		int firstDay = dayOfWeek( match[CRONTAB_MONTHS_IDX],
 								  1,
 								  match[CRONTAB_YEARS_IDX] );
-		int ctr, cnt;
-		for ( ctr = 0, cnt = this->ranges[CRONTAB_DOW_IDX]->getlast();
-			  ctr <= cnt;
+		size_t ctr, cnt;
+		for ( ctr = 0, cnt = this->ranges[CRONTAB_DOW_IDX]->size();
+			  ctr < cnt;
 			  ctr++ ) {
 				//
 				// Now figure out all the days for this specific day of the week
 				//
-			int day = (this->ranges[CRONTAB_DOW_IDX]->getElementAt(ctr) - firstDay) + 1;
+			int day = (this->ranges[CRONTAB_DOW_IDX]->at(ctr) - firstDay) + 1;
 			while ( day <= CRONTAB_DAY_OF_MONTH_MAX ) {
 				if (curRange && day > 0 && !this->contains( *curRange, day ) ) {
-					curRange->add( day );
+					curRange->push_back(day);
 				}
 				day += 7;
 			} // WHILE
@@ -613,9 +530,10 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 		// If our value isn't in the list, then we'll take the next one
 		//
 	bool ret = false;
-	int range_idx, cnt;
-	for ( range_idx = 0, cnt = curRange->getlast();
-		  range_idx <= cnt;
+	size_t range_idx;
+	size_t cnt;
+	for ( range_idx = 0, cnt = curRange->size();
+		  range_idx < cnt;
 		  range_idx++ ) {
 			//
 			// Two ways to make a match:
@@ -630,7 +548,7 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 			//	   level, when they call us again they'll ask
 			//	   us to just use the first value that we can
 			//
-		int value = curRange->getElementAt( range_idx );
+		int value = curRange->at( range_idx );
 		if ( useFirst || value >= curTime[attribute_idx] ) {
 				//
 				// If this value is greater than the current time value,
@@ -710,15 +628,15 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 bool
 CronTab::expandParameter( int attribute_idx, int min, int max )
 {
-	MyString *param = this->parameters[attribute_idx];
-	ExtArray<int> *list	= this->ranges[attribute_idx];
+	std::string *param = this->parameters[attribute_idx];
+	std::vector<int> *list	= this->ranges[attribute_idx];
 	
 		//
 		// Make sure the parameter is valid
 		// The validation method will have already printed out
 		// the error message to the log
 		//
-	MyString error;
+	std::string error;
 	if ( ! CronTab::validateParameter(	param->c_str(),
 										CronTab::attributes[attribute_idx],
 										error ) ) {
@@ -733,7 +651,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		//
 		// Remove any spaces
 		//
-	param->replaceString(" ", "");
+	replace_str(*param, " ", "");
 	
 		//
 		// Now here's the tricky part! We need to expand their parameter
@@ -765,8 +683,8 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 				//
 			const char *_numerator = token.GetNextToken( CRONTAB_STEP, true );
 			if ( ( _temp = token.GetNextToken( CRONTAB_STEP, true ) ) != NULL ) {
-				MyString stepStr( _temp );
-				stepStr.trim();
+				std::string stepStr( _temp );
+				trim(stepStr);
 				cur_step = atoi( stepStr.c_str() );
 				if (cur_step == 0) {
 					return false;
@@ -877,7 +795,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		 		// that it falls in our step listing for the range
 		 		//
 			if (((temp % cur_step) == 0) && !this->contains(*list, temp)) {
-				list->add( temp );
+				list->push_back(temp);
 		 	}
 		} // FOR
 	} // WHILE
@@ -885,6 +803,17 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		// Sort! Makes life easier later on
 		//
 	this->sort( *list );	
+
+	// The topmost (DOW) can be empty, but if any other
+	// index generated an empty list, it indicates an error
+	// as an empty range passed in gets expanded to *
+
+	if ((attribute_idx != CRONTAB_DOW_IDX) && (0 == list->size())) {
+		std::string msg = "Invalid cron attribute: ";
+		msg += param->c_str();
+		CronTab::errorLog += msg;
+		return false;
+	}
 	return ( true );
 }
 
@@ -896,15 +825,14 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
  * @return true if the element exists in the list
  **/
 bool
-CronTab::contains( ExtArray<int> &list, const int &elt ) 
+CronTab::contains( std::vector<int> &list, const int &elt ) 
 {
 		//
 		// Just run through our array and look for the 
 		// the element
 		//
 	bool ret = false;
-	int ctr;
-	for ( ctr = 0; ctr <= list.getlast(); ctr++ ) {
+	for ( size_t ctr = 0; ctr < list.size(); ctr++ ) {
 			//
 			// All we can really do is do a simple comparison
 			//
@@ -918,22 +846,13 @@ CronTab::contains( ExtArray<int> &list, const int &elt )
 
 /**
  * Ascending Insertion Sort
- * This is here so I can sort ExtArray<int>'s
+ * This is here so I can sort std::vector<int>'s
  * 
  * @param list - the array to sort
  **/
 void
-CronTab::sort( ExtArray<int> &list )
+CronTab::sort( std::vector<int> &list )
 {
-	int ctr, ctr2, value;
-	for ( ctr = 1; ctr <= list.getlast(); ctr++ ) {
-		value = list[ctr];
-    	ctr2 = ctr;
-		while ( ( ctr2 > 0 ) && ( list[ctr2 - 1] > value ) ) {
-			list[ctr2] = list[ctr2 - 1];
-			ctr2--;
-		} // WHILE
-		list[ctr2] = value;
-	} // FOR
+	std::sort(list.begin(), list.end()); // ascending sort is the default
 	return;
 }

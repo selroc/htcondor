@@ -332,16 +332,6 @@ VMGahpServer::startUp(Env *job_env, const char *workingdir, int nice_inc, Family
 	}
 
 	priv_state vmgahp_priv = PRIV_ROOT;
-#if defined(WIN32)
-	// TODO.. 
-	// Currently vmgahp for VMware VM universe can't run as user on Windows.
-	// It seems like a bug of VMware. VMware command line tool such as "vmrun" 
-	// requires Administrator privilege.
-	// -jaeyoung 06/15/07
-	if( strcasecmp(m_vm_type.c_str(), CONDOR_VM_UNIVERSE_VMWARE ) == MATCH ) {
-		vmgahp_priv = PRIV_UNKNOWN;
-	}
-#endif
 
 	m_vmgahp_pid = daemonCore->Create_Process(
 			JobName.c_str(), //Name of executable
@@ -1028,7 +1018,7 @@ VMGahpServer::poll()
 	int num_results = 0;
 	int i, result_reqid;
 	VMGahpRequest* entry;
-	ExtArray<Gahp_Args*> result_lines;
+	std::vector<Gahp_Args*> result_lines;
 
 	if( m_is_initialized == false ) {
 		return 0;
@@ -1076,7 +1066,7 @@ VMGahpServer::poll()
 			delete result;
 			return -1;
 		}
-		result_lines[i] = result;
+		result_lines.push_back(result);
 		result = NULL;
 	}
 
