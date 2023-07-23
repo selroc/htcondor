@@ -368,11 +368,11 @@ const char* _format_global_header(int cat_and_flags, int hdr_flags, DebugHeaderI
 				#else
 				int seconds = (int)clock_now;
 				int micros = info.tv.tv_usec + 500;
-				if( micros >= 1000000 ) { micros = 0; seconds += 1; }
+				if( micros >= 1'000'000 ) { micros = 0; seconds += 1; }
 				rc = sprintf_realloc( &buf, &bufpos, &buflen, "%d.%03d ", seconds, micros / 1000 );
 				#endif
 			} else {
-				rc = sprintf_realloc( &buf, &bufpos, &buflen, "%d ", (int)clock_now );
+				rc = sprintf_realloc( &buf, &bufpos, &buflen, "%lld ", (long long)clock_now );
 			}
 			if( rc < 0 ) {
 				sprintf_errno = errno;
@@ -384,7 +384,7 @@ const char* _format_global_header(int cat_and_flags, int hdr_flags, DebugHeaderI
 				#else
 				struct tm * then = info.tm;
 				int micros = info.tv.tv_usec + 500;
-				if( micros >= 1000000 ) {
+				if( micros >= 1'000'000 ) {
 					micros = 0;
 					time_t seconds = clock_now + 1;
 					then = localtime(& seconds);
@@ -1046,7 +1046,6 @@ _condor_open_lock_file(const char *filename,int flags, mode_t perm)
 	int	retry = 0;
 	int save_errno = 0;
 	priv_state	priv;
-	char*		dirpath = NULL;
 	int lock_fd;
 
 	if( !filename ) {
@@ -1064,26 +1063,26 @@ _condor_open_lock_file(const char *filename,int flags, mode_t perm)
 				   we created it as root, we need to try to
 				   chown() it to condor.
 				*/ 
-			dirpath = condor_dirname( filename );
+			std::string dirpath = condor_dirname( filename );
 			errno = 0;
-			if( mkdir(dirpath, 0777) < 0 ) {
+			if( mkdir(dirpath.c_str(), 0777) < 0 ) {
 				if( errno == EACCES ) {
 						/* Try as root */ 
 					_set_priv(PRIV_ROOT, __FILE__, __LINE__, 0);
-					if( mkdir(dirpath, 0777) < 0 ) {
+					if( mkdir(dirpath.c_str(), 0777) < 0 ) {
 						/* We failed, we're screwed */
 						fprintf( stderr, "Can't create lock directory \"%s\", "
-								 "errno: %d (%s)\n", dirpath, errno, 
+								 "errno: %d (%s)\n", dirpath.c_str(), errno, 
 								 strerror(errno) );
 					} else {
 						/* It worked as root, so chown() the
 						   new directory and set a flag so we
 						   retry the safe_open_wrapper(). */
 #ifndef WIN32
-						if (chown( dirpath, get_condor_uid(),
+						if (chown( dirpath.c_str(), get_condor_uid(),
 								   get_condor_gid() )) {
 							fprintf( stderr, "Failed to chown(%s) to %d.%d: %s\n",
-									 dirpath, get_condor_uid(),
+									 dirpath.c_str(), get_condor_uid(),
 									 get_condor_gid(), strerror(errno) );
 						}
 #endif
@@ -1093,7 +1092,7 @@ _condor_open_lock_file(const char *filename,int flags, mode_t perm)
 				} else {
 						/* Some other error than access, give up */ 
 					fprintf( stderr, "Can't create lock directory: \"%s\""
-							 "errno: %d (%s)\n", dirpath, errno, 
+							 "errno: %d (%s)\n", dirpath.c_str(), errno, 
 							 strerror(errno) );							
 				}
 			} else {
@@ -1101,9 +1100,6 @@ _condor_open_lock_file(const char *filename,int flags, mode_t perm)
 					   try the safe_open_wrapper() again */
 				retry = 1;
 			}
-				/* At this point, we're done with this, so
-				   don't leak it. */
-			free( dirpath );
 		}
 		if( retry ) {
 			lock_fd = safe_open_wrapper_follow(filename,flags,perm);
@@ -1519,9 +1515,7 @@ preserve_log_file(struct DebugFileInfo* it, bool dont_panic, time_t now)
 				*/
 		}
 		else {
-			// This absurd construction is because there's no other way to
-			// tell gcc 8 that we really do want to truncate the arguments.
-			int rv = snprintf( msg_buf, sizeof(msg_buf), "Can't rename(%s,%s)\n", filePath.c_str(), old ); ++rv;
+			snprintf( msg_buf, sizeof(msg_buf), "Can't rename(%s,%s)\n", filePath.c_str(), old );
 			_condor_dprintf_exit( save_errno, msg_buf );
 		}
 	}
@@ -1629,9 +1623,7 @@ _condor_fd_panic( int line, const char* file )
 
 	if( !debug_file_ptr ) {
 		save_errno = errno;
-		// This absurd construction is because there's no other way to
-		// tell gcc 8 that we really do want to truncate the arguments.
-		int rv = snprintf( msg_buf, sizeof(msg_buf), "Can't open \"%s\"\n%s\n", filePath.c_str(), panic_msg ); ++rv;
+		snprintf( msg_buf, sizeof(msg_buf), "Can't open \"%s\"\n%s\n", filePath.c_str(), panic_msg );
 		_condor_dprintf_exit( save_errno, msg_buf );
 	}
 		/* Seek to the end */
@@ -1769,7 +1761,7 @@ _condor_dprintf_exit( int error_code, const char* msg )
 				// Probably format should be %ld, and we should cast to long
 				// int, but I'm afraid of changing the output format.
 				// wenger 2009-02-24.
-			snprintf( header, sizeof(header), "%d ", (int)clock_now );
+			snprintf( header, sizeof(header), "%lld ", (long long)clock_now );
 		} else {
 			tm = localtime( &clock_now );
 			snprintf( header, sizeof(header), "%d/%d %02d:%02d:%02d ",

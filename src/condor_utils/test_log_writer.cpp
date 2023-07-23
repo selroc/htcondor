@@ -43,7 +43,6 @@
 #ifdef WIN32
 # define usleep(_x_) Sleep((_x_)/1000)
 #endif
-using namespace std;
 
 static const char *	VERSION = "1.0.0";
 
@@ -171,7 +170,7 @@ public:
 	bool Verbose( Verbosity v ) const { return m_shared.Verbose(v); };
 
 private:
-	vector<WorkerOptions *>	 m_workerOptions;	// List of worker's options
+	std::vector<WorkerOptions *>	 m_workerOptions;	// List of worker's options
 	SharedOptions			 m_shared;
 };
 
@@ -226,7 +225,7 @@ public:
 
 private:
 	const GlobalOptions	&m_options;
-	vector<Worker *>	 m_workers;
+	std::vector<Worker *>	 m_workers;
 	int					 m_runningChildren;
 	int					 m_errors;
 };
@@ -803,7 +802,7 @@ GlobalOptions::parseArgs( int argc, const char **argv )
 
 		}
 		else if ( arg.Match("version") ) {
-			printf("test_log_writer: %s, %s\n", VERSION, __DATE__);
+			printf("test_log_writer: %s\n", VERSION);
 			status = STATUS_CANCEL;
 
 		}

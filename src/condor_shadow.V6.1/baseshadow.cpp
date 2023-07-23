@@ -272,7 +272,8 @@ BaseShadow::baseInit( ClassAd *job_ad, const char* schedd_addr, const char *xfer
 		startd->asyncRequestOpportunisticClaim(jobAd, 
 											   "description", 
 											   daemonCore->InfoCommandSinfulString(), 
-											   1200 /*alive interval*/, 
+											   1200 /*alive interval*/,
+											   false, /* don't claim pslot */
 											   20 /* net timeout*/, 
 											   100 /*total timeout*/, 
 											   cb);
@@ -807,17 +808,17 @@ BaseShadow::terminateJob( update_style_t kind ) // has a default argument of US_
 	}
 
     // Update final Job committed time
-    int last_ckpt_time = 0;
+    time_t last_ckpt_time = 0;
     jobAd->LookupInteger(ATTR_LAST_CKPT_TIME, last_ckpt_time);
-    int current_start_time = 0;
+    time_t current_start_time = 0;
     jobAd->LookupInteger(ATTR_JOB_CURRENT_START_DATE, current_start_time);
-    int int_value = (last_ckpt_time > current_start_time) ?
+    time_t int_value = (last_ckpt_time > current_start_time) ?
                         last_ckpt_time : current_start_time;
 
     if( int_value > 0 && !m_committed_time_finalized ) {
         int job_committed_time = 0;
         jobAd->LookupInteger(ATTR_JOB_COMMITTED_TIME, job_committed_time);
-		int delta = (int)time(NULL) - int_value;
+		int delta = (int)(time(nullptr) - int_value);
         job_committed_time += delta;
         jobAd->Assign(ATTR_JOB_COMMITTED_TIME, job_committed_time);
 
@@ -920,7 +921,7 @@ BaseShadow::evictJob( int reason )
 	logEvictEvent( reason );
 
 		// record the time we were vacated into the job ad 
-	jobAd->Assign( ATTR_LAST_VACATE_TIME, (int)time(0) );
+	jobAd->Assign( ATTR_LAST_VACATE_TIME, time(nullptr) );
 
 		// update the job ad in the queue with some important final
 		// attributes so we know what happened to the job when using
@@ -1444,7 +1445,7 @@ BaseShadow::log_except(const char *msg)
 		event.began_execution = TRUE;
 	}
 
-	if (!exception_already_logged && !shadow->uLog.writeEventNoFsync (&event,NULL))
+	if (!exception_already_logged && !shadow->uLog.writeEventNoFsync (&event,shadow->jobAd))
 	{
 		::dprintf (D_ALWAYS, "Failed to log ULOG_SHADOW_EXCEPTION event: %s\n", msg);
 	}

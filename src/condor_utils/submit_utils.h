@@ -84,6 +84,7 @@
 #define SUBMIT_KEY_ExitRequirements "exit_requirements"
 #define SUBMIT_KEY_UserLogFile "log"
 #define SUBMIT_KEY_UserLogUseXML "log_xml"
+#define SUBMIT_KEY_ULogExecuteEventAttrs "ulog_execute_attrs"
 #define SUBMIT_KEY_DagmanLogFile "dagman_log"
 #define SUBMIT_KEY_CoreSize "core_size"
 #define SUBMIT_KEY_NiceUser "nice_user"
@@ -150,6 +151,7 @@
 #define SUBMIT_KEY_TransferPlugins "transfer_plugins"
 #define SUBMIT_KEY_MaxTransferInputMB "max_transfer_input_mb"
 #define SUBMIT_KEY_MaxTransferOutputMB "max_transfer_output_mb"
+#define SUBMIT_KEY_WantIoProxy "want_io_proxy"
 
 #define SUBMIT_KEY_ManifestDesired "manifest"
 #define SUBMIT_KEY_ManifestDir "manifest_dir"
@@ -482,7 +484,7 @@ public:
 
 	void init(int value=-1);
 	void clear(); // clear, but do not deallocate
-	void setScheddVersion(const char * version) { ScheddVersion = version; }
+	void setScheddVersion(const char * version) { ScheddVersion = version ? version : ""; }
 	bool setDisableFileChecks(bool value) { bool old = DisableFileChecks; DisableFileChecks = value; return old; }
 	bool setFakeFileCreationChecks(bool value) { bool old = FakeFileCreationChecks; FakeFileCreationChecks = value; return old; }
 	bool addExtendedCommands(const classad::ClassAd & cmds) { return extendedCmds.Update(cmds); }
@@ -739,7 +741,7 @@ protected:
 	std::string JobGridType;  // set from "GridResource" for grid universe jobs.
 	std::string VMType;
 	std::string TempPathname; // temporary path used by full_path
-	MyString ScheddVersion; // target version of schedd, influences how jobad is filled in.
+	std::string ScheddVersion; // target version of schedd, influences how jobad is filled in.
 	classad::References stringReqRes; // names of request_xxx submit variables that are string valued
 	classad::References forcedSubmitAttrs; // + and MY. attribute names from SUBMIT_ATTRS/EXPRS
 
@@ -806,16 +808,12 @@ protected:
 	// a LOT of the above functions must happen before SetTransferFiles, which in turn must be before SetRequirements
 	int SetTransferFiles();
 	int FixupTransferInputFiles();
-	//bool check_requirements( char const *orig, MyString &answer );
 	int SetRequirements(); // after SetTransferFiles
 
 	int SetForcedSubmitAttrs(); // set +Attrib (MY.Attrib) values from SUBMIT_ATTRS directly into the job ad. this should be called second to last
 	int SetForcedAttributes();	// set +Attrib (MY.Attrib) hashtable keys directly into the job ad.  this should be called last.
 
 	int ProcessJobsetAttributes();
-
-	// construct the Requirements expression for a VM uinverse job.
-	int AppendVMRequirements(MyString & vmanswer, bool VMCheckpoint, bool VMNetworking, const MyString &VMNetworkType, bool VMHardwareVT, bool vm_need_fsdomain);
 
 	// check if the job ad has  Cron attributes set, checked by SetRequirements
 	// return value is NULL if false,
@@ -859,7 +857,7 @@ private:
 
 	int process_container_input_files(StringList & input_files, long long * accumulate_size_kb); // call after building the input files list to find .vmx and .vmdk files in that list
 
-	ContainerImageType image_type_from_string(const std::string &image) const;
+	ContainerImageType image_type_from_string(std::string image) const;
 
 	int s_method; //-1 represents undefined job submit method
 };
